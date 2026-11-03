@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 import time
 import typing
@@ -141,6 +142,61 @@ class DockerBuilder:
 
         return build_args
 
+    def pin_set_build_args(
+        self, model_info: typing.Dict, dockerfile: str, run_build_arg: typing.Dict
+    ) -> typing.Dict[str, str]:
+        """The build args a pin set adds (BASE_IMAGE, MAX_JOBS, ...) for this build's arch.
+
+        Applies when the build args name a pin set (PINS). The pin set and its tool
+        live next to the Dockerfile (``<dockerfile dir>/pins/pins.py``), so the
+        repository being built decides what its pins mean. Args already given keep
+        their value if it agrees; one that disagrees with the pin set is an error,
+        as the Dockerfile would refuse it after a long build anyway.
+        """
+        given = {**run_build_arg, **self.context.ctx.get("docker_build_arg", {})}
+        pins_name = given.get("PINS")
+        if not pins_name:
+            return {}
+        tool = Path(dockerfile).resolve().parent / "pins" / "pins.py"
+        if not tool.is_file():
+            raise RuntimeError(
+                f"{model_info['name']}: PINS={pins_name} but {tool} does not exist"
+            )
+        arch = given.get("MAD_SYSTEM_GPU_ARCHITECTURE") or self._get_effective_gpu_architecture(
+            model_info, dockerfile
+        )
+        if not arch:
+            raise RuntimeError(
+                f"{model_info['name']}: pin set {pins_name} needs MAD_SYSTEM_GPU_ARCHITECTURE "
+                f"(--additional-context '{{\"docker_build_arg\": {{\"MAD_SYSTEM_GPU_ARCHITECTURE\": \"gfx942\"}}}}')"
+            )
+        proc = subprocess.run(
+            [sys.executable, str(tool), "build-args", str(pins_name), "--arch", str(arch), "--json"],
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"{model_info['name']}: pin set {pins_name} for {arch}: "
+                f"{(proc.stderr or proc.stdout).strip()}"
+            )
+        wanted = json.loads(proc.stdout)
+        added = {}
+        for key, value in wanted.items():
+            if key in given and str(given[key]) != str(value):
+                raise RuntimeError(
+                    f"{model_info['name']}: {key}={given[key]} disagrees with pin set "
+                    f"{pins_name} for {arch} ({key}={value}); drop it or change the pin set"
+                )
+            if key not in given:
+                added[key] = value
+        if added:
+            self.rich_console.print(
+                f"[dim]Pin set {pins_name} ({arch}): "
+                + ", ".join(f"{k}={v}" for k, v in added.items())
+                + "[/dim]"
+            )
+        return added
+
     def _local_image_size_bytes(self, image: str) -> typing.Optional[int]:
         """Size of a local image in bytes, or None when docker cannot say."""
         try:
@@ -151,14 +207,16 @@ class DockerBuilder:
         except Exception:
             return None
 
-    def _resolve_base_docker(self, dockerfile: str) -> str:
+    def _resolve_base_docker(self, dockerfile: str, build_arg: typing.Optional[typing.Dict] = None) -> str:
         """Resolve the base image the Dockerfile builds ``FROM``.
 
-        Prefers a ``BASE_DOCKER`` override from ``docker_build_arg`` context,
+        Prefers a ``BASE_DOCKER`` override from ``docker_build_arg`` context, then a
+        ``BASE_IMAGE`` build arg (a pin set's base, see pin_set_build_args),
         otherwise reads ``ARG BASE_DOCKER=`` from the Dockerfile.
 
         Args:
             dockerfile: Path to the Dockerfile.
+            build_arg: This build's resolved build args.
 
         Returns:
             str: The base image reference, or ``""`` if it cannot be determined.
@@ -168,6 +226,9 @@ class DockerBuilder:
             and "BASE_DOCKER" in self.context.ctx["docker_build_arg"]
         ):
             return str(self.context.ctx["docker_build_arg"]["BASE_DOCKER"])
+        given = {**(build_arg or {}), **self.context.ctx.get("docker_build_arg", {})}
+        if given.get("BASE_IMAGE"):
+            return str(given["BASE_IMAGE"])
         try:
             return str(
                 self.console.sh(
@@ -309,6 +370,10 @@ class DockerBuilder:
                 continue
             run_build_arg[card_arg] = card_value
 
+        # A pin set (MAD docker/pins/) names what the image is built from; its base image
+        # depends on the GPU architecture, so it is resolved here, per build.
+        run_build_arg.update(self.pin_set_build_args(model_info, dockerfile, run_build_arg))
+
         build_args = self.get_build_arg(run_build_arg)
 
         use_cache_str = "--no-cache" if clean_cache else ""
@@ -338,7 +403,7 @@ class DockerBuilder:
                 # registry. Log in when — and only when — there is no existing
                 # login to reuse, so an ambient `docker login` (e.g. an
                 # organisation access token) is left alone.
-                base_docker = self._resolve_base_docker(dockerfile)
+                base_docker = self._resolve_base_docker(dockerfile, run_build_arg)
                 base_registry = self._registry_of(base_docker)
                 if credentials and not has_ambient_docker_auth(base_registry):
                     login_to_registry(
