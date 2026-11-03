@@ -19,6 +19,7 @@ _PUSH_DIGEST_RE = re.compile(r"digest:\s*(sha256:[0-9a-f]{64})")
 
 # `docker image inspect --format '{{index .RepoDigests 0}}'` prints "repo@sha256:<64 hex>".
 _REPO_DIGEST_RE = re.compile(r"@(sha256:[0-9a-f]{64})")
+_SHA256_RE = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 def parse_push_digest(push_output: typing.Optional[str]) -> typing.Optional[str]:
@@ -36,6 +37,19 @@ def parse_push_digest(push_output: typing.Optional[str]) -> typing.Optional[str]
         return None
     matches = _PUSH_DIGEST_RE.findall(push_output)
     return matches[-1] if matches else None
+
+
+def parse_sha256(text: typing.Optional[str]) -> typing.Optional[str]:
+    """Return the first ``sha256:<64 hex>`` in ``text``, or None.
+
+    ``docker manifest inspect`` prints that digest inside JSON. A registry
+    error such as a rate-limit message has no digest and must not be stored
+    as one.
+    """
+    if not text:
+        return None
+    match = _SHA256_RE.search(text)
+    return match.group(0) if match else None
 
 
 def parse_repo_digest(inspect_output: typing.Optional[str]) -> typing.Optional[str]:

@@ -371,10 +371,20 @@ class DockerBuilder:
                 # Get docker SHA
                 docker_sha = ""
                 try:
-                    docker_sha = self.console.sh(
-                        f'docker manifest inspect {shlex.quote(base_docker)} | grep digest | head -n 1 | cut -d \\" -f 4'
+                    from madengine.core.image_digest import parse_sha256
+
+                    raw_sha = self.console.sh(
+                        f"docker manifest inspect {shlex.quote(base_docker)}",
+                        canFail=True,
                     )
-                    print(f"BASE DOCKER SHA is {docker_sha}")
+                    docker_sha = parse_sha256(raw_sha) or ""
+                    if docker_sha:
+                        print(f"BASE DOCKER SHA is {docker_sha}")
+                    else:
+                        self.rich_console.print(
+                            "[yellow]Warning: manifest inspect returned no "
+                            "sha256 digest[/yellow]"
+                        )
                 except Exception as e:
                     self.rich_console.print(
                         f"[yellow]Warning: Could not get docker SHA: {e}[/yellow]"

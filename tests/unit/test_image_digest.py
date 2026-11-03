@@ -13,6 +13,7 @@ from madengine.core.image_digest import (
     build_pinned_reference,
     parse_push_digest,
     parse_repo_digest,
+    parse_sha256,
     resolve_pinned_image,
 )
 
@@ -150,3 +151,19 @@ class TestResolvePinnedImage:
         with pytest.raises(ConfigurationError) as excinfo:
             resolve_pinned_image("myorg/ci:mymodel", None, True, model_name="my_model")
         assert excinfo.value.suggestions
+
+
+class TestParseSha256:
+    """parse_sha256 keeps a manifest digest and rejects a registry error."""
+
+    def test_manifest_json(self):
+        text = '{"digest": "%s"}' % DIGEST
+        assert parse_sha256(text) == DIGEST
+
+    def test_rate_limit_text_is_not_a_digest(self):
+        text = (
+            "toomanyrequests: You have reached your unauthenticated pull "
+            "rate limit. https://www.docker.com/increase-rate-limit"
+        )
+        assert parse_sha256(text) is None
+
