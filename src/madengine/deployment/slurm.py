@@ -27,10 +27,8 @@ from madengine.core import lifecycle
 from madengine.core.errors import ConfigurationError
 from madengine.core.image_digest import resolve_pinned_image
 from madengine.core.timeout import resolve_run_timeout, subprocess_timeout
-from madengine.deployment.layered_config import (
-    LayeredConfigError,
-    resolve_for_model,
-)
+from madengine.deployment.layered_config import LayeredConfigError
+from madengine.deployment.slurm_multi_env import SOURCES_VAR, submit_env, user_env_vars
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import get_build_number, get_pipeline
@@ -51,7 +49,7 @@ from .common import (
     resolve_node_count,
     validate_launcher,
 )
-from .config_loader import PRESET_ENV_KEYS, ConfigLoader, apply_deployment_config
+from .config_loader import ConfigLoader, apply_deployment_config
 from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
 from .slurm_node_selector import SlurmNodeSelector
 
@@ -612,11 +610,7 @@ class SlurmDeployment(BaseDeployment):
         themselves still gets exactly their value, and the card's env_vars,
         docker_env_vars and layered config are untouched.
         """
-        env = dict(self.config.additional_context.get("env_vars") or {})
-        preset_only = self.config.additional_context.get(PRESET_ENV_KEYS) or []
-        dropped = sorted(k for k in preset_only if k in env)
-        for key in dropped:
-            del env[key]
+        env, dropped = user_env_vars(self.config.additional_context)
         if dropped:
             self.console.print(
                 f"[dim]Not exporting SLURM preset env to the self-managed script "
@@ -665,46 +659,33 @@ class SlurmDeployment(BaseDeployment):
             )
             return False
 
-        # Get environment variables
-        env_vars = {}
-        user_env = self._user_env_vars()
-
-        # Layered config (the fourth way), when this card has one. Seeded FIRST so
-        # the card's own env_vars and any submit-time override below still win.
-        # Cards using models.yaml / configs/*.yaml / cluster.sh are unaffected:
-        # resolve_for_model returns an empty env when there is no such file, and
-        # madengine never parses those three formats. See docs/distributed-config.md.
+        # The submit layer (slurm_multi_env.submit_env), the same on every path that
+        # runs a slurm_multi card, weakest first: the card's layered config
+        # (mad-config.yaml), docker_env_vars, the card's env_vars, the run's
+        # env_vars without preset-only keys (see _user_env_vars), and xP / yD from
+        # the card's sglang_disagg block when nothing above set them. Each name's
+        # source goes to the launcher as MAD_ENV_SOURCES (below).
         try:
-            layered_env, layered_warnings = resolve_for_model(
-                model_info,
-                model_script_path.parent,
-                runtime_env=user_env,
+            submit, layered_warnings, dropped = submit_env(
+                model_info, self.config.additional_context,
+                model_script_path.parent, self.distributed_config,
             )
         except LayeredConfigError as exc:
             self.console.print(f"[red]✗ {exc}[/red]")
             return False
+        if dropped:
+            self.console.print(
+                f"[dim]Not exporting SLURM preset env to the self-managed script "
+                f"(set them in env_vars to keep them): {', '.join(dropped)}[/dim]"
+            )
         for warning in layered_warnings:
             self.console.print(f"[yellow]⚠ {warning}[/yellow]")
-        if layered_env:
+        _n_layered = sum(1 for v in submit.sources.values() if v == "mad-config")
+        if _n_layered:
             self.console.print(
-                f"[green]✓ Layered config resolved {len(layered_env)} env var(s)[/green]"
+                f"[green]✓ Layered config resolved {_n_layered} env var(s)[/green]"
             )
-            env_vars.update(layered_env)
-
-        # From the manifest's context.docker_env_vars. Placed below the card and
-        # the deployment_config so nothing that already flows changes precedence:
-        # the only effect is that values which used to be dropped on this path now
-        # arrive. This is what lets a manifest declare a variable once instead of
-        # once here and again in deployment_config.env_vars.
-        if "docker_env_vars" in self.config.additional_context:
-            env_vars.update(self.config.additional_context["docker_env_vars"])
-
-        # From model_info.env_vars
-        if "env_vars" in model_info:
-            env_vars.update(model_info["env_vars"])
-
-        # From additional_context.env_vars -- the user's, not the preset's.
-        env_vars.update(user_env)
+        env_vars = dict(submit.env)
 
         # Tools (profiling) on the self-managed path.
         #
@@ -752,17 +733,6 @@ class SlurmDeployment(BaseDeployment):
                     "[yellow]⚠ tools were configured but rocprofv3 is not "
                     "available; running without profiling[/yellow]"
                 )
-
-        # From distributed config (model's distributed section)
-        model_distributed = model_info.get("distributed", {})
-        sglang_disagg_config = model_distributed.get(
-            "sglang_disagg", {}
-        ) or self.distributed_config.get("sglang_disagg", {})
-        if sglang_disagg_config:
-            if "xP" not in env_vars:
-                env_vars["xP"] = str(sglang_disagg_config.get("prefill_nodes", 1))
-            if "yD" not in env_vars:
-                env_vars["yD"] = str(sglang_disagg_config.get("decode_nodes", 1))
 
         # Resolve the image the COMPUTE NODES will pull.
         #
@@ -940,6 +910,13 @@ class SlurmDeployment(BaseDeployment):
             for module in modules:
                 script_lines.append(f"module load {shlex.quote(str(module))}")
             script_lines.append("")
+
+        # Where each value came from: the submit layer's sources, and "madengine"
+        # for what madengine decided after it (the image, MAD_TOOLS, a pin).
+        for key, value in env_vars.items():
+            if submit.env.get(key) != str(value):
+                submit.set(key, value, "madengine")
+        env_vars[SOURCES_VAR] = submit.encoded_sources()
 
         script_lines.append("# Environment variables")
         for key, value in env_vars.items():

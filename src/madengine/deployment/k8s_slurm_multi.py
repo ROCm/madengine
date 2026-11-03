@@ -39,8 +39,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from madengine.core.timeout import resolve_run_timeout
 
 from .common import is_self_managed_launcher
-from .config_loader import PRESET_ENV_KEYS, PRESET_K8S_KEYS
+from .config_loader import PRESET_K8S_KEYS
 from .k8s_secrets import image_pull_secret_refs_for_job
+from .slurm_multi_env import submit_env
 
 SHIM_DIR = Path(__file__).parent / "k8s_shim"
 AGENT_PORT = 29711
@@ -124,22 +125,29 @@ class KubernetesSlurmMultiMixin:
     """Prepare and collect a slurm_multi card on Kubernetes (see module docstring)."""
 
     def _slurm_multi_env(self, model_info: Dict, image: str) -> Dict[str, str]:
-        """The card's env_vars plus the run's, without preset-only keys.
+        """The card's submit layer, as on SLURM and Spur (slurm_multi_env.submit_env).
 
-        On SLURM a slurm_multi card gets exactly this (SlurmDeployment._user_env_vars):
-        presets carry settings for madengine's own launchers -- here the AMD
-        multi-GPU preset's NCCL_IB_DISABLE=1 and NCCL_SOCKET_IFNAME=eth0 -- and
-        handing them to a script that owns its environment changes its transport.
+        Before, this path took only the card's env_vars and the run's, so the card's
+        layered config (mad-config.yaml), docker_env_vars and the sglang_disagg
+        xP / yD never reached a pod, though they reach the same card on SLURM.
+        Presets' env stays out, as there: presets carry settings for madengine's own
+        launchers -- here the AMD multi-GPU preset's NCCL_IB_DISABLE=1 and
+        NCCL_SOCKET_IFNAME=eth0 -- and handing them to a script that owns its
+        environment changes its transport.
         """
-        ctx = self.config.additional_context
-        preset_only = set(ctx.get(PRESET_ENV_KEYS) or [])
-        env = {k: str(v) for k, v in (model_info.get("env_vars") or {}).items()}
-        env.update({k: str(v) for k, v in (ctx.get("env_vars") or {}).items() if k not in preset_only})
-        env["DOCKER_IMAGE_NAME"] = image
+        script = model_info.get("scripts") or ""
+        submit, warnings, _ = submit_env(
+            model_info, self.config.additional_context,
+            Path(script).parent if script else None,
+            self.config.additional_context.get("distributed") or {},
+        )
+        for warning in warnings:
+            self.console.print(f"[yellow]⚠ {warning}[/yellow]")
+        submit.set("DOCKER_IMAGE_NAME", image, "madengine")
         # The launchers coordinate through files under LOG_PATH, so it must be shared
         # by every pod: the results volume is (ReadWriteMany for multi-node).
-        env.setdefault("LOG_PATH", "/results/logs")
-        return env
+        submit.setdefault("LOG_PATH", "/results/logs", "madengine")
+        return submit.final()
 
     def _slurm_multi_image(self, model_info: Dict, image_info: Dict, model_key: str) -> str:
         for ref in (image_info.get("registry_image"), image_info.get("docker_image"),
