@@ -594,6 +594,37 @@ each built image (no GPU needed); it is off by default.
 **Preview without building.** `madengine build --tags my_model --explain` prints
 the Dockerfile and resolved plan for each selected model.
 
+#### Stack locks (`image_spec.stack`)
+
+For a full framework stack, `image_spec` names a lock in the MAD checkout,
+`compat/stacks/<name>.json`, instead of listing versions:
+
+```json
+"image_spec": {"stack": "vllm", "gpu_arch": "gfx942",
+               "override": {"vllm": {"url": "https://.../my-vllm.whl"}}}
+```
+
+A lock lists, in install order, the exact **artifacts** of one best-known stack
+(an exact wheel `url`, or a pip `requirement` resolved against a named index)
+and the **sources** built from pinned commits (with cherry-picks), for one
+platform (`rocm`, `python`, `gpu_arch`, `nic`). `{gpu_arch}` in a requirement or
+build step becomes the target (`all` when unknown); `gpu_arch` on an artifact or
+source limits it to those targets.
+
+- madengine generates the Dockerfile under `.madengine/build/`, one layer per
+  artifact, so changing one pin rebuilds only from that layer. Its name carries
+  the lock digest.
+- `override` replaces fields of a named artifact or source (or adds one). Before
+  building, madengine reads each wheel's declared dependencies and fails if an
+  artifact pins another artifact at a different build, for example a vllm wheel
+  pinning a different `amd-aiter` than the override provides.
+- `build_plan.resolved` records the stack, lock digest, components and overrides.
+
+`madengine stack` inspects locks: `show` (components, `--dockerfile` for the
+generated file), `check` (declared pins between artifacts), `diff` (where two
+locks differ), and `harvest` (every wheel in an index, including nested
+per-stack indexes, with ROCm/git/date provenance from local versions).
+
 ### Mount Host Directories
 
 Mount host directories inside containers:

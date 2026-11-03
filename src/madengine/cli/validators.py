@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import typer
 from rich.console import Console
 
-from madengine.execution.image_spec import backend_prefix, effective_image_spec
+from madengine.execution.image_spec import dockerfile_prefix, effective_image_spec
 from madengine.utils.discover_models import DiscoverModels
 from madengine.core.additional_context_defaults import (
     DEFAULT_GPU_VENDOR,
@@ -525,7 +525,7 @@ def process_batch_manifest_entries(
                         # Get dockerfile (an image_spec card builds the backend prefix)
                         card_spec = effective_image_spec(model_info, {})
                         dockerfile = (
-                            backend_prefix(card_spec)
+                            dockerfile_prefix(card_spec)
                             if card_spec
                             else model_info.get("dockerfile")
                         )

@@ -102,6 +102,17 @@ madengine build [OPTIONS]
 | `--use-image` | | TEXT | `None` | Skip Docker build and use a pre-built image. Pass an image name, or `auto` to resolve from model card's `DOCKER_IMAGE_NAME`. Mutually exclusive with `--registry` and `--build-on-compute` |
 | `--build-on-compute` | | FLAG | `False` | Build Docker images on a SLURM compute node and push to registry. Requires `--registry` |
 | `--explain` | | FLAG | `False` | Print the Dockerfile and resolved `image_spec` build plan for each selected model, then exit without building |
+
+### `madengine stack`
+
+Inspect stack locks in the MAD checkout (`compat/stacks/`); run from the MAD root.
+
+| Command | Description |
+|---------|-------------|
+| `stack show <lock> [-a GFX] [--dockerfile]` | Components of a lock for one target, or the generated Dockerfile |
+| `stack check <lock>... [-a GFX]` | Verify declared pins between a lock's artifacts (reads wheel metadata); exit 1 on a mismatch |
+| `stack diff <lockA> <lockB> [-a GFX]` | Components on which two locks differ |
+| `stack harvest <index> [-p PROJECT] [--python cp312] [--metadata] [-o catalog.json]` | Every wheel in a PEP 503 index, following nested per-stack indexes |
 | `--batch-manifest` | | TEXT | `None` | Input batch.json file for batch build mode |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
 | `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON; `--additional-context` is merged over it key by key |

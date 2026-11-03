@@ -882,7 +882,14 @@ class DockerBuilder:
         # it outside the try below so a bad spec fails the build, not just warns.
         spec = image_spec.effective_image_spec(model_info, self.context.ctx)
         prefix = (
-            image_spec.backend_prefix(spec) if spec else model_info["dockerfile"]
+            image_spec.dockerfile_prefix(
+                spec,
+                self.context.ctx.get("docker_build_arg", {}).get(
+                    "MAD_SYSTEM_GPU_ARCHITECTURE"
+                ),
+            )
+            if spec
+            else model_info["dockerfile"]
         )
         try:
             # Quote the dockerfile path to prevent shell injection

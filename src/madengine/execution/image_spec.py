@@ -32,6 +32,14 @@ Spec shape (all keys optional unless noted)::
       sources:
         - {repo: https://github.com/org/repo, commit: <sha>}
       pip: [numpy==1.26.4]
+
+Or, for a full framework stack, name a lock in compat/stacks/ (see
+madengine.stack.lock) and optionally replace individual artifacts::
+
+    image_spec:
+      stack: vllm
+      gpu_arch: gfx942
+      override: {vllm: {url: <my wheel>}}
 """
 
 import hashlib
@@ -49,7 +57,8 @@ BUILD_PLAN_ARG = "MAD_BUILD_PLAN"
 BUILD_INFO_PATH = "/opt/mad/build_info.json"
 
 _VENDOR_MATRIX = {"AMD": "rocm.json", "NVIDIA": "cuda.json"}
-_SPEC_KEYS = {
+_STACK_KEYS = {"stack", "override", "gpu_arch"}
+_SPEC_KEYS = _STACK_KEYS | {
     "backend",
     "base",
     "python",
@@ -154,11 +163,80 @@ def effective_image_spec(
             f"unknown {SPEC_KEY} key(s): {', '.join(sorted(unknown))}; "
             f"expected a subset of {', '.join(sorted(_SPEC_KEYS))}"
         )
+    if spec.get("stack") and set(spec) - _STACK_KEYS:
+        raise ImageSpecError(
+            f"{SPEC_KEY} with 'stack' takes only {', '.join(sorted(_STACK_KEYS))}; "
+            f"change artifacts with 'override', got "
+            f"{', '.join(sorted(set(spec) - _STACK_KEYS))}"
+        )
     return spec
 
 
 def backend_prefix(spec: typing.Dict) -> str:
     return spec.get("backend") or DEFAULT_BACKEND
+
+
+def dockerfile_prefix(
+    spec: typing.Dict, gpu_arch: typing.Optional[str] = None, root: str = "."
+) -> str:
+    """Dockerfile prefix a spec builds: the shared backend, or a generated
+    Dockerfile for a stack lock (written under .madengine/build/)."""
+    if spec.get("stack"):
+        return _resolve_stack(spec, None, gpu_arch, root).dockerfile_prefix
+    return backend_prefix(spec)
+
+
+def _resolve_stack(
+    spec: dict, vendor: typing.Optional[str], gpu_arch: typing.Optional[str], root: str
+) -> "BuildPlan":
+    from madengine.stack import dockerfile, lock
+
+    try:
+        data = lock.load(spec["stack"], root)
+        arch = spec.get("gpu_arch") or gpu_arch
+        resolved = lock.resolve(data, arch, spec.get("override"))
+        lock_vendor = ((data.get("platform") or {}).get("vendor") or "AMD").upper()
+        if vendor and vendor.upper() != lock_vendor:
+            raise ImageSpecError(
+                f"stack '{data['name']}' is locked for {lock_vendor}, not {vendor}"
+            )
+        if spec.get("override"):
+            # Overrides are where cross-stack mismatches come from; verify the
+            # declared pins between artifacts before spending a build on them.
+            problems = lock.check(resolved)
+            if problems:
+                raise ImageSpecError(
+                    "stack override is inconsistent:\n  " + "\n  ".join(problems)
+                )
+    except lock.LockError as e:
+        raise ImageSpecError(str(e)) from None
+    lock_digest = hashlib.sha256(
+        json.dumps(resolved, sort_keys=True).encode()
+    ).hexdigest()[:12]
+    completion = (
+        lock.completion_requirements(resolved) if resolved.get("exclude") else None
+    )
+    prefix = dockerfile.write(resolved, lock_digest, lock_vendor, root, completion)
+    plan = BuildPlan(
+        lock_vendor,
+        prefix,
+        {},
+        spec,
+        {
+            "stack": data["name"],
+            "lock_digest": lock_digest,
+            "gpu_arch": arch or "",
+            "platform": data.get("platform") or {},
+            "components": lock.components(resolved),
+            "overridden": sorted(
+                i["name"] for k in ("artifacts", "sources")
+                for i in resolved.get(k) or [] if i.get("overridden")
+            ),
+            "excluded": resolved.get("exclude") or [],
+            "validated": data.get("validated"),
+        },
+    )
+    return plan
 
 
 def load_matrix(vendor: str, root: str = ".") -> typing.Dict:
@@ -408,6 +486,14 @@ def resolve(
 ) -> BuildPlan:
     """Resolve *spec* for one vendor into a BuildPlan."""
     vendor = (vendor or "").upper()
+    if spec.get("stack"):
+        plan = _resolve_stack(spec, vendor, gpu_arch, root)
+        plan.build_args[BUILD_PLAN_ARG] = json.dumps(
+            {"digest": plan.digest(), "spec": spec, "resolved": plan.resolved},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return plan
     if matrix is None:
         matrix = load_matrix(vendor, root)
     if vendor == "AMD":
