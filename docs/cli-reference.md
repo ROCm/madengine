@@ -105,27 +105,17 @@ madengine build [OPTIONS]
 
 ### `madengine stack`
 
-Inspect stack locks in the MAD checkout (`compat/stacks/`); run from the MAD root.
+Inspect workload image specs against the compatibility matrix; run from the
+MAD root. `SPEC` is a workload folder (`scripts/vllm`) or an `image_spec.yaml`.
 
 | Command | Description |
 |---------|-------------|
-| `stack show <lock> [-a GFX] [--dockerfile]` | Components of a lock for one target, or the generated Dockerfile |
-| `stack check <lock>... [-a GFX]` | Verify declared pins between a lock's artifacts (reads wheel metadata); exit 1 on a mismatch |
-| `stack diff <lockA> <lockB> [-a GFX]` | Components on which two locks differ |
-| `stack harvest <index> [-p PROJECT] [--python cp312] [--metadata] [-o catalog.json]` | Every wheel in a PEP 503 index, following nested per-stack indexes |
-| `--batch-manifest` | | TEXT | `None` | Input batch.json file for batch build mode |
-| `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
-| `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON; `--additional-context` is merged over it key by key |
-| `--config` | | TEXT | `None` | YAML config file and/or Hydra overrides (repeatable). Mutually exclusive with `--additional-context` / `--additional-context-file`. See [Configuration — YAML config](configuration.md#yaml-configuration-config). |
-| `--clean-docker-cache` | | FLAG | `False` | Rebuild images without using cache |
-| `--manifest-output` | `-m` | TEXT | `build_manifest.json` | Output file for build manifest |
-| `--summary-output` | `-s` | TEXT | `None` | Output file for build summary JSON |
-| `--live-output` | `-l` | FLAG | `False` | Print output in real-time |
-| `--verbose` | `-v` | FLAG | `False` | Enable verbose logging |
+| `stack show SPEC [-a GFX] [--dockerfile]` | Components in install order and why each is there, or the generated Dockerfile |
+| `stack check SPEC... [-a GFX]` | Compare each wheel's declared dependencies (METADATA) with the composed plan; exit 1 on a mismatch |
+| `stack diff SPEC_A SPEC_B [-a GFX]` | Components on which two workloads differ |
+| `stack infer IMAGE --base BASE [-o image_spec.yaml]` | Draft a spec from what an image added on top of its base, and list what compat has no build for (`--image-info`/`--base-info` take saved image_info JSON) |
+| `stack harvest INDEX [-p PROJECT] [--python cp312] [--metadata] [-o catalog.json]` | Every wheel in a PEP 503 index, following nested per-stack indexes, with ROCm/git/date provenance |
 
-**Examples:**
-
-```bash
 # Basic build
 madengine build --tags dummy \
   --additional-context '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}'

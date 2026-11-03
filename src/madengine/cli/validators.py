@@ -525,7 +525,7 @@ def process_batch_manifest_entries(
                         # Get dockerfile (an image_spec card builds the backend prefix)
                         card_spec = effective_image_spec(model_info, {})
                         dockerfile = (
-                            dockerfile_prefix(card_spec)
+                            dockerfile_prefix(card_spec, name=model_name)
                             if card_spec
                             else model_info.get("dockerfile")
                         )

@@ -523,6 +523,7 @@ class BuildOrchestrator:
                         spec,
                         builder._infer_gpu_vendor_from_dockerfile(dockerfile),
                         context_args.get("MAD_SYSTEM_GPU_ARCHITECTURE"),
+                        name=model["name"],
                     )
                     row["build_plan"] = plan.to_dict()
                     card_args = model.get("docker_build_arg") or {}

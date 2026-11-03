@@ -539,91 +539,84 @@ entry for the same key, so an operator can still redirect a build without editin
 
 ### Declarative Image Spec (`image_spec`)
 
-Instead of pointing at a hand-written Dockerfile, a model card (or
-`--additional-context`) can describe the stack it needs. madengine resolves the
-spec against the MAD checkout's compatibility matrices (`compat/rocm.json`,
-`compat/cuda.json`) and builds the shared backend Dockerfile
-(`docker/global_univ2.ubuntu.{amd,nvidia}.Dockerfile`) with the resolved build
-args. Cards without `image_spec` build exactly as before.
+Instead of pointing at a hand-written Dockerfile, a workload can describe its
+image. Two files in the MAD checkout carry it:
 
-```json
-{
-  "name": "my_model",
-  "tags": ["my_model"],
-  "scripts": "run.sh",
-  "image_spec": {
-    "rocm": {"version": "7.2", "install": "therock"},
-    "cuda": {"version": "12.8"},
-    "torch": "2.10",
-    "components": [
-      {"name": "migraphx", "amd": {"url": "https://.../migraphx.whl"}, "sha256": "..."}
-    ],
-    "sources": [{"repo": "https://github.com/ROCm/AMDMIGraphX", "commit": "<sha>"}]
-  }
-}
+- `compat/rocm.yaml`, the **compatibility matrix**: the ROCm releases, wheel
+  indexes and component builds MAD authorizes. A component build is keyed
+  `<version>@<origin>`, because the same version exists as different builds,
+  one per framework stack. Each entry installs as an exact wheel (`url`), a pip
+  `requirement` against a named index, or a pinned `source` build (repo, commit,
+  cherry-picks, steps), and lists what it `requires`, any dependencies it
+  deliberately leaves out (`exclude`, with a reason), `env`, `system_packages`,
+  and the `python`/`gpu_arch` it is built for.
+- `scripts/<dir>/image_spec.yaml`, next to the folder's `models.json`: the
+  **workload's spec**. What it selects is what that workload is locked to.
+
+```yaml
+# scripts/vllm/image_spec.yaml
+rocm: "10.1"
+python: "3.14"
+components:
+  vllm: "0.29.1.dev0+rocm10.1.0.g98dff2a81.d20261002@frameworks-vllm"
 ```
 
-| Key | Meaning |
-|-----|---------|
-| `backend` | Dockerfile prefix the spec compiles to (default `docker/global_univ2`) |
-| `base` | `auto` (matrix default: bare OS for AMD, `nvidia/cuda` devel for NVIDIA) or an image. An AMD image that already has ROCm is detected and ROCm is not reinstalled |
-| `rocm` | `version` (a key of `compat/rocm.json`), `install` (`therock` or `legacy`), optional `index_url` |
-| `cuda` | `version`: upper bound; the build uses the CUDA that the selected torch was built for |
-| `torch` | Torch version; resolved to a wheel index per vendor |
-| `python` | Python version (NVIDIA backend) |
-| `gpu_arch` | Defaults to `MAD_SYSTEM_GPU_ARCHITECTURE`; selects the TheRock `device-<gfx>` extra (`device-all` when unset) |
-| `components` | Ordered wheels/debs. `url` applies to both vendors; `amd`/`nvidia` objects make a component vendor-specific. Optional `sha256` is verified |
-| `sources` | Repositories cloned at a pinned commit into `/workspace` |
-| `pip` | Extra pip requirements installed first |
+A card opts in by referencing the folder's spec with OmegaConf and may override
+any part of it; `${compat...}` reaches the matrix. Cards with a `dockerfile`
+are unchanged:
 
-**Precedence.** Spec-derived build args are the lowest layer: the card's
-`docker_build_arg`, then `--additional-context` `docker_build_arg`, still win.
-A context `image_spec` is deep-merged over the card's, so a stack can be swapped
-for one run without editing MAD.
+```json
+"image_spec": "${image_spec}"
+"image_spec": {"extends": "${image_spec}", "gpu_arch": "gfx942"}
+```
+
+**Installation order.** madengine adds every authorized build that the
+selection requires (here torch, amd-aiter and flash-attn, which vllm requires,
+and ROCm, which torch requires), checks each requirement against the selected
+builds, and orders all of them so every component installs after what it
+requires; independent components keep the spec's order. The generated
+Dockerfile (under `.madengine/build/`) has one layer per component in that
+order, so changing one selection rebuilds only from that layer. Resolution
+fails before any build when a selection is not authorized, a requirement has
+no authorized build, a selected build does not satisfy a requirement, the
+python or gpu_arch does not match, or requirements form a cycle. To force a
+relative order, list components in `order` (for example
+`order: [amd-aiter, flash-attn]`); it is added to the dependency order, so an
+`order` that contradicts a requirement fails as a cycle.
+
+| Spec key | Meaning |
+|-----|---------|
+| `rocm` | ROCm release from the matrix (installed as TheRock wheels), or omit when the base image provides ROCm |
+| `python` | Python for a venv at `/opt/mad/venv`; omit to use the base image's python |
+| `components` | Mapping of component name to authorized build key; a full entry instead of a key is allowed and marked not authorized (its wheel metadata is checked before building) |
+| `order` | Component names that must install in this relative order, on top of the dependency order |
+| `base` | Base image (default: the matrix's `bare_os_base`) |
+| `gpu_arch` | Target, default `MAD_SYSTEM_GPU_ARCHITECTURE`; selects TheRock `device-<gfx>` extras (`device-all` when unset) |
+| `env`, `setup`, `system_packages` | Workload environment, shell run before apt, extra apt packages |
+
+**Precedence.** Generated or backend build args are the lowest layer: the
+card's `docker_build_arg`, then `--additional-context` `docker_build_arg`,
+still win. A context `image_spec` is deep-merged over the card's for one run.
 
 **What gets recorded.** Each spec-built image in `build_manifest.json` carries
-`build_plan` (the spec, the resolved args, a `digest`, and any `overridden_args`)
-and `image_info` (ROCm/CUDA/Python versions and installed packages, read from
-`/opt/mad/build_info.json`, which the backend writes at build time). To rebuild a
-recorded stack, pass its `build_plan.spec` back as `image_spec`.
+`build_plan` (spec, resolved components and order, what was pulled in and why,
+excludes, digest, `overridden_args`) and `image_info` (installed versions, read
+from `/opt/mad/build_info.json`). Set `"image_probe": true` to record
+`image_info` for images from hand-written Dockerfiles too; it runs `python3`
+once in each built image and is off by default.
 
-**Hand-written Dockerfiles.** Set `"image_probe": true` to record `image_info`
-for images built from ordinary Dockerfiles as well. This runs `python3` once in
-each built image (no GPU needed); it is off by default.
+**From an existing image to a spec.** `madengine stack infer IMAGE --base
+BASE -o scripts/<dir>/image_spec.yaml` reads what the image added on top of its
+base, selects the authorized builds that match, and lists what compat has no
+build for yet (custom builds such as `+rocm`/`+g<sha>` versions, or components
+at a version compat does not authorize). Saved `image_info` JSON can replace
+the live images (`--image-info`, `--base-info`). Building the draft and reading
+its `image_info` back closes the loop.
 
-**Preview without building.** `madengine build --tags my_model --explain` prints
-the Dockerfile and resolved plan for each selected model.
-
-#### Stack locks (`image_spec.stack`)
-
-For a full framework stack, `image_spec` names a lock in the MAD checkout,
-`compat/stacks/<name>.json`, instead of listing versions:
-
-```json
-"image_spec": {"stack": "vllm", "gpu_arch": "gfx942",
-               "override": {"vllm": {"url": "https://.../my-vllm.whl"}}}
-```
-
-A lock lists, in install order, the exact **artifacts** of one best-known stack
-(an exact wheel `url`, or a pip `requirement` resolved against a named index)
-and the **sources** built from pinned commits (with cherry-picks), for one
-platform (`rocm`, `python`, `gpu_arch`, `nic`). `{gpu_arch}` in a requirement or
-build step becomes the target (`all` when unknown); `gpu_arch` on an artifact or
-source limits it to those targets.
-
-- madengine generates the Dockerfile under `.madengine/build/`, one layer per
-  artifact, so changing one pin rebuilds only from that layer. Its name carries
-  the lock digest.
-- `override` replaces fields of a named artifact or source (or adds one). Before
-  building, madengine reads each wheel's declared dependencies and fails if an
-  artifact pins another artifact at a different build, for example a vllm wheel
-  pinning a different `amd-aiter` than the override provides.
-- `build_plan.resolved` records the stack, lock digest, components and overrides.
-
-`madengine stack` inspects locks: `show` (components, `--dockerfile` for the
-generated file), `check` (declared pins between artifacts), `diff` (where two
-locks differ), and `harvest` (every wheel in an index, including nested
-per-stack indexes, with ROCm/git/date provenance from local versions).
+**Preview without building.** `madengine build --tags my_model --explain`
+prints the Dockerfile and resolved plan for each selected model.
+`madengine stack show|check|diff|harvest` inspects specs and indexes (see the
+CLI reference).
 
 ### Mount Host Directories
 

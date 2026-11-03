@@ -1,74 +1,46 @@
 """Declarative image specs for model cards.
 
-A model card (or ``--additional-context``) may carry an ``image_spec`` instead
-of, or on top of, a hand-written ``dockerfile``. The spec states intent (ROCm or
-CUDA version, torch, extra components); the resolver turns it into the two
-things the build already understands: a Dockerfile prefix and build args.
+A workload folder may keep its image spec next to its cards, in
+``scripts/<dir>/image_spec.yaml``. A card opts in by referencing it with an
+OmegaConf interpolation, and may override any part of it::
 
-Nothing here replaces the existing path. A card without ``image_spec`` builds
-exactly as before. A card with one builds the shared backend Dockerfile
-(``docker/global_univ2`` by default) with resolved build args, and the resolved
-plan is recorded in ``build_manifest.json`` so it can be read back, diffed, or
-passed again as ``image_spec`` to rebuild the same stack.
+    "image_spec": "${image_spec}"
+    "image_spec": {"extends": "${image_spec}", "components": {"vllm": "<build>"}}
 
-Version knowledge lives in the MAD checkout, not in madengine:
+Interpolations can also reach the compatibility matrix, e.g.
+``${compat.indexes.therock_stable}``. Cards without ``image_spec`` build their
+hand-written ``dockerfile`` exactly as before, and ``--additional-context``
+``image_spec`` is deep-merged over the card's for one run.
 
-    compat/rocm.json   ROCm releases, install types, index URLs, version pins
-    compat/cuda.json   torch/CUDA/cuDNN compatibility, synced from replicate/cog
+The compatibility matrix ``compat/rocm.yaml`` (MAD checkout) is the set of
+authorized capabilities: ROCm releases, wheel indexes, and component builds. A
+spec selects builds from it; whatever the spec selects is what the workload is
+locked to. madengine adds what those builds require, orders everything by
+dependency (and the spec's ``order``), and generates the Dockerfile
+(madengine.stack)::
 
-Spec shape (all keys optional unless noted)::
-
-    image_spec:
-      backend: docker/global_univ2     # Dockerfile prefix the spec compiles to
-      base: auto | <image>             # auto = matrix default for the vendor
-      python: "3.12"                   # NVIDIA backend only
-      torch: "2.10"
-      rocm: {version: "7.2", install: therock | legacy, index_url: <url>}
-      cuda: {version: "12.8"}
-      gpu_arch: gfx942                 # default MAD_SYSTEM_GPU_ARCHITECTURE, else all
-      components:                      # installed in order
-        - {name: migraphx, url: <wheel or deb>, sha256: <hex>}
-        - {name: x, amd: {url: ...}, nvidia: {url: ...}}   # per-vendor URLs
-      sources:
-        - {repo: https://github.com/org/repo, commit: <sha>}
-      pip: [numpy==1.26.4]
-
-Or, for a full framework stack, name a lock in compat/stacks/ (see
-madengine.stack.lock) and optionally replace individual artifacts::
-
-    image_spec:
-      stack: vllm
-      gpu_arch: gfx942
-      override: {vllm: {url: <my wheel>}}
+    rocm: "10.1"
+    python: "3.14"
+    components: {vllm: "0.29.1.dev0+rocm10.1.0.g98dff2a81.d20261002@frameworks-vllm"}
+    order: [amd-aiter, flash-attn]     # optional relative install order
 """
 
 import hashlib
 import json
 import os
-import re
 import shlex
 import typing
 from dataclasses import asdict, dataclass, field
 
 SPEC_KEY = "image_spec"
-DEFAULT_BACKEND = "docker/global_univ2"
-COMPAT_DIR = "compat"
+SPEC_FILE = "image_spec.yaml"
+MATRIX_FILE = os.path.join("compat", "rocm.yaml")
 BUILD_PLAN_ARG = "MAD_BUILD_PLAN"
 BUILD_INFO_PATH = "/opt/mad/build_info.json"
 
-_VENDOR_MATRIX = {"AMD": "rocm.json", "NVIDIA": "cuda.json"}
-_STACK_KEYS = {"stack", "override", "gpu_arch"}
-_SPEC_KEYS = _STACK_KEYS | {
-    "backend",
-    "base",
-    "python",
-    "torch",
-    "rocm",
-    "cuda",
-    "gpu_arch",
-    "components",
-    "sources",
-    "pip",
+_SPEC_KEYS = {
+    "rocm", "python", "components", "order", "base", "gpu_arch", "env", "setup",
+    "system_packages",
 }
 
 # Reports the software stack inside an image as JSON. The backend Dockerfiles
@@ -78,16 +50,10 @@ PROBE_SCRIPT = r"""
 import json, os, sys
 from importlib import metadata
 info = {"python": "%d.%d.%d" % sys.version_info[:3]}
-for key, path in (("rocm_version", "/opt/rocm/.info/version"),):
-    try:
-        info[key] = open(path).read().strip()
-    except OSError:
-        pass
 try:
-    info["cuda_version"] = json.load(open("/usr/local/cuda/version.json"))["cuda"]["version"]
-except Exception:
-    if os.environ.get("CUDA_VERSION"):
-        info["cuda_version"] = os.environ["CUDA_VERSION"]
+    info["rocm_version"] = open("/opt/rocm/.info/version").read().strip()
+except OSError:
+    pass
 pkgs = {}
 for dist in metadata.distributions():
     name = dist.metadata.get("Name")
@@ -106,7 +72,7 @@ class ImageSpecError(ValueError):
 
 @dataclass
 class BuildPlan:
-    """A resolved image_spec for one GPU vendor."""
+    """A resolved image_spec."""
 
     vendor: str
     dockerfile_prefix: str
@@ -118,7 +84,8 @@ class BuildPlan:
         """Stable short hash of what the image is built from."""
         args = {k: v for k, v in self.build_args.items() if k != BUILD_PLAN_ARG}
         payload = json.dumps(
-            {"vendor": self.vendor, "prefix": self.dockerfile_prefix, "args": args},
+            {"vendor": self.vendor, "prefix": self.dockerfile_prefix, "args": args,
+             "resolved": self.resolved},
             sort_keys=True,
         )
         return hashlib.sha256(payload.encode()).hexdigest()[:16]
@@ -139,21 +106,87 @@ def _deep_merge(base: dict, over: dict) -> dict:
     return merged
 
 
+def matrix_node(root: str = "."):
+    """The compatibility matrix as an unresolved OmegaConf node.
+
+    Unresolved, so it can sit next to a spec in one config and be resolved once:
+    the matrix backslash-escapes shell ${VAR} references, which a second
+    resolution would read as interpolations.
+    """
+    from omegaconf import OmegaConf
+
+    path = os.path.join(root, MATRIX_FILE)
+    if not os.path.exists(path):
+        raise ImageSpecError(
+            f"{path} not found; image_spec needs the MAD compatibility matrix "
+            f"(run from the MAD root or set MODEL_DIR)"
+        )
+    return OmegaConf.load(path)
+
+
+def load_matrix(root: str = ".") -> typing.Dict:
+    """The compatibility matrix (``compat/rocm.yaml``) of the MAD checkout."""
+    from omegaconf import OmegaConf
+
+    return OmegaConf.to_container(matrix_node(root), resolve=True)
+
+
+def _card_spec(model_info: typing.Dict, root: str) -> typing.Optional[dict]:
+    """The card's image_spec with OmegaConf interpolations resolved.
+
+    ``${image_spec}`` is the folder's image_spec.yaml and ``${compat}`` the
+    matrix; an ``extends`` key is merged under the card's own keys.
+    """
+    value = model_info.get(SPEC_KEY)
+    if value in (None, {}, ""):
+        return None
+    if not isinstance(value, (str, dict)):
+        raise ImageSpecError(
+            f"{SPEC_KEY} in model card must be an object or '${{image_spec}}', "
+            f"got {type(value).__name__}"
+        )
+    from omegaconf import OmegaConf
+    from omegaconf.errors import OmegaConfBaseException
+
+    folder = model_info.get("_fs_rel_path")
+    spec_path = os.path.join(root, "scripts", folder, SPEC_FILE) if folder else None
+    nodes: typing.Dict[str, typing.Any] = {"card": value}
+    if spec_path and os.path.exists(spec_path):
+        nodes[SPEC_KEY] = OmegaConf.to_container(OmegaConf.load(spec_path))
+    if os.path.exists(os.path.join(root, MATRIX_FILE)):
+        nodes["compat"] = matrix_node(root)
+    try:
+        resolved = OmegaConf.to_container(OmegaConf.create(nodes), resolve=True)["card"]
+    except OmegaConfBaseException as e:
+        where = (spec_path if spec_path and os.path.exists(spec_path)
+                 else f"no {SPEC_FILE} next to the card's models.json")
+        raise ImageSpecError(f"{model_info.get('name')}: {SPEC_KEY} reference: {e} "
+                             f"[{where}]") from None
+    if isinstance(resolved, dict) and "extends" in resolved:
+        base = resolved.pop("extends")
+        if not isinstance(base, dict):
+            raise ImageSpecError(f"{model_info.get('name')}: 'extends' must name a spec")
+        resolved = _deep_merge(base, resolved)
+    if not isinstance(resolved, dict):
+        raise ImageSpecError(f"{model_info.get('name')}: {SPEC_KEY} must resolve to an object")
+    return resolved
+
+
 def effective_image_spec(
-    model_info: typing.Dict, ctx: typing.Dict
+    model_info: typing.Dict, ctx: typing.Dict, root: str = "."
 ) -> typing.Optional[typing.Dict]:
     """Card ``image_spec`` with context ``image_spec`` deep-merged over it.
 
     Returns None when neither declares one, which keeps the card on its
     hand-written Dockerfile.
     """
-    card = model_info.get(SPEC_KEY) or {}
+    card = _card_spec(model_info, root) or {}
     override = (ctx.get(SPEC_KEY) if isinstance(ctx, dict) else None) or {}
-    for name, value in (("model card", card), ("additional context", override)):
-        if not isinstance(value, dict):
-            raise ImageSpecError(
-                f"{SPEC_KEY} in {name} must be an object, got {type(value).__name__}"
-            )
+    if not isinstance(override, dict):
+        raise ImageSpecError(
+            f"{SPEC_KEY} in additional context must be an object, "
+            f"got {type(override).__name__}"
+        )
     if not card and not override:
         return None
     spec = _deep_merge(card, override)
@@ -163,318 +196,54 @@ def effective_image_spec(
             f"unknown {SPEC_KEY} key(s): {', '.join(sorted(unknown))}; "
             f"expected a subset of {', '.join(sorted(_SPEC_KEYS))}"
         )
-    if spec.get("stack") and set(spec) - _STACK_KEYS:
-        raise ImageSpecError(
-            f"{SPEC_KEY} with 'stack' takes only {', '.join(sorted(_STACK_KEYS))}; "
-            f"change artifacts with 'override', got "
-            f"{', '.join(sorted(set(spec) - _STACK_KEYS))}"
-        )
     return spec
 
 
-def backend_prefix(spec: typing.Dict) -> str:
-    return spec.get("backend") or DEFAULT_BACKEND
-
-
 def dockerfile_prefix(
-    spec: typing.Dict, gpu_arch: typing.Optional[str] = None, root: str = "."
+    spec: typing.Dict,
+    gpu_arch: typing.Optional[str] = None,
+    root: str = ".",
+    name: str = SPEC_KEY,
 ) -> str:
-    """Dockerfile prefix a spec builds: the shared backend, or a generated
-    Dockerfile for a stack lock (written under .madengine/build/)."""
-    if spec.get("stack"):
-        return _resolve_stack(spec, None, gpu_arch, root).dockerfile_prefix
-    return backend_prefix(spec)
+    """Prefix of the Dockerfile generated for a spec (under .madengine/build/)."""
+    return _resolve_composed(spec, gpu_arch, root, name).dockerfile_prefix
 
 
-def _resolve_stack(
-    spec: dict, vendor: typing.Optional[str], gpu_arch: typing.Optional[str], root: str
-) -> "BuildPlan":
-    from madengine.stack import dockerfile, lock
+def _resolve_composed(
+    spec: dict, gpu_arch: typing.Optional[str], root: str, name: str
+) -> BuildPlan:
+    from madengine.stack import compose, dockerfile
 
     try:
-        data = lock.load(spec["stack"], root)
-        arch = spec.get("gpu_arch") or gpu_arch
-        resolved = lock.resolve(data, arch, spec.get("override"))
-        lock_vendor = ((data.get("platform") or {}).get("vendor") or "AMD").upper()
-        if vendor and vendor.upper() != lock_vendor:
+        plan = compose.compose(spec, load_matrix(root), gpu_arch)
+    except compose.ComposeError as e:
+        raise ImageSpecError(f"{name}: {e}") from None
+    if any(not i["authorized"] for i in plan["items"]):
+        # A build outside the matrix: verify what its wheel declares against the
+        # rest of the plan before spending a build on it.
+        problems = compose.check(plan)
+        if problems:
             raise ImageSpecError(
-                f"stack '{data['name']}' is locked for {lock_vendor}, not {vendor}"
+                f"{name}: unauthorized component is inconsistent:\n  "
+                + "\n  ".join(problems)
             )
-        if spec.get("override"):
-            # Overrides are where cross-stack mismatches come from; verify the
-            # declared pins between artifacts before spending a build on them.
-            problems = lock.check(resolved)
-            if problems:
-                raise ImageSpecError(
-                    "stack override is inconsistent:\n  " + "\n  ".join(problems)
-                )
-    except lock.LockError as e:
-        raise ImageSpecError(str(e)) from None
-    lock_digest = hashlib.sha256(
-        json.dumps(resolved, sort_keys=True).encode()
-    ).hexdigest()[:12]
-    completion = (
-        lock.completion_requirements(resolved) if resolved.get("exclude") else None
-    )
-    prefix = dockerfile.write(resolved, lock_digest, lock_vendor, root, completion)
-    plan = BuildPlan(
-        lock_vendor,
-        prefix,
-        {},
-        spec,
-        {
-            "stack": data["name"],
-            "lock_digest": lock_digest,
-            "gpu_arch": arch or "",
-            "platform": data.get("platform") or {},
-            "components": lock.components(resolved),
-            "overridden": sorted(
-                i["name"] for k in ("artifacts", "sources")
-                for i in resolved.get(k) or [] if i.get("overridden")
-            ),
-            "excluded": resolved.get("exclude") or [],
-            "validated": data.get("validated"),
-        },
-    )
-    return plan
-
-
-def load_matrix(vendor: str, root: str = ".") -> typing.Dict:
-    """Load ``compat/<rocm|cuda>.json`` from the MAD checkout at *root*."""
-    filename = _VENDOR_MATRIX.get(vendor.upper())
-    if not filename:
-        raise ImageSpecError(f"no compat matrix for GPU vendor '{vendor}'")
-    path = os.path.join(root, COMPAT_DIR, filename)
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except FileNotFoundError:
-        raise ImageSpecError(
-            f"{path} not found; image_spec needs the MAD compat matrices "
-            f"(run from the MAD root or set MODEL_DIR)"
-        ) from None
-
-
-def _version_key(version: str) -> typing.Tuple[int, ...]:
-    return tuple(int(p) for p in re.findall(r"\d+", version.split("+")[0]))
-
-
-def _version_matches(want: str, have: str) -> bool:
-    """``2.6`` matches ``2.6.0+cu124``; ``2.6.1`` does not match ``2.6.0``."""
-    want_key = _version_key(want)
-    return _version_key(have)[: len(want_key)] == want_key
-
-
-def _component_url(component: typing.Dict, vendor: str) -> typing.Optional[str]:
-    per_vendor = component.get(vendor.lower())
-    if isinstance(per_vendor, dict) and per_vendor.get("url"):
-        return per_vendor["url"]
-    if "amd" in component or "nvidia" in component:
-        return None  # vendor-specific component not meant for this vendor
-    return component.get("url")
-
-
-def _common_args(spec: typing.Dict, vendor: str) -> typing.Tuple[dict, dict]:
-    args: typing.Dict[str, str] = {}
-    resolved: typing.Dict[str, typing.Any] = {}
-
-    components = spec.get("components") or []
-    urls, used = [], []
-    for i, component in enumerate(components):
-        if not isinstance(component, dict):
-            raise ImageSpecError(f"components[{i}] must be an object")
-        url = _component_url(component, vendor)
-        if not url:
-            continue
-        if "," in url:
-            raise ImageSpecError(
-                f"components[{i}] url must be a single URL (',' separates components)"
-            )
-        urls.append(url)
-        entry = {k: v for k, v in component.items() if k not in ("amd", "nvidia")}
-        entry["url"] = url
-        used.append(entry)
-    resolved["components"] = used
-
-    sources = []
-    for i, source in enumerate(spec.get("sources") or []):
-        repo, commit = (source or {}).get("repo"), (source or {}).get("commit")
-        if not repo or not commit:
-            raise ImageSpecError(f"sources[{i}] needs both 'repo' and 'commit'")
-        if not re.fullmatch(r"[0-9a-fA-F]{7,40}", commit):
-            raise ImageSpecError(
-                f"sources[{i}].commit must be a commit SHA, got '{commit}'"
-            )
-        sources.append(f"{repo.rstrip('/')}/commit/{commit}")
-    if sources:
-        args["COMPONENT_REPOS"] = ",".join(sources)
-
-    pip = spec.get("pip") or []
-    if isinstance(pip, str):
-        pip = pip.split()
-    if pip:
-        args["PIP_PREREQS_EXTRA"] = " ".join(pip)
-
-    shas = [c.get("sha256", "") for c in used]
-    if any(shas):
-        args["COMPONENT_SHA256"] = ",".join(shas)
-
-    return args, {"component_urls": urls, **resolved}
-
-
-def _resolve_amd(spec: dict, matrix: dict, gpu_arch: typing.Optional[str]) -> BuildPlan:
-    rocm_spec = spec.get("rocm") or {}
-    version = str(rocm_spec.get("version") or matrix.get("default_version") or "")
-    releases = matrix.get("releases") or {}
-    if version not in releases:
-        raise ImageSpecError(
-            f"ROCm {version or '(unset)'} is not in compat/rocm.json; "
-            f"known: {', '.join(sorted(releases, key=_version_key)) or 'none'}"
-        )
-    release = releases[version]
-    install = rocm_spec.get("install") or release.get("default_install", "therock")
-    if install not in ("therock", "legacy"):
-        raise ImageSpecError(f"rocm.install must be therock or legacy, got '{install}'")
-
-    args, resolved = _common_args(spec, "AMD")
-    urls = resolved.pop("component_urls")
-    args["INSTALL_TYPE"] = install
-    arch = spec.get("gpu_arch") or gpu_arch
-    # TheRock wheels carry GPU kernels as per-target extras (device-gfx942);
-    # device-all covers every target when the arch is unknown at build time.
-    device = f"device-{arch}" if arch else "device-all"
-    if install == "therock":
-        index = rocm_spec.get("index_url") or release.get("therock_index_url")
-        if not index:
-            raise ImageSpecError(
-                f"ROCm {version} has no TheRock index in compat/rocm.json"
-            )
-        args["ROCM_RELEASE_URL_THEROCK"] = index
-        pin = release.get("rocm_pip_spec", "")
-        args["ROCM_EXTRAS"] = f"rocm[libraries,devel,{device}]{pin}"
-        if urls:
-            args["COMPONENT_RELEASE_URL_THEROCK"] = ",".join(urls)
-    else:
-        installer = rocm_spec.get("index_url") or release.get("legacy_installer_url")
-        if not installer:
-            raise ImageSpecError(
-                f"ROCm {version} has no legacy installer in compat/rocm.json"
-            )
-        args["ROCM_RELEASE_URL_LEGACY"] = installer
-        if urls:
-            args["COMPONENT_RELEASE_URL_LEGACY"] = ",".join(urls)
-
-    base = spec.get("base") or "auto"
-    if base == "auto":
-        args["BASE_DOCKER"] = matrix.get("bare_os_base", "ubuntu:24.04")
-        args["DOCKER_TYPE"] = "BARE_OS"
-    else:
-        args["BASE_DOCKER"] = base
-        args["DOCKER_TYPE"] = "auto"
-
-    if arch:
-        args["GPU_ARCH"] = arch
-
-    torch = str(spec.get("torch") or "")
-    if torch:
-        index = (release.get("torch_index_url") or {}).get(install)
-        if not index:
-            raise ImageSpecError(
-                f"compat/rocm.json has no torch index for ROCm {version} ({install})"
-            )
-        # "2.10" means any 2.10.x; a full version pins exactly.
-        pin = f"{torch}.*" if torch.count(".") == 1 else torch
-        extras = f"[{device}]" if install == "therock" else ""
-        args["TORCH_PACKAGES"] = f"torch{extras}=={pin}"
-        # One TheRock index serves torch builds for several ROCm releases, and
-        # each pins its own rocm; resolving both together picks the matching one.
-        if install == "therock" and release.get("rocm_pip_spec"):
-            args["TORCH_PACKAGES"] += f" rocm{release['rocm_pip_spec']}"
-        args["TORCH_INDEX_URL"] = index
-
-    resolved.update(
-        {"rocm_version": version, "install": install, "base": args["BASE_DOCKER"],
-         "gpu_arch": arch or ""}
-    )
-    return BuildPlan("AMD", backend_prefix(spec), args, spec, resolved)
-
-
-def _pick_torch(matrix: dict, torch: str, cuda: typing.Optional[str]) -> dict:
-    candidates = [
-        e for e in matrix.get("torch") or []
-        if e.get("CUDA") and _version_matches(torch, e["Torch"])
-        and (not cuda or _version_key(e["CUDA"]) <= _version_key(cuda))
-    ]
-    if not candidates:
-        raise ImageSpecError(
-            f"no torch {torch} build for CUDA {cuda or 'any'} in compat/cuda.json"
-        )
-    return max(
-        candidates, key=lambda e: (_version_key(e["CUDA"]), _version_key(e["Torch"]))
-    )
-
-
-def _pick_cuda_base(matrix: dict, cuda: str) -> dict:
-    candidates = [
-        e for e in matrix.get("base_images") or []
-        if _version_matches(cuda, e["CUDA"])
-    ]
-    if not candidates:
-        raise ImageSpecError(
-            f"no nvidia/cuda base image for CUDA {cuda} in compat/cuda.json"
-        )
-    # Devel images carry nvcc, which source components need.
-    return max(
-        candidates,
-        key=lambda e: (
-            bool(e.get("IsDevel")),
-            _version_key(e["CUDA"]),
-            _version_key(e.get("CuDNN", "0")),
-            _version_key(e.get("Ubuntu", "0")),
-        ),
-    )
-
-
-def _resolve_nvidia(spec: dict, matrix: dict) -> BuildPlan:
-    cuda_spec = spec.get("cuda") or {}
-    cuda = str(cuda_spec.get("version") or "") or None
-    torch = spec.get("torch")
-
-    args, resolved = _common_args(spec, "NVIDIA")
-    urls = resolved.pop("component_urls")
-    if urls:
-        args["COMPONENT_WHEEL_URLS"] = ",".join(urls)
-
-    if torch:
-        entry = _pick_torch(matrix, str(torch), cuda)
-        # Build on the CUDA torch was compiled for; a requested version is a ceiling.
-        if cuda:
-            resolved["cuda_requested"] = cuda
-        cuda = entry["CUDA"]
-        packages = [f"torch=={entry['Torch'].split('+')[0]}"]
-        if entry.get("Torchvision"):
-            packages.append(f"torchvision=={entry['Torchvision'].split('+')[0]}")
-        if entry.get("Torchaudio"):
-            packages.append(f"torchaudio=={entry['Torchaudio'].split('+')[0]}")
-        args["TORCH_PACKAGES"] = " ".join(packages)
-        if entry.get("ExtraIndexURL"):
-            args["TORCH_INDEX_URL"] = entry["ExtraIndexURL"]
-        resolved["torch"] = entry["Torch"]
-    cuda = cuda or matrix.get("default_cuda")
-    if not cuda:
-        raise ImageSpecError("image_spec needs cuda.version or torch for NVIDIA")
-
-    base = spec.get("base") or "auto"
-    if base == "auto":
-        image = _pick_cuda_base(matrix, cuda)
-        args["BASE_DOCKER"] = f"nvidia/cuda:{image['Tag']}"
-    else:
-        args["BASE_DOCKER"] = base
-    if spec.get("python"):
-        args["PYTHON_VERSION"] = str(spec["python"])
-
-    resolved.update({"cuda_version": cuda, "base": args["BASE_DOCKER"]})
-    return BuildPlan("NVIDIA", backend_prefix(spec), args, spec, resolved)
+    resolved = {
+        "components": {i["name"]: i["key"] for i in plan["items"]},
+        "order": [i["name"] for i in plan["items"]],
+        "pulled_in": {i["name"]: i["why"] for i in plan["items"]
+                      if i["why"].startswith("required by")},
+        "unauthorized": [i["name"] for i in plan["items"] if not i["authorized"]],
+        "excluded": plan["exclude"],
+        "base": plan["base"],
+        "python": plan["python"],
+        "gpu_arch": plan["gpu_arch"],
+    }
+    digest = hashlib.sha256(json.dumps(
+        {"plan": [(i["name"], i["key"], i["entry"]) for i in plan["items"]],
+         "spec": spec}, sort_keys=True, default=str).encode()).hexdigest()[:12]
+    completion = compose.completion_requirements(plan) if plan["exclude"] else None
+    prefix = dockerfile.write(plan, name, digest, "AMD", root, completion)
+    return BuildPlan("AMD", prefix, {}, spec, resolved)
 
 
 def resolve(
@@ -482,30 +251,17 @@ def resolve(
     vendor: str,
     gpu_arch: typing.Optional[str] = None,
     root: str = ".",
-    matrix: typing.Optional[typing.Dict] = None,
+    name: str = SPEC_KEY,
 ) -> BuildPlan:
-    """Resolve *spec* for one vendor into a BuildPlan."""
-    vendor = (vendor or "").upper()
-    if spec.get("stack"):
-        plan = _resolve_stack(spec, vendor, gpu_arch, root)
-        plan.build_args[BUILD_PLAN_ARG] = json.dumps(
-            {"digest": plan.digest(), "spec": spec, "resolved": plan.resolved},
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        return plan
-    if matrix is None:
-        matrix = load_matrix(vendor, root)
-    if vendor == "AMD":
-        plan = _resolve_amd(spec, matrix, gpu_arch)
-    elif vendor == "NVIDIA":
-        plan = _resolve_nvidia(spec, matrix)
-    else:
+    """Resolve *spec* into a BuildPlan. image_spec builds AMD images."""
+    if (vendor or "").upper() != "AMD":
         raise ImageSpecError(f"image_spec does not support GPU vendor '{vendor}'")
+    plan = _resolve_composed(spec, gpu_arch, root, name)
     plan.build_args[BUILD_PLAN_ARG] = json.dumps(
         {"digest": plan.digest(), "spec": spec, "resolved": plan.resolved},
         sort_keys=True,
         separators=(",", ":"),
+        default=str,
     )
     return plan
 

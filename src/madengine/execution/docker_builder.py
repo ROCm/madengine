@@ -322,7 +322,10 @@ class DockerBuilder:
                 "MAD_SYSTEM_GPU_ARCHITECTURE"
             )
             build_plan = image_spec.resolve(
-                spec, self._infer_gpu_vendor_from_dockerfile(dockerfile), gpu_arch
+                spec,
+                self._infer_gpu_vendor_from_dockerfile(dockerfile),
+                gpu_arch,
+                name=model_info["name"],
             )
             for plan_arg, plan_value in build_plan.build_args.items():
                 if (
@@ -887,6 +890,7 @@ class DockerBuilder:
                 self.context.ctx.get("docker_build_arg", {}).get(
                     "MAD_SYSTEM_GPU_ARCHITECTURE"
                 ),
+                name=model_info["name"],
             )
             if spec
             else model_info["dockerfile"]
