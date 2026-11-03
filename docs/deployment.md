@@ -192,7 +192,12 @@ script **unchanged**:
 
 - one pod per node of the card: an Indexed Job (`completions = nnodes`, one attempt)
   with a headless Service, so pods reach each other by hostname (`<job>-0`, `<job>-1`, ...);
-- every pod runs the card's image; pod 0 runs the card's script with the `SLURM_*`
+- every pod runs the card's image. When the card's scripts reach their nodes through
+  MAD's `scripts/common/dispatch/dispatch.sh`, every pod runs the card's script as its
+  own node (`MAD_DISPATCH=k8s-indexed`): the pods meet in a rendezvous directory on the
+  results volume, each starts its own node's part, and pod 0 makes the verdict and
+  publishes the results; only the `docker` and `scontrol` stand-ins are on `PATH`.
+  Otherwise (older MAD scripts) pod 0 runs the card's script with the `SLURM_*`
   variables a batch script sees, and with stand-ins for `srun`, `docker` and
   `scontrol` first on `PATH`. `srun` sends each task to the named pod; `docker run`
   runs its command in the pod itself (the pod is the container), applying `-e` and

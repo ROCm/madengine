@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **slurm_multi cards on Kubernetes run per pod**: when the card's scripts reach their nodes through MAD's `dispatch.sh`, every pod runs the card's script as its own node (`MAD_DISPATCH=k8s-indexed`) and pod 0 makes the verdict; the `srun` stand-in and the agent are only used for older MAD scripts.
+
 ### Fixed
 
 - **Placeholder Docker Hub credentials no longer log in** (#192): `tests/fixtures/dummy/credential.json` shipped `your-docker-username` / `your-docker-token`. Those values are non-blank, so e2e builds ran `docker login`, failed with `unauthorized`, and then hit Docker Hub's anonymous pull rate limit. Template usernames and passwords are now ignored the same way blank ones are. A real username and password still logs in, including a username such as `your-company`.
