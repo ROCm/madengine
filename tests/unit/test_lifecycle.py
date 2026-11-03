@@ -543,6 +543,47 @@ time.sleep(60)
         assert code == 130, out
         assert "stopping containers" in out
 
+    @pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+    def test_a_signal_during_a_console_write_still_tears_down(self, tmp_path, signum):
+        """The signal lands while the main thread is inside a write to stdout.
+
+        The child blocks writing 1 MB to a pipe nobody reads yet, so it sits in
+        the buffered writer when the signal arrives. The handler's own print to
+        that stream used to raise "reentrant call inside <_io.BufferedWriter>"
+        before any teardown: no cancel hook, exit status 1.
+        """
+        marker = tmp_path / "cancelled"
+        child = f"""
+import sys
+from madengine.core import lifecycle
+
+lifecycle.register_cancel_hook(lambda: open({str(marker)!r}, "w").write("ran"))
+lifecycle.install_signal_handlers()
+print("ready", file=sys.stderr, flush=True)
+sys.stdout.write("x" * (1 << 20))
+sys.stdout.flush()
+"""
+        env = dict(os.environ, MADENGINE_STATE_DIR=str(tmp_path / "state"))
+        proc = subprocess.Popen(
+            [sys.executable, "-c", child],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            env=env,
+        )
+        try:
+            assert proc.stderr.readline().strip() == "ready"
+            time.sleep(0.5)                     # into the blocked write
+            proc.send_signal(signum)
+            out, err = proc.communicate(timeout=60)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+        assert proc.returncode == 130, err
+        assert "stopping containers" in out + err
+        assert marker.read_text() == "ran"
+
     def test_signal_runs_the_cancel_hook(self, tmp_path):
         marker = tmp_path / "cancelled"
         child = f"""
