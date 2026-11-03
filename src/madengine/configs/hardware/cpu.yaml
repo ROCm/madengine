@@ -1,0 +1,12 @@
+# @package _global_
+gpu_vendor: null
+guest_os: UBUNTU
+
+runtime:
+  devices: []
+  capabilities: []
+  security_opts: []
+  network_mode: null
+  ipc: null
+  groups: []
+  use_gpu_flag: false

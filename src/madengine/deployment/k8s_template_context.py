@@ -10,18 +10,23 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import json
 import os
+import shlex
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .common import canonicalize_distributed_launcher, configure_multi_node_profiling
+from .common import (
+    canonicalize_distributed_launcher,
+    configure_multi_node_profiling,
+    resolve_distributed_launch,
+)
 from .k8s_names import sanitize_k8s_container_name, sanitize_k8s_label_value
+from .k8s_pvc import RESULTS_LAYOUT_PER_POD, SHARED_DATA_PVC_NAME
 from .k8s_secrets import (
     CONFIGMAP_MAX_BYTES,
     SECRETS_STRATEGY_FROM_LOCAL,
-    build_registry_secret_data,
     estimate_configmap_payload_bytes,
+    image_pull_secret_refs_for_job,
     merge_secrets_config,
-    resolve_image_pull_secret_refs,
     resolve_runtime_secret_name,
 )
 from .primus_backend import (
@@ -35,6 +40,53 @@ from madengine.core.image_digest import resolve_pinned_image
 from madengine.core.timeout import resolve_run_timeout
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.path_utils import get_madengine_root
+
+
+def _node_pullable_image(image: Optional[str]) -> Optional[str]:
+    """Return ``image`` when a Kubernetes node can pull it.
+
+    Local builds are tagged ``ci-<model>_<dockerfile>`` and exist only on the
+    machine that built them. Model cards use angle-bracket placeholders such
+    as ``<supply-your-image>``. Neither is a registry reference.
+    """
+    candidate = (image or "").strip()
+    if not candidate or candidate.startswith("ci-"):
+        return None
+    if candidate.startswith("<") or candidate.endswith(">"):
+        return None
+    return candidate
+
+
+def _k8s_pullable_image(image_info: Dict, model_name: str) -> str:
+    """Choose the image reference the pod should pull.
+
+    ``registry_image`` wins. When it is unset and the push did not fail,
+    ``docker_image`` is used if it is a registry reference. ``--use-image``
+    writes only ``docker_image``. A failed push is never papered over with
+    the local tag.
+    """
+    if image_info.get("push_failed"):
+        chosen = None
+    else:
+        chosen = image_info.get("registry_image") or _node_pullable_image(
+            image_info.get("docker_image")
+        )
+    if chosen:
+        return chosen
+
+    detail = image_info.get("push_error") or "the image was not pushed"
+    raise ConfigurationError(
+        f"Kubernetes requires a registry image for model '{model_name}', "
+        f"but none is available: {detail}",
+        suggestions=[
+            "Fix Docker Hub credentials, or use an existing `docker login`",
+            "Set dockerhub.repository to a real namespace/repo; "
+            "template values such as your-org/your-repo are ignored",
+            "Re-run after the image push succeeds",
+            "For a prebuilt image, pass a registry reference with --use-image; "
+            "a local ci- tag cannot be pulled by the cluster",
+        ],
+    )
 
 
 class KubernetesTemplateContextMixin:
@@ -130,25 +182,41 @@ class KubernetesTemplateContextMixin:
         # Store for use in deploy() method
         self._data_config = data_config
 
-        # K8s best practice: Auto-create shared data PVC if needed
-        # K8s philosophy: Separate compute (pods) from storage (PVC)
-        if data_config and not self.k8s_config.get("data_pvc"):
-            # PVC will be auto-created during deployment
-            # Use consistent name for reusability across training runs
-            self.console.print(
-                f"[cyan]📦 Data provider detected: Will auto-create shared data PVC[/cyan]"
+        # A data provider needs /data. Use the shared claim only when it is
+        # ReadWriteMany. Otherwise each pod gets its own local disk.
+        data_per_pod = False
+        self._data_layout = None
+        if data_config:
+            explicit_pvc = self.k8s_config.get("data_pvc")
+            mode = (self.k8s_config.get("data_layout") or "auto").strip().lower()
+            named_other_claim = (
+                explicit_pvc
+                and explicit_pvc != SHARED_DATA_PVC_NAME
+                and mode != RESULTS_LAYOUT_PER_POD
             )
-            self.console.print(
-                f"[dim]   PVC name: madengine-shared-data (reusable across runs)[/dim]"
-            )
-            self.console.print(
-                f"[dim]   Access mode: RWO for single-node, RWX for multi-node (auto-selected)[/dim]"
-            )
-            self.console.print(
-                f"[dim]   To use existing PVC, add 'data_pvc' to your K8s config[/dim]"
-            )
-            # Set PVC name now so templates are rendered with correct value
-            self.k8s_config["data_pvc"] = "madengine-shared-data"
+            if named_other_claim:
+                self._data_layout = "shared"
+            else:
+                self._data_layout = self._select_data_layout()
+                if self._data_layout == RESULTS_LAYOUT_PER_POD:
+                    data_per_pod = True
+                    self.console.print(
+                        "[cyan]Data provider detected: each pod gets a local "
+                        "/data volume[/cyan]"
+                    )
+                    self.console.print(
+                        "[dim]   madengine-shared-data is not created. An existing "
+                        "claim that is not ReadWriteMany is left unmounted.[/dim]"
+                    )
+                else:
+                    self.console.print(
+                        "[cyan]Data provider detected: using shared data PVC[/cyan]"
+                    )
+                    self.console.print(
+                        "[dim]   PVC name: madengine-shared-data "
+                        "(reusable across runs)[/dim]"
+                    )
+                    self.k8s_config["data_pvc"] = SHARED_DATA_PVC_NAME
 
         # Determine data provider script if model needs data
         data_provider_script = None
@@ -167,37 +235,19 @@ class KubernetesTemplateContextMixin:
                 else:
                     self.console.print(f"[yellow]Warning: K8s script not found: {k8s_script_path}[/yellow]")
 
-        # Get launcher configuration from manifest's deployment_config or additional_context
-        deployment_config = self.manifest.get("deployment_config", {})
-        distributed_config = deployment_config.get("distributed", {})
-        launcher_config = self.config.additional_context.get("launcher", {})
-
-        # Merge manifest and runtime launcher config (runtime overrides)
-        # Use explicit None checking to handle 0 values correctly
-        launcher_type = (
-            launcher_config.get("type")
-            if launcher_config.get("type") is not None
-            else distributed_config.get("launcher")
+        # Runtime additional_context.distributed is the documented CLI shape
+        # (madengine run --additional-context). launcher.type overrides it.
+        # The manifest copy is only the fallback from build time.
+        launch = resolve_distributed_launch(
+            self.config.additional_context, self.manifest, model_info
         )
-
-        nnodes = (
-            launcher_config.get("nnodes")
-            if launcher_config.get("nnodes") is not None
-            else distributed_config.get("nnodes", 1)
-        )
+        launcher_type = launch["launcher"]
+        nnodes = launch["nnodes"]
+        nproc_per_node = launch["nproc_per_node"]
+        master_port = launch["master_port"]
 
         # Store for use in deploy() method
         self._nnodes = nnodes
-
-        nproc_per_node = (
-            launcher_config.get("nproc_per_node")
-            if launcher_config.get("nproc_per_node") is not None
-            else distributed_config.get("nproc_per_node")
-            if distributed_config.get("nproc_per_node") is not None
-            else int(model_info.get("n_gpus", 1))
-        )
-
-        master_port = launcher_config.get("master_port", 29500)
 
         # Validate configuration
         if launcher_type == "torchrun":
@@ -240,7 +290,7 @@ class KubernetesTemplateContextMixin:
 
             self.console.print(f"[cyan]Configuring SGLang: {nnodes} nodes × {nproc_per_node} GPUs/node[/cyan]")
 
-        elif launcher_type == "megatron":
+        elif launcher_type == "megatron-lm":
             if not isinstance(nnodes, int) or nnodes < 1:
                 raise ValueError(f"Invalid nnodes: {nnodes}. Must be positive integer >= 1")
             if not isinstance(nproc_per_node, int) or nproc_per_node < 1:
@@ -361,7 +411,7 @@ class KubernetesTemplateContextMixin:
                 model_script=model_info.get("scripts", "run.sh")
             )
 
-        elif launcher_type == "megatron":
+        elif launcher_type == "megatron-lm":
             if nnodes > 1:
                 create_headless_service = True
                 self.console.print(f"[dim]Multi-node Megatron-LM: Creating headless service for pod discovery[/dim]")
@@ -443,15 +493,6 @@ class KubernetesTemplateContextMixin:
         cred_path = Path("credential.json")
         cred_exists = cred_path.exists()
 
-        created_pull_preview: List[str] = []
-        if cred_exists and strategy == SECRETS_STRATEGY_FROM_LOCAL:
-            try:
-                parsed = json.loads(cred_path.read_text(encoding="utf-8"))
-                if build_registry_secret_data(parsed):
-                    created_pull_preview.append(f"{self.job_name}-registry-pull")
-            except (json.JSONDecodeError, OSError):
-                pass
-
         if strategy == SECRETS_STRATEGY_FROM_LOCAL:
             include_credential_in_configmap = not cred_exists
         else:
@@ -466,8 +507,8 @@ class KubernetesTemplateContextMixin:
             strategy, merged_sec, created_runtime_name
         )
 
-        image_pull_secrets = resolve_image_pull_secret_refs(
-            strategy, merged_sec, created_pull_preview
+        image_pull_secrets = image_pull_secret_refs_for_job(
+            self.k8s_config, self.job_name, cred_path
         )
 
         ap_prof = self.k8s_config.get("allow_privileged_profiling")
@@ -476,19 +517,20 @@ class KubernetesTemplateContextMixin:
         else:
             privileged_profiling = bool(ap_prof)
 
-        _pytorch_native = frozenset(
-            {"torchrun", "deepspeed", "torchtitan", "megatron", "primus"}
-        )
-        subdomain_val = (
-            self.service_name
-            if nnodes > 1 and launcher_type in _pytorch_native
-            else None
-        )
+        # Any launcher that created a headless Service needs the pod subdomain,
+        # including vLLM and SGLang. Without it, pod-0 DNS does not resolve.
+        subdomain_val = self.service_name if create_headless_service else None
+
+        # A failed push, a local ci- tag, or a placeholder cannot be pulled by
+        # a Kubernetes node. --use-image stores a prebuilt registry reference
+        # in docker_image and leaves registry_image unset; that reference is
+        # usable. registry_image wins when both are set.
+        registry_image = _k8s_pullable_image(image_info, model_name)
 
         # Under require_pinned_image the pod pulls repo@sha256:... so a moved tag
         # surfaces as an ImagePullBackOff rather than a silent wrong-image run.
         resolved_image = resolve_pinned_image(
-            image_info["registry_image"],
+            registry_image,
             image_info.get("image_digest"),
             bool(additional_context.get("require_pinned_image")),
             model_name=model_name,
@@ -550,7 +592,8 @@ class KubernetesTemplateContextMixin:
             "gpu_architecture": self.manifest.get("context", {}).get(
                 "gpu_architecture", "gfx90a"
             ),
-            "model_script": f"{model_info.get('scripts', 'run.sh')} {model_info.get('args', '')}".strip(),
+            "model_script": model_info.get("scripts", "run.sh"),
+            "model_command": self._build_model_command(model_info),
             "launcher_type": launcher_type,
             "launcher_command": launcher_command,
             "nnodes": nnodes,
@@ -563,10 +606,18 @@ class KubernetesTemplateContextMixin:
             "timeout": resolve_run_timeout(model_info, self.config.cli_timeout),
             # Environment - Merge base env vars with data/tools env vars
             "env_vars": self._prepare_env_vars(model_info),
+            # Env vars whose values come from a Secret. Empty for ordinary jobs.
+            "secret_env": [],
             # Volumes
-            "results_pvc": f"{self.job_name}-results",  # Always create a PVC for results
+            "results_pvc": f"{self.job_name}-results",  # Shared results PVC when layout is shared
             "pvc_name": f"{self.job_name}-results",      # PVC name for template
-            "data_pvc": self.k8s_config.get("data_pvc"),
+            "results_per_pod": self._results_use_per_pod(nnodes),
+            "results_storage_class": self._k8s_local_results_storage_class(),
+            "results_storage_size": self.k8s_config.get("results_storage_size", "10Gi"),
+            "data_pvc": None if data_per_pod else self.k8s_config.get("data_pvc"),
+            "data_per_pod": data_per_pod,
+            "data_storage_class": self._k8s_local_results_storage_class(),
+            "data_storage_size": self.k8s_config.get("data_storage_size", "100Gi"),
             # Multi-node
             "create_headless_service": create_headless_service,
             "service_name": self.service_name,
@@ -580,7 +631,7 @@ class KubernetesTemplateContextMixin:
                 self._get_tools_config(), "bash /tmp/run_launcher.sh"
             ) if launcher_command else None,
             "direct_script_tool_chain": self._build_tool_command_chain(
-                self._get_tools_config(), f"bash {model_info.get('scripts', 'run.sh')}"
+                self._get_tools_config(), self._build_model_command(model_info)
             ),
             # Pre/Post scripts - includes rocEnvTool and any user-defined scripts
             "pre_scripts": pre_scripts,
@@ -663,6 +714,20 @@ class KubernetesTemplateContextMixin:
         # Cache the result for subsequent calls
         self._cached_tools_config = result
         return result
+
+    @staticmethod
+    def _build_model_command(model_info: Dict) -> str:
+        """
+        Build the ``bash <script> <args>`` command for the direct-script branch.
+
+        The card's ``args`` are shell-quoted one word at a time, as the local and
+        SLURM paths do, so an arg with spaces or shell metacharacters reaches the
+        script as a single argument and is never evaluated.
+        """
+        script = model_info.get("scripts", "run.sh")
+        args = model_info.get("args", "")
+        args_q = " ".join(shlex.quote(a) for a in shlex.split(args)) if args else ""
+        return f"bash {script} {args_q}".rstrip()
 
     def _build_tool_command_chain(self, tools_config: List[Dict], base_command: str) -> str:
         """
@@ -773,6 +838,13 @@ class KubernetesTemplateContextMixin:
             Merged environment variables dict
         """
         env_vars = {}
+
+        # Manifest docker_env_vars are below every other source. The deployment
+        # reads additional_context, and this is the map the pod template renders.
+        docker_env = self.config.additional_context.get("docker_env_vars") or {}
+        if isinstance(docker_env, dict):
+            for key, value in docker_env.items():
+                env_vars[str(key)] = "" if value is None else str(value)
 
         # 1. Base environment variables from additional_context
         base_env = self.config.additional_context.get("env_vars", {})

@@ -1,0 +1,7 @@
+# @package _global_
+# Multi-arch preset: common AMD GPU architectures (same as --target-archs).
+# Override per job with --config build.target_archs=[gfx942] or --target-archs.
+build:
+  target_archs:
+    - gfx90a
+    - gfx942

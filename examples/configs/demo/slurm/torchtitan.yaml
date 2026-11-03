@@ -1,0 +1,26 @@
+# SLURM — TorchTitan LLM pre-training with TP + PP + FSDP2 (4 nodes × 8 GPUs)
+# madengine run --config examples/configs/demo/slurm/torchtitan.yaml
+
+model:
+  tags: [dummy_torchtitan]
+
+slurm:
+  partition: amd-rccl
+  nodes: 4
+  gpus_per_node: 8
+  time: "72:00:00"
+  output_dir: ./slurm_results
+  exclusive: true
+  mem: 512G
+  constraint: MI300X
+
+distributed:
+  enabled: true
+  launcher: torchtitan
+  nnodes: 4
+  nproc_per_node: 8
+  master_port: 29500
+
+env_vars:
+  OMP_NUM_THREADS: "8"
+  NCCL_DEBUG: WARN

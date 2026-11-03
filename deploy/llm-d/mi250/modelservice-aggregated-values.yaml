@@ -1,0 +1,80 @@
+multinode: false
+accelerator:
+  type: amd
+modelArtifacts:
+  name: Qwen/Qwen3-0.6B
+  uri: hf://Qwen/Qwen3-0.6B
+  size: 10Gi
+  authSecretName: llm-d-hf-token
+  mountPath: /model-cache
+routing:
+  servicePort: 8000
+  proxy:
+    enabled: false
+prefill:
+  create: false
+  replicas: 0
+decode:
+  create: true
+  replicas: 4
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: "100%"
+      maxSurge: 0
+  parallelism:
+    tensor: 1
+    data: 1
+    dataLocal: 1
+  imagePullSecrets:
+    - name: dockerhub-rocm
+  nodeSelector:
+    feature.node.kubernetes.io/amd-gpu: "true"
+  extraConfig:
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                llm-d.ai/role: decode
+            topologyKey: kubernetes.io/hostname
+  volumes:
+    - name: metrics-volume
+      emptyDir: {}
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 16Gi
+  containers:
+    - name: vllm
+      image: rocm/mad-private:ci-vllm_pyt_vllm_qwen3-8b_pyt_vllm.ubuntu.amd
+      imagePullPolicy: IfNotPresent
+      modelCommand: vllmServe
+      args:
+        - --max-model-len
+        - "8192"
+        - --gpu-memory-utilization
+        - "0.85"
+        - --enforce-eager
+      env:
+        - name: GPU_MAX_HW_QUEUES
+          value: "2"
+        - name: HSA_ENABLE_SDMA
+          value: "0"
+        - name: HIP_VISIBLE_DEVICES
+          value: "0"
+        - name: HF_HUB_ENABLE_HF_TRANSFER
+          value: "0"
+      resources:
+        requests:
+          cpu: "8"
+          memory: 32Gi
+        limits:
+          cpu: "16"
+          memory: 64Gi
+      mountModelVolume: true
+      volumeMounts:
+        - name: metrics-volume
+          mountPath: /.config
+        - name: shm
+          mountPath: /dev/shm

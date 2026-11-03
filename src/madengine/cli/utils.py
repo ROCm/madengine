@@ -110,6 +110,7 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
     """
     successful = summary.get("successful_builds", summary.get("successful_runs", []))
     failed = summary.get("failed_builds", summary.get("failed_runs", []))
+    skipped = summary.get("skipped_builds", [])
     
     # Detect if this is a RUN result with per-node data (vs BUILD result)
     has_node_data = False
@@ -311,8 +312,25 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
             table.add_row(*row)
             row_index += 1
 
+    # Pre-built image mode records a skip instead of a Docker build.
+    for item in skipped:
+        if isinstance(item, dict):
+            model_name = extract_model_name(item)
+        else:
+            model_name = str(item)
+        status = "⏭️ Skipped"
+        if has_node_data:
+            row = [str(row_index), status, model_name, "-", "-", "-"]
+        else:
+            row = [str(row_index), status, model_name]
+        if show_gpu_arch:
+            arch = build_gpu_arch_display(item) if isinstance(item, dict) else "N/A"
+            row.append(arch)
+        table.add_row(*row)
+        row_index += 1
+
     # Show empty state if no results
-    if not successful and not failed:
+    if not successful and not failed and not skipped:
         if has_node_data:
             row = ["1", "ℹ️ No items", "", "", "", ""]
         else:
@@ -322,7 +340,26 @@ def display_results_table(summary: Dict, title: str, show_gpu_arch: bool = False
         table.add_row(*row)
 
     console.print(table)
-    
+
+    if skipped and not has_node_data:
+        images = []
+        for item in skipped:
+            if not isinstance(item, dict):
+                continue
+            image = item.get("docker_image")
+            if image and image not in images:
+                images.append(image)
+        if len(images) == 1:
+            console.print(
+                f"\n[dim]Build skipped: using pre-built image {images[0]}[/dim]"
+            )
+        elif images:
+            console.print(
+                "\n[dim]Build skipped: using pre-built images "
+                + ", ".join(images)
+                + "[/dim]"
+            )
+
     # Print job-level summaries for multi-node jobs (RUN results only)
     if has_node_data and job_summaries:
         console.print("\n💡 [bold]Job Summary:[/bold]")
@@ -387,8 +424,10 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
         perf_table.add_column("Index", justify="right", style="dim")
         perf_table.add_column("Model", style="cyan")
         perf_table.add_column("Topology", justify="center", style="blue")
+        perf_table.add_column("Platform", justify="center", style="cyan")
+        perf_table.add_column("Scheduler", justify="center", style="cyan")
         perf_table.add_column("Launcher", justify="center", style="magenta")
-        perf_table.add_column("Deployment", justify="center", style="cyan")
+        perf_table.add_column("Mode", justify="center", style="cyan")
         perf_table.add_column("GPU Arch", style="yellow")
         perf_table.add_column("Performance", justify="right", style="green")
         perf_table.add_column("Metric", style="green")
@@ -466,7 +505,36 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
             
             # Get launcher value as-is from the CSV (don't default to "docker" here)
             launcher = str(row.get("launcher", "")) if not pd.isna(row.get("launcher")) and row.get("launcher") != "" else "N/A"
-            deployment_type = str(row.get("deployment_type", "local")) if not pd.isna(row.get("deployment_type")) and row.get("deployment_type") != "" else "local"
+            deployment_raw = row.get("deployment_type", "local")
+            deployment_type = (
+                "local"
+                if pd.isna(deployment_raw) or str(deployment_raw).strip() in ("", "nan")
+                else str(deployment_raw)
+            )
+            platform_raw = row.get("platform", "")
+            platform_blank = pd.isna(platform_raw) or str(platform_raw).strip() in (
+                "",
+                "nan",
+                "None",
+            )
+            if platform_blank and deployment_type == "bare_metal":
+                # Rows written before platform existed stored the environment
+                # in deployment_type. The scheduler for that path is this machine.
+                platform = "bare_metal"
+                scheduler = "local"
+            elif platform_blank:
+                platform = "docker"
+                scheduler = deployment_type
+            else:
+                platform = str(platform_raw)
+                scheduler = "local" if deployment_type == "bare_metal" else deployment_type
+            serving_mode_val = row.get("serving_mode", "")
+            blank_mode = pd.isna(serving_mode_val) or str(serving_mode_val).strip() in (
+                "",
+                "nan",
+                "None",
+            )
+            serving_mode = "" if blank_mode else str(serving_mode_val)
             gpu_arch = str(row.get("gpu_architecture", "N/A"))
             performance = format_performance(row.get("performance", ""))
             metric = str(row.get("metric", "")) if not pd.isna(row.get("metric")) else ""
@@ -494,8 +562,10 @@ def display_performance_table(perf_csv_path: str = "perf.csv", session_start_row
                 str(idx),
                 model,
                 topology,
-                launcher,           # Distributed launcher (docker, torchrun, vllm, etc.)
-                deployment_type,
+                platform,           # docker, bare_metal, ...
+                scheduler,          # local, slurm, kubernetes, llm-d
+                launcher,           # torchrun, vllm, sglang, native, ...
+                serving_mode,       # disaggregated/aggregated for llm-d; blank otherwise
                 gpu_arch,
                 performance,
                 metric,

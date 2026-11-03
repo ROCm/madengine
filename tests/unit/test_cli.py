@@ -16,6 +16,7 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 import importlib
 import json
 import os
+import re
 from io import StringIO
 import tempfile
 from unittest.mock import MagicMock, patch
@@ -203,6 +204,67 @@ class TestDisplayResultsTable:
             display_results_table(summary, "Run Results")
 
             mock_console.print.assert_called()
+
+    def test_display_results_table_skipped_prebuilt_image(self):
+        """A skipped Docker build names the model and the image that was reused."""
+        summary = {
+            "successful_builds": [],
+            "failed_builds": [],
+            "skipped_builds": [
+                {
+                    "model": "pyt_vllm_disagg_llmd_qwen3-0.6b",
+                    "docker_image": "rocm/example:tag",
+                    "status": "SKIPPED",
+                }
+            ],
+        }
+
+        with patch("madengine.cli.utils.console") as mock_console:
+            display_results_table(summary, "Build Results")
+
+            table_arg = mock_console.print.call_args_list[0][0][0]
+            buf = StringIO()
+            RichConsole(file=buf, width=140, force_terminal=True).print(table_arg)
+            rendered = buf.getvalue()
+            assert "pyt_vllm_disagg_llmd_qwen3-0.6b" in rendered
+            assert "Skipped" in rendered
+            assert "No items" not in rendered
+            notes = [str(call.args[0]) for call in mock_console.print.call_args_list[1:]]
+            assert any("rocm/example:tag" in note for note in notes)
+
+    def test_performance_table_shows_llm_d_deployment_and_mode(self, tmp_path):
+        """llm-d rows show the serving runtime and mode; other rows leave Mode blank."""
+        from madengine.cli.utils import display_performance_table
+
+        csv_path = tmp_path / "perf.csv"
+        csv_path.write_text(
+            "model,nnodes,gpus_per_node,n_gpus,launcher,deployment_type,"
+            "serving_mode,gpu_architecture,performance,metric,status,"
+            "test_duration,dataname,data_provider_type\n"
+            "vllm_disagg_llmd/llama,4,1,4,vllm,llm-d,disaggregated,gfx90a,"
+            "118.2,tokens_per_second,SUCCESS,174,huggingface,huggingface\n"
+            "plain-k8s,1,8,8,torchrun,kubernetes,,gfx942,1,samples_per_second,"
+            "SUCCESS,10,N/A,N/A\n",
+            encoding="utf-8",
+        )
+        with patch("madengine.cli.utils.console") as mock_console:
+            display_performance_table(str(csv_path))
+            tables = [
+                call.args[0]
+                for call in mock_console.print.call_args_list
+                if call.args and hasattr(call.args[0], "add_row")
+            ]
+        assert tables
+        table_arg = tables[-1]
+        headers = [column.header for column in table_arg.columns]
+        cells = [str(cell) for column in table_arg.columns for cell in column.cells]
+        rendered = " ".join(headers + cells)
+        assert "Mode" in headers
+        assert "llm-d" in rendered
+        assert "disaggregated" in rendered
+        assert "vllm" in rendered
+        assert "torchrun" in rendered
+        assert "kubernetes" in rendered
 
 
 # ============================================================================
@@ -498,8 +560,49 @@ class TestRunCommandExitCodes:
         """CLI help is reachable in CI without GPU."""
         result = runner.invoke(app, ["run", "--help"])
         assert result.exit_code == ExitCode.SUCCESS
-        assert "run" in result.stdout.lower() or "model" in result.stdout.lower()
-        assert "--skip-model-run" in result.stdout
+        # Rich bolds each segment of an option name, so strip ANSI before matching.
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+        assert "run" in plain.lower() or "model" in plain.lower()
+        assert "--skip-model-run" in plain
+        assert "--wait-for-gpu-memory" in plain
+        from madengine.utils.gpu_memory_gate import DEFAULT_THRESHOLD_MB
+
+        assert str(DEFAULT_THRESHOLD_MB) in plain
+
+    def test_run_rejects_negative_gpu_memory_wait(self, runner: CliRunner) -> None:
+        """A negative wait is rejected by the CLI before orchestration."""
+        result = runner.invoke(app, ["run", "--wait-for-gpu-memory", "-1"])
+        assert result.exit_code != ExitCode.SUCCESS
+
+    def test_run_forwards_wait_for_gpu_memory(self, runner: CliRunner) -> None:
+        """The flag value reaches the orchestrator args namespace."""
+        run_module = importlib.import_module("madengine.cli.commands.run")
+        captured = {}
+
+        def factory(args):
+            captured["args"] = args
+            mock_orch = MagicMock()
+            mock_orch.execute.return_value = {
+                "successful_runs": [],
+                "failed_runs": [],
+            }
+            return mock_orch
+
+        with patch.object(run_module, "RunOrchestrator", side_effect=factory):
+            runner.invoke(
+                app,
+                [
+                    "run",
+                    "--tags",
+                    "some_model",
+                    "--wait-for-gpu-memory",
+                    "30",
+                    "--additional-context",
+                    '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}',
+                ],
+            )
+
+        assert captured["args"].wait_for_gpu_memory == 30
 
     def test_run_command_build_error_returns_build_failure_exit_code(
         self, runner: CliRunner
@@ -523,3 +626,57 @@ class TestRunCommandExitCodes:
             )
 
         assert result.exit_code == ExitCode.BUILD_FAILURE
+
+
+class TestBuildCommandExitCodes:
+    """Build command exit codes for Jenkins."""
+
+    def test_build_push_failure_returns_build_failure_exit_code(
+        self, runner: CliRunner, tmp_path
+    ) -> None:
+        """An image that built but failed to push must not exit SUCCESS.
+
+        Regression: a registry login failure was swallowed, the CLI printed
+        "All builds completed successfully!", and the K8s run then referenced a
+        local-only image the cluster could not pull.
+        """
+        manifest = tmp_path / "build_manifest.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "summary": {
+                        "successful_builds": [
+                            {"model": "dummy", "docker_image": "ci-dummy"}
+                        ],
+                        "failed_builds": [],
+                        "failed_pushes": [
+                            {
+                                "model": "dummy",
+                                "docker_image": "ci-dummy",
+                                "error": "login failed",
+                            }
+                        ],
+                    }
+                }
+            )
+        )
+        build_module = importlib.import_module("madengine.cli.commands.build")
+        with patch.object(build_module, "BuildOrchestrator", return_value=MagicMock()):
+            result = runner.invoke(
+                app,
+                [
+                    "build",
+                    "--tags",
+                    "dummy",
+                    "--registry",
+                    "dockerhub",
+                    "--manifest-output",
+                    str(manifest),
+                    "--summary-output",
+                    str(tmp_path / "summary.json"),
+                    "--additional-context",
+                    '{"gpu_vendor": "AMD", "guest_os": "UBUNTU"}',
+                ],
+            )
+
+        assert result.exit_code == ExitCode.BUILD_FAILURE, result.stdout

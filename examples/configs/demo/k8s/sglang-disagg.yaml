@@ -1,0 +1,38 @@
+# Kubernetes — SGLang disaggregated inference (5 pods: 1 proxy + 2 prefill + 2 decode)
+# madengine run --config examples/configs/demo/k8s/sglang-disagg.yaml
+#
+# To customize the prefill/decode split, set sglang_disagg.prefill_nodes and
+# sglang_disagg.decode_nodes (must sum to nnodes - 1 proxy node).
+
+model:
+  tags: [dummy_sglang_disagg]
+
+k8s:
+  namespace: default
+  gpu_count: 8
+  memory: 256Gi
+  memory_limit: 384Gi
+  cpu: "64"
+  cpu_limit: "96"
+  host_ipc: true
+  node_selector:
+    feature.node.kubernetes.io/amd-gpu-mi300x: "true"
+
+distributed:
+  enabled: true
+  launcher: sglang-disagg
+  nnodes: 5
+  nproc_per_node: 8
+  master_port: 29500
+  sglang_disagg:
+    prefill_nodes: 2
+    decode_nodes: 2
+
+env_vars:
+  SGLANG_ALLOW_LONG_MAX_MODEL_LEN: "1"
+  SGLANG_ENABLE_RADIX_CACHE: "1"
+  SGLANG_RADIX_CACHE_SIZE: "0.9"
+  SGLANG_DISAGG_TRANSFER_BACKEND: mooncake
+  NCCL_TIMEOUT: "600"
+  RAY_health_check_timeout_ms: "60000"
+  MOONCAKE_TEST_MODE: "0"

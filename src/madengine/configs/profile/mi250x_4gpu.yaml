@@ -1,0 +1,11 @@
+# @package _global_
+gpu_type: mi250x
+gpu_memory_gb: 128
+gpus_per_node: 4
+
+distributed:
+  nproc_per_node: 4
+
+env_vars:
+  GPU_MAX_HW_QUEUES: "2"
+  HSA_ENABLE_SDMA: "0"

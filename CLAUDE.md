@@ -118,9 +118,9 @@ madengine is a CLI tool for running AI/ML models in local Docker, Kubernetes, an
 ### Layer Structure
 
 **CLI Layer** (`src/madengine/cli/`)
-- `app.py` — Typer app wiring, registers 5 commands: `discover`, `build`, `run`, `report`, `database`
-- `commands/` — One file per command (build, run, discover, report, database)
-- `constants.py` — `ExitCode` enum (`SUCCESS=0`, `FAILURE=1`, `BUILD_FAILURE=2`, `RUN_FAILURE=3`, `INVALID_ARGS=4`)
+- `app.py` — Typer app wiring, registers 7 commands: `discover`, `build`, `run`, `report`, `database`, `cleanup`, `setup-page`
+- `commands/` — One file per command (build, run, discover, report, database, cleanup, setup_page)
+- `constants.py` — `ExitCode` enum (`SUCCESS=0`, `FAILURE=1`, `BUILD_FAILURE=2`, `RUN_FAILURE=3`, `INVALID_ARGS=4`, `GPU_WEDGED=5`)
 
 **Orchestration Layer** (`src/madengine/orchestration/`)
 - `build_orchestrator.py` — `BuildOrchestrator`: discovers models, builds Docker images, writes `build_manifest.json`
@@ -130,6 +130,7 @@ madengine is a CLI tool for running AI/ML models in local Docker, Kubernetes, an
 - `context.py` — `Context` class: merges `additional_context` with system detection (GPU vendor, architecture, OS, ROCm path). Uses `ast.literal_eval()` to parse additional_context strings (not `json.loads` — pass Python dict repr, not JSON)
 - `console.py` — `Console`: shell execution wrapper with live output support
 - `docker.py` — Docker command wrapper
+- `lifecycle.py` — Heartbeat watchdog, signal-handler container reap, and `madengine cleanup` support. `MADENGINE_HEARTBEAT_INTERVAL` (default 15s) and `MADENGINE_HEARTBEAT_STALE_AFTER` (default 120s) tune the watchdog
 
 **Execution Layer** (`src/madengine/execution/`)
 - `container_runner.py` — `ContainerRunner`: runs models from manifest via `docker run`, writes results to `perf.csv`
@@ -137,16 +138,18 @@ madengine is a CLI tool for running AI/ML models in local Docker, Kubernetes, an
 - `container_runner_helpers.py` — Log error pattern scanning, timeout resolution
 
 **Deployment Layer** (`src/madengine/deployment/`)
-- `factory.py` — `DeploymentFactory`: Factory pattern, registers `SlurmDeployment` and `KubernetesDeployment`
+- `factory.py` — `DeploymentFactory`: Factory pattern, registers `SlurmDeployment`, `KubernetesDeployment` and `LlmdDeployment`
 - `base.py` — `BaseDeployment` abstract class, `DeploymentConfig` dataclass
-- `kubernetes.py` / `slurm.py` — Concrete deployments; target is inferred by Convention over Configuration: presence of `"k8s"` or `"kubernetes"` key → K8s; `"slurm"` key → SLURM; neither → local
-- `presets/` — JSON preset files for K8s/SLURM default configurations; auto-merged with minimal user configs
+- `kubernetes.py` / `slurm.py` — Concrete deployments; target is inferred by Convention over Configuration: presence of `"llm_d"` key → llm-d; `"k8s"` or `"kubernetes"` key → K8s; `"slurm"` key → SLURM; neither → local
+- `llm_d.py` / `llm_d_stack.py` — `LlmdDeployment` subclasses `KubernetesDeployment` (the benchmark client is an ordinary single-pod Job); `LlmdStack` drives `helm`. Two modes: attach (`llm_d.endpoint_url` set) and managed (madengine installs/uninstalls the charts). `llm_d` is checked before `k8s` because an llm-d config carries both keys
+- `presets/` — JSON preset files for K8s/SLURM/llm-d default configurations; auto-merged with minimal user configs
 - `config_loader.py` — Loads and merges preset JSON with user-supplied config
 
 **Utils** (`src/madengine/utils/`)
 - `discover_models.py` — `DiscoverModels`: three discovery methods: root `models.json`, `scripts/{dir}/models.json`, or `scripts/{dir}/get_models_json.py` (dynamic)
 - `gpu_tool_factory.py` / `gpu_tool_manager.py` — GPU vendor abstraction (AMD/NVIDIA)
 - `gpu_validator.py` — ROCm installation detection, GPU vendor detection
+- `gpu_memory_gate.py` — `--wait-for-gpu-memory`: local runs wait until every GPU reports at most 512 MB in use
 - `config_parser.py` — `ConfigParser`: parses `--additional-context` and tools config
 
 **Reporting** (`src/madengine/reporting/`)
@@ -168,9 +171,15 @@ madengine is a CLI tool for running AI/ML models in local Docker, Kubernetes, an
 ### Deployment Target Inference
 
 No explicit `"deploy"` field is needed. Target is inferred from config structure:
+- `"llm_d"` key present → llm-d (checked before `k8s`, because llm-d configs carry both)
 - `"k8s"` or `"kubernetes"` key present → Kubernetes deployment
 - `"slurm"` key present → SLURM deployment
 - Neither → local Docker execution
+
+llm-d reporting stamps `deployment_type=llm-d`, `launcher=vllm`, and
+`serving_mode=disaggregated|aggregated`. Card `--model_repo` fills `llm_d.model`
+identity when unset. Batch Job names are capped at 63 characters (label parity).
+See `docs/llm-d.md` and `deploy/llm-d/mi250/` for the MI250 path (1 GPU/pod, no RDMA).
 
 ### Test Structure
 

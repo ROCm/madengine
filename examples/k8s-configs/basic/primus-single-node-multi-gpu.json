@@ -1,0 +1,22 @@
+{
+  "_comment": "Primus pretrain on ONE pod with multiple GPUs. Set distributed.primus.config_path to your experiment YAML (TorchTitan, Megatron, MaxText, etc.). BACKEND is inferred from the model name when it matches primus_pretrain/<launcher>_<arch>_... (see madengine primus_backend); optional distributed.primus.backend overrides. HF: use docker_env_vars.HF_TOKEN placeholder or runtime secrets. Usage: madengine build ... --additional-context-file examples/k8s-configs/basic/primus-single-node-multi-gpu.json",
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+  "docker_env_vars": {"HF_TOKEN": "YOUR_HF_TOKEN_OR_USE_RUNTIME_SECRET"},
+  "k8s": {
+    "namespace": "default",
+    "gpu_resource_name": "amd.com/gpu",
+    "gpu_count": 8
+  },
+  "distributed": {
+    "enabled": true,
+    "launcher": "primus",
+    "nnodes": 1,
+    "nproc_per_node": 8,
+    "master_port": 1234,
+    "primus": {
+      "config_path": "examples/torchtitan/configs/MI300X/qwen3_4B-pretrain.yaml",
+      "cli_extra": ""
+    }
+  }
+}

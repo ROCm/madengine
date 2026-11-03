@@ -1,13 +1,17 @@
 # Deployment Guide
 
-Deploy madengine workloads to Kubernetes or SLURM clusters for distributed execution.
+Deploy madengine workloads to Kubernetes, SLURM, or Spur, or run them on this machine.
 
 ## Overview
 
-madengine supports two deployment backends:
+madengine supports these deployment backends:
 
+- **Local Docker** - Containers on this machine when no scheduler key is set
+- **Bare metal** - A conda prefix on this machine. Selected with `"platform": "bare_metal"`, checked before every scheduler key. See [bare-metal.md](bare-metal.md)
 - **Kubernetes** - Cloud-native container orchestration
 - **SLURM** - HPC cluster job scheduling
+- **Spur** - Crusoe's SLURM-compatible scheduler. A `slurm` block with `scheduler: spur`, or `deploy: spur`, selects it. See [Spur](#spur-crusoe-scheduler)
+- **llm-d** - Benchmarking a Kubernetes-native distributed inference stack; see [llm-d.md](llm-d.md)
 
 Deployment is configured via `--additional-context` and happens automatically during the run phase.
 
@@ -17,10 +21,13 @@ Build once, then deploy the resulting manifest to any target:
 
 ```mermaid
 flowchart LR
-    B["1. Build Phase<br/>(local or CI/CD)<br/>madengine build --tags model"] --> M[(build_manifest.json<br/>+ image in registry)]
+    B["1. Build Phase<br/>(local or CI/CD)<br/>madengine build --tags model"] --> M[(build_manifest.json<br/>image or conda prefix)]
     M --> D["2. Deploy Phase<br/>madengine run --manifest-file build_manifest.json<br/>--additional-context '{...}'"]
     D --> T{detect target}
+    T -->|platform bare_metal| B[conda prefix on this machine]
+    T -->|llm_d| I[llm-d benchmark Job]
     T -->|k8s / kubernetes| K[K8s Job]
+    T -->|slurm scheduler spur| U[Spur job array]
     T -->|slurm| S[SLURM script]
     T -->|neither| L[Local Docker]
 ```
@@ -31,11 +38,26 @@ No explicit `deploy` field is required — the target is inferred from the confi
 
 ```mermaid
 flowchart TD
-    A[additional_context] --> Q{which key?}
+    A[additional_context] --> P{platform bare_metal?}
+    P -->|yes| B[Bare metal conda]
+    P -->|no| Q{which key?}
+    Q -->|llm_d| I[llm-d benchmark]
     Q -->|k8s / kubernetes| K[Kubernetes deployment]
+    Q -->|slurm scheduler spur, or deploy spur| U[Spur job array]
     Q -->|slurm| S[SLURM deployment]
     Q -->|neither| L[Local Docker execution]
 ```
+
+`platform: bare_metal` is checked first. It cannot be combined with `slurm`, `k8s`, `kubernetes`, or `llm_d`. `llm_d` is checked next: an llm-d config also carries a `k8s` block, which configures the benchmark-client Job. A `slurm` block whose `scheduler` is `spur`, or a top-level `deploy: spur` next to a `slurm` block, selects Spur at build time and at run time. Omitted `platform` stays Docker.
+
+### Kubernetes Job naming
+
+Batch Jobs force the pod template label `job-name` to equal `metadata.name`, and
+label values are at most 63 characters. madengine therefore builds Job names with
+`sanitize_k8s_object_name(..., max_total_len=63)` so long model card paths (for
+example llm-d MoE cards) hash/truncate instead of failing admission. PVC and
+ConfigMap names append a short suffix (`-results`, `-config`) and may still use
+the longer RFC 1123 subdomain limit (253).
 
 ## Kubernetes Deployment
 
@@ -43,7 +65,11 @@ flowchart TD
 
 - Kubernetes cluster with GPU support
 - GPU device plugin installed ([AMD](https://github.com/ROCm/k8s-device-plugin) or [NVIDIA](https://github.com/NVIDIA/k8s-device-plugin))
-- Kubeconfig configured (`~/.kube/config` or in-cluster)
+- Kubeconfig configured. madengine uses `k8s.kubeconfig`, else `$KUBECONFIG`, else `~/.kube/config`
+  (in-cluster when none exists), at `k8s.context` or that file's current context. Every API call and
+  every `kubectl` call it makes uses that same file and context, and a `k8s.context` missing from the
+  file is refused rather than substituted. A rerun replaces only objects labelled `app=madengine`; a
+  same-named object without the label stops the deploy.
 - Docker registry accessible from cluster
 
 ### Quick Start
@@ -88,7 +114,6 @@ The deployment target is automatically detected from the `k8s` key in the config
     "gpu_vendor": "AMD",
     "memory": "32Gi",
     "cpu": "16",
-    "service_account": "madengine-sa",
     "image_pull_policy": "Always"
   }
 }
@@ -105,7 +130,7 @@ See [examples/k8s-configs/](../examples/k8s-configs/) for complete examples.
 
 ### Secrets and credentials
 
-By default (`k8s.secrets.strategy`: `from_local_credentials`), `madengine run` creates Kubernetes **Secrets** from a local `credential.json` when present: Docker Hub pull credentials (when configured) and an opaque Secret for runtime use. Credentials are not embedded in the ConfigMap in that case. For GitOps or clusters without client-side files, use `existing` or `omit` and set `k8s.secrets.image_pull_secret_names` / `k8s.secrets.runtime_secret_name` as needed. See [Configuration](configuration.md#kubernetes-deployment) and [examples/k8s-configs/README.md](../examples/k8s-configs/README.md#kubernetes-secrets-credentialjson).
+By default (`k8s.secrets.strategy`: `from_local_credentials`), `madengine run` creates Kubernetes **Secrets** from a local `credential.json` when present: Docker Hub pull credentials (when configured) and an opaque Secret for runtime use. Pods also reference the pre-created pull secret `dockerhub-rocm` (`k8s.secrets.image_pull_secret_names`). Credentials are not embedded in the ConfigMap in that case. For GitOps or clusters without client-side files, use `existing` or `omit` and set `k8s.secrets.image_pull_secret_names` / `k8s.secrets.runtime_secret_name` as needed. See [Configuration](configuration.md#kubernetes-deployment) and [examples/k8s-configs/README.md](../examples/k8s-configs/README.md#kubernetes-secrets-credentialjson).
 
 ### Validating rendered manifests
 
@@ -116,6 +141,12 @@ With `"debug": true` in additional context, `madengine run` writes rendered mani
 ```
 
 The script exits successfully if `kubeconform` is missing (skip) or if validation passes.
+
+### Storage and runtime launchers
+
+A multi-node job uses a shared ReadWriteMany volume when `k8s.nfs_storage_class` (default `nfs-banff`) can serve one. On a cluster whose only StorageClass is local-path, each pod gets its own ReadWriteOnce disk (`results_layout` / `data_layout`: `auto`, or force `shared` / `per_pod`). Performance CSVs are then taken from pod logs. See [examples/k8s-configs/README.md](../examples/k8s-configs/README.md#storage-classes-local-path-vs-nfs).
+
+`madengine run --additional-context` `distributed` (launcher, `nnodes`, `nproc_per_node`) is applied at submit time and wins over the copy saved in `build_manifest.json`. `n_gpus: -1` on a model card means "all GPUs on the node", not a process count. Multi-node vLLM and SGLang pods join the headless Service subdomain so pod-0 DNS resolves.
 
 ### Multi-Node Training
 
@@ -143,15 +174,90 @@ This creates:
 **Supported Launchers:**
 - `torchrun` - PyTorch DDP/FSDP
 - `deepspeed` - ZeRO optimization
-- `megatron` - Megatron-LM training
+- `megatron-lm` - Megatron-LM training
 - `torchtitan` - LLM pre-training
 - `primus` - Primus unified pretrain (Megatron / TorchTitan / MaxText YAML)
 - `vllm` - LLM inference
 - `sglang` - Structured generation
 - `sglang-disagg` - Disaggregated SGLang (multi-node)
-- `slurm_multi` / `slurm-multi` - Self-managed multi-container topologies (SLURM only, escape hatch)
+- `slurm_multi` / `slurm-multi` - Self-managed multi-container topologies (escape hatch; on Kubernetes see [slurm_multi cards on Kubernetes](#slurm_multi-cards-on-kubernetes))
 
 See [Launchers Guide](launchers.md) for details.
+
+### slurm_multi cards on Kubernetes
+
+A `slurm_multi` card ships its own SLURM batch script, which fans out with `srun` and
+starts one container per node with `docker run`. On Kubernetes madengine runs that
+script **unchanged**:
+
+- one pod per node of the card: an Indexed Job (`completions = nnodes`, one attempt)
+  with a headless Service, so pods reach each other by hostname (`<job>-0`, `<job>-1`, ...);
+- every pod runs the card's image; pod 0 runs the card's script with the `SLURM_*`
+  variables a batch script sees, and with stand-ins for `srun`, `docker` and
+  `scontrol` first on `PATH`. `srun` sends each task to the named pod; `docker run`
+  runs its command in the pod itself (the pod is the container), applying `-e` and
+  `-v`; `docker stop/rm/ps/pull/image inspect` act on those processes and the pod's
+  image; `scontrol show hostnames` expands the node list. Any other form fails with a
+  message naming it, rather than being guessed at;
+- the card's script directory and its sibling `common` directory travel in a
+  ConfigMap (compressed, under 1 MiB);
+- results: `LOG_PATH` defaults to `/results/logs` on the run's results volume, which
+  every pod mounts (ReadWriteMany for multi-node). Pod 0 publishes the card's
+  `multiple_results` file, else `$LOG_PATH/$SLURM_JOB_ID/perf.csv`, as
+  `/results/<job>-0/perf.csv`. madengine copies the run into
+  `./k8s_results/<job>/run-<id>/`, reads exactly that file -- never an earlier run's --
+  and treats its rows the way the SLURM path does: each row's `status` decides success
+  or failure, and no file is a failed run;
+- the run is done when the Job's own `Complete` or `Failed` condition says so (not when
+  the first pod finishes), and it has one attempt: rerunning one pod of a multi-node run
+  is not a retry of the run;
+- the run's name is a DNS label with room for the pod index (dots become dashes, a long
+  name is cut and given a short hash), because the script addresses nodes by hostname.
+
+What the script needs from the cluster is pod-spec configuration, never a card change:
+
+| `k8s` key | Purpose |
+|---|---|
+| `gpu_count` | GPUs per pod (default: the card's `slurm.gpus_per_node`). Presets do not size the pod: see below |
+| `cpu`, `memory` | requests per pod; requested only when the run sets them |
+| `volumes` | `[{name, mount_path, host_path \| pvc \| nfs: {server, path}, read_only}]` — weights, caches |
+| `extra_resources` | other device-plugin resources, e.g. `{"rdma/hca": 1}` |
+| `security_context` | container `securityContext`, e.g. `{"capabilities": {"add": ["IPC_LOCK"]}}` for RDMA |
+| `shm_size` | `/dev/shm` size (default `64Gi`) |
+| `include_script_dirs` | directories shipped with the card's (default: sibling `common`) |
+| `image_pull_policy` | default `Always`; `IfNotPresent` for images imported into the cluster |
+| `host_network` | pods on the node's network, so RoCE uses the node's NICs; one host-network slurm_multi pod per node, across runs and namespaces (madengine's agent and the card's servers bind fixed ports) |
+| `pod_annotations` | e.g. `{"k8s.v1.cni.cncf.io/networks": "rdma-net"}`: a Multus secondary network giving each pod its own RDMA interface |
+| `results_access_mode` | results PVC access mode (default `ReadWriteMany` for multi-node). `ReadWriteOnce` works when every pod lands on one node, e.g. a cluster with only `local-path` storage |
+
+Host-level `docker run` options in the script (`--device`, `--network host`,
+`--privileged`, `--ulimit`, `--shm-size`, ...) are ignored; the keys above are where
+the pod gets those capabilities.
+
+RDMA for a card's KV transfer takes three things from the cluster: RDMA devices in
+the pod (an RDMA device plugin; request its resource with `extra_resources` and add
+`IPC_LOCK` with `security_context` -- not `privileged`, which also exposes every GPU
+on the node and defeats the GPU device plugin's isolation), a network the RDMA
+traffic can use (`host_network`, or a Multus/SR-IOV network via `pod_annotations`),
+and GPU memory the NIC can register (a GPU peer-memory driver or dma-buf support on
+the node, outside Kubernetes). Preset env vars (for example the AMD multi-GPU
+preset's `NCCL_IB_DISABLE=1`) are not passed to the card, as on SLURM; set them
+under `env_vars` to pass them.
+
+Presets do not size a `slurm_multi` card's pods either. They pick a profile from the run
+config alone, before the card is known, so a config that names no `gpu_count` and no
+`distributed` block gets the single-GPU profile (1 GPU, 8 CPUs, 16Gi). For these cards
+GPUs per pod come from `k8s.gpu_count` only when the run sets it, else the card, and
+`cpu` / `memory` are requested only when the run sets them. To set the node count from
+the run, give `distributed: {"launcher": "slurm_multi", "nnodes": N}`: the multi-node
+preset defaults the launcher to `torchrun`, and a run-level `nnodes` is read only for
+`slurm_multi`.
+
+MAD has a standalone counterpart that needs no madengine,
+`scripts/common/k8s/submit.py`, the Kubernetes counterpart of submitting the card's
+script with `sbatch`. It reads the same `k8s` keys and, for the same card and config,
+deploys the same Job, Service and ConfigMap (apart from names and the run id) with a
+byte-identical pod-side shim. MAD's `docs/multinode-kubernetes.md` covers both paths.
 
 ### Monitoring
 
@@ -182,6 +288,12 @@ kubectl delete job madengine-job-xxx -n your-namespace
 
 - Access to SLURM login node
 - SLURM commands available (`sbatch`, `squeue`, `scontrol`)
+- SLURM-compatible schedulers that implement part of the CLI work too. On Spur, for example,
+  `SLURM_NODELIST` is already a comma list and `scontrol show hostnames` does not exist, so
+  madengine expands node lists itself and uses `scontrol` only for the compressed form; `sacct -X`
+  is rejected, so the final state is read without it; and `sbatch` is retried when the Raft
+  control plane is electing a leader ("not the Raft leader"). The `slurm_multi` wrapper also
+  honours `slurm.account` and `slurm.qos`
 - Shared filesystem for MAD package and results
 - Module system or container runtime (Singularity/Apptainer)
 
@@ -249,8 +361,51 @@ The deployment target is automatically detected from the `slurm` key in the conf
 - `reservation`: SLURM reservation name; forwarded to srun health/cleanup commands
 - `time`: Wall time limit (HH:MM:SS)
 - `exclusive`: Exclusive node access (default: `true`)
+- `scheduler`: SLURM flavor - `slurm` (default) or `spur` (see below)
+- `rendezvous_timeout`: spur only; seconds a node waits for rank 0 to publish `MASTER_ADDR` (default: 900)
 
 See [examples/slurm-configs/](../examples/slurm-configs/) for complete examples.
+
+### Spur (Crusoe) Scheduler
+
+Spur exposes SLURM-compatible CLI shims but `srun` cannot fan tasks out across
+nodes, so multi-node runs use a job **array** of single-node tasks instead: each
+array task runs on one node, `SLURM_ARRAY_TASK_ID` is the node rank, and the
+tasks self-form the cluster through a shared-filesystem rendezvous (rank 0
+publishes its transport IP; the other ranks read it as `MASTER_ADDR`).
+
+Select it with `slurm.scheduler`; everything else in the `slurm` block is
+unchanged:
+
+```json
+{
+  "slurm": {
+    "scheduler": "spur",
+    "partition": "gpu",
+    "nodes": 4,
+    "gpus_per_node": 8,
+    "time": "02:00:00"
+  }
+}
+```
+
+A job array carries no gang-scheduling guarantee, so tasks may start minutes
+apart. A node that does not see rank 0's address within `rendezvous_timeout`
+fails the run with a diagnostic rather than starting with an empty
+`MASTER_ADDR`; raise the timeout if your queue wait is longer than that.
+
+`slurm.output_dir` must be on a filesystem shared by every node - it holds the
+rendezvous files.
+
+The `srun`-based node health preflight (`enable_node_check`) is skipped on spur:
+`srun -w <node>` does not run on the requested node there, and the `--nodelist`
+it would pin conflicts with the job array, whose tasks each request one node.
+
+### Spur and `sglang-disagg`
+
+On stock SLURM, `SGLANG_NODE_IPS` is the job nodelist expanded to addresses, with `127.*` skipped (Ubuntu maps the hostname to `127.0.1.1` in `/etc/hosts`). On Spur each array task's nodelist contains only that task's node, so the same expansion is a single IP and the router starts without `--decode`.
+
+Every Spur rank publishes `ip_rank<N>` in the rendezvous directory before rank 0 writes `MASTER_ADDR`. Spur waits up to `rendezvous_timeout` and concatenates those files in rank order into `SGLANG_NODE_IPS`. The address is taken the same way as `MASTER_ADDR`: `NCCL_SOCKET_IFNAME` when it is set (default `ens3` in the task script), otherwise `hostname -I`. Stock SLURM still uses the nodelist.
 
 ### Multi-Node Training
 
@@ -311,6 +466,12 @@ madengine build --tags model --build-on-compute --registry docker.io/myorg
 
 The manifest generated by `--use-image` merges the model card's `distributed` and `slurm` config into `deployment_config`, so the run phase auto-detects SLURM deployment without additional `--additional-context`.
 
+The `--build-on-compute` job takes its SLURM settings from the model card's `slurm` section and `--additional-context` (`slurm` wins): `partition` (required), `time`, `reservation`, and the same `account` and `qos` as the run job, so a cluster whose default QoS cannot get a node accepts the build too. A build needs no GPUs, so the job requests none unless `slurm.build_gpus_per_node` is set, for schedulers that refuse a job without a GPU request:
+
+```json
+{"slurm": {"partition": "gpu", "account": "my-account", "qos": "my-qos", "build_gpus_per_node": 8}}
+```
+
 ### slurm_multi Launcher (Self-Managed)
 
 For workloads that orchestrate their own per-node Docker containers (e.g. SGLang Disaggregated proxy + prefill + decode topologies), use the `slurm_multi` launcher:
@@ -333,7 +494,9 @@ Unlike templated launchers, slurm_multi runs the model's `.slurm` script directl
 
 ### Running Inside salloc
 
-When `madengine run` detects an existing SLURM allocation (`SLURM_JOB_ID` is set, e.g. inside `salloc`), the slurm_multi launcher runs the generated wrapper script synchronously with `bash` instead of nesting another `sbatch`. Other launchers continue to use `sbatch` even inside `salloc`.
+When `madengine run` detects an existing SLURM allocation (`SLURM_JOB_ID` is set, e.g. inside `salloc`), the slurm_multi launcher runs the generated wrapper script synchronously with `bash` instead of nesting another `sbatch`. Templated launchers do the same for multi-node runs: the job script runs in place and starts its tasks with `srun` on the first `nodes` hosts of the allocation (or on `slurm.nodelist`, when set). Each run gets its own paths, so several runs can share one allocation. Single-node runs still submit their own `sbatch`, because in place their script would run on the submitting host.
+
+Those paths are job-scoped directories, not the SLURM submission directory. A single-node job uses `$SLURM_TMPDIR/madengine_job_<job id>` when that directory is writable, otherwise `/tmp/madengine_job_<job id>`. A multi-node task appends `_node_<rank>`, and an in-place run also appends a per-run suffix so two runs in one allocation do not share a directory. A multi-node task removes its workspace only after the task exits 0 and every artifact has been copied out; a failure, or a copy that did not finish, keeps the directory. A later job from the same user deletes `madengine_job_*` directories older than 7 days under that scratch root when `squeue -u` lists this user's jobs and the directory's job id is not among them. An unanswered `squeue` deletes nothing.
 
 ```bash
 salloc --nodes=3 --gpus-per-node=8 --partition=gpu
@@ -353,14 +516,16 @@ scancel -u $USER
 
 ## Deployment Comparison
 
-| Feature | Kubernetes | SLURM |
-|---------|-----------|-------|
-| **Environment** | Cloud, on-premise | HPC clusters |
-| **Orchestration** | Automatic | Job scheduler |
-| **Dependencies** | Python library (`kubernetes`) | CLI commands only |
-| **Multi-node Setup** | Headless service + DNS | SLURM env vars |
-| **Resource Management** | Declarative (YAML) | Batch script |
-| **Best For** | Cloud deployments, microservices | Academic HPC, supercomputers |
+| Feature | Kubernetes | SLURM | llm-d |
+|---------|-----------|-------|-------|
+| **Environment** | Cloud, on-premise | HPC clusters | Kubernetes |
+| **Orchestration** | Automatic | Job scheduler | Inference Gateway + helm |
+| **Dependencies** | Python library (`kubernetes`) | CLI commands only | `kubernetes` + `helm` (managed mode) |
+| **Multi-node Setup** | Headless service + DNS | SLURM env vars | `InferencePool` + Endpoint Picker |
+| **Resource Management** | Declarative (YAML) | Batch script | Helm charts |
+| **Best For** | Cloud deployments, microservices | Academic HPC, supercomputers | Benchmarking disaggregated serving |
+
+Bare metal is the local conda path and is documented in [bare-metal.md](bare-metal.md). Spur reuses the SLURM column's job model with a job array and a shared-filesystem rendezvous; see [Spur](#spur-crusoe-scheduler).
 
 ## Configuration Examples
 
@@ -471,6 +636,18 @@ kubectl describe node <node-name> | grep -A5 Conditions
 
 PVC artifacts are still collected in this scenario. Only the API-based pod log retrieval fails, which means performance metrics for that node will be missing from the results table.
 
+**slurm_multi cards:**
+
+| Symptom | Cause and fix |
+|---|---|
+| `job name ... does not make valid pod hostnames` | Not expected since names are shortened automatically; report it with the card name |
+| `Error: required file missing: .../scripts/<dir>/...` in pod 0's log | The card's script reads a sibling directory that was not shipped. Add it to `k8s.include_script_dirs` |
+| `RuntimeError: The memory capacity is unbalanced` | The pod sees GPUs that are not its own, usually `security_context: {privileged: true}`. Remove it |
+| Pods `Pending` with `Insufficient amd.com/gpu` | `nnodes` x `gpu_count` exceeds the free GPUs, or `host_network` needs one node per pod |
+| Pods `Pending` with `didn't match pod anti-affinity rules` | `host_network`: another host-network slurm_multi run holds those nodes; this run starts when they free up |
+| Results PVC `Pending` | No storage class satisfies ReadWriteMany. Set `multi_node_results_storage_class`, or `results_access_mode: ReadWriteOnce` with every pod on one node |
+| `[mad-k8s srun] unsupported option ...` | The card's script uses an `srun` / `docker` / `scontrol` form the stand-ins do not implement; the message names it |
+
 **Resource Issues:**
 ```bash
 # Check node resources
@@ -520,7 +697,10 @@ sinfo -o "%P %.5a %.10l %.6D %.6t %N"
 ## Next Steps
 
 - [Launchers Guide](launchers.md) - Distributed training and inference launchers
+- [Bare metal](bare-metal.md) - Conda execution on this machine
+- [llm-d Guide](llm-d.md) - Benchmarking the llm-d distributed inference stack
 - [K8s Examples](../examples/k8s-configs/) - Complete Kubernetes configurations
 - [SLURM Examples](../examples/slurm-configs/) - Complete SLURM configurations
+- [llm-d Examples](../examples/llm-d-configs/) - Complete llm-d configurations
 - [Usage Guide](usage.md) - General usage instructions
 

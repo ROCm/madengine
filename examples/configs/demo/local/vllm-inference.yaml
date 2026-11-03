@@ -1,0 +1,16 @@
+# Local Docker — vLLM inference with tensor parallelism
+# madengine run --config examples/configs/demo/local/vllm-inference.yaml
+
+model:
+  tags: [dummy_vllm]
+
+distributed:
+  enabled: true
+  launcher: vllm
+  nnodes: 1
+  nproc_per_node: 4
+
+env_vars:
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+  VLLM_WORKER_MULTIPROC_METHOD: spawn
+  VLLM_KV_CACHE_SIZE: "0.7"

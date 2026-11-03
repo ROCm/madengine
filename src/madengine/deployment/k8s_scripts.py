@@ -222,14 +222,20 @@ class KubernetesScriptsMixin:
                             script_contents[script_path] = f.read()
                         self.console.print(f"[dim]Loaded tool post-script: {script_path}[/dim]")
 
-            for script_config in tool_def.get("pre_scripts", []):
+            # Pre/post scripts may invoke helper scripts under scripts/common/tools/
+            # (e.g. dynolog_start.sh -> dynolog_trigger.sh, tracelens.sh ->
+            # tracelens_analyze.py). Those helpers are not named in tools.json, so
+            # bundle whatever the scripts reference.
+            for script_config in tool_def.get("pre_scripts", []) + tool_def.get(
+                "post_scripts", []
+            ):
                 script_path = script_config.get("path", "")
                 if script_path:
                     abs_script_path = madengine_root / script_path
                     if abs_script_path.exists():
                         with open(abs_script_path, "r") as f:
                             script_content = f.read()
-                            tool_refs = re.findall(r'(?:\.\./)?scripts/common/tools/[\w_]+\.py', script_content)
+                            tool_refs = re.findall(r'(?:\.\./)?scripts/common/tools/[\w_]+\.(?:py|sh)', script_content)
                             for tool_ref in tool_refs:
                                 tool_script_path = tool_ref.strip('"\'').replace("../", "")
                                 abs_tool_path = madengine_root / tool_script_path

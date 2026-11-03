@@ -20,7 +20,8 @@ PERF_CSV_HEADER = (
     "docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,"
     "deployment_type,launcher,gpu_architecture,performance,metric,relative_change,"
     "status,build_duration,test_duration,dataname,data_provider_type,data_size,"
-    "data_download_duration,build_number,additional_docker_run_options"
+    "data_download_duration,build_number,additional_docker_run_options,"
+    "serving_mode,platform"
 )
 
 
@@ -62,7 +63,12 @@ def flatten_tags(perf_entry: dict):
         The performance entry with flattened tags.
     """
     # flatten tags to a string, if tags is a list.
-    if isinstance(perf_entry["tags"], list):
+    #
+    # .get, not ["tags"]: an exception result need not carry tags. The SKIPPED
+    # entry _write_skipped_status writes has none, so indexing raised KeyError,
+    # its caller downgraded that to a dim warning, and no skip_gpu_arch skip
+    # ever reached perf.csv -- the run summary showed the model as simply absent.
+    if isinstance(perf_entry.get("tags"), list):
         perf_entry["tags"] = ",".join(str(item) for item in perf_entry["tags"])
 
 
@@ -78,12 +84,34 @@ def perf_entry_df_to_csv(perf_entry: pd.DataFrame) -> None:
     perf_entry.to_csv("perf_entry.csv", index=False)
 
 
+def apply_result_axes(perf_entry: typing.Dict) -> None:
+    """Fill platform, and keep deployment_type as the scheduler.
+
+    ``platform`` is the machine environment (``docker`` or ``bare_metal``).
+    ``deployment_type`` is the scheduler (``local``, ``slurm``, ``kubernetes``,
+    ``llm-d``). A legacy bare-metal row that stored the platform in
+    ``deployment_type`` and ``conda`` in ``launcher`` is rewritten: conda sets
+    up the env and is not a launcher.
+    """
+    deployment = str(perf_entry.get("deployment_type") or "local")
+    if perf_entry.get("platform"):
+        return
+    if deployment == "bare_metal":
+        perf_entry["platform"] = "bare_metal"
+        perf_entry["deployment_type"] = "local"
+        if str(perf_entry.get("launcher") or "") == "conda":
+            perf_entry["launcher"] = "native"
+        return
+    perf_entry["platform"] = "docker"
+
+
 def perf_entry_dict_to_csv(perf_entry: typing.Dict) -> None:
     """Write the performance entry dictionary to a CSV file.
 
     Args:
         perf_entry: The performance entry dictionary.
     """
+    apply_result_axes(perf_entry)
     flatten_tags(perf_entry)
     js_df = pd.DataFrame(perf_entry, index=[0])
     perf_entry_df_to_csv(js_df)

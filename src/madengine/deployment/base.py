@@ -19,8 +19,8 @@ from typing import Any, Dict, List, Optional
 from jinja2 import Environment, FileSystemLoader
 from rich.console import Console
 
+from madengine.core import lifecycle
 from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
-
 
 # Regex for parsing "performance: <value> <metric>" log lines.
 # Value: optional sign, integer/decimal, scientific notation (e or E).
@@ -134,6 +134,83 @@ class BaseDeployment(ABC):
         self.config = config
         self.manifest = self._load_manifest(config.manifest_file)
         self.console = Console()
+        self._validate_launchers()
+
+    def _validate_launchers(self) -> None:
+        """Validate every launcher this deployment will read, and canonicalize in place.
+
+        Deliberately in ``__init__`` rather than ``validate()``: ``execute()`` catches
+        bare ``Exception`` and returns a FAILED result without re-raising, so a
+        ConfigurationError raised any later never reaches the handler in
+        ``cli/commands/run.py``. ``__init__`` runs under DeploymentFactory.create(),
+        which re-raises ConfigurationError, so the user gets INVALID_ARGS and a message
+        naming the correct spelling.
+
+        Raises:
+            ConfigurationError: If any configured launcher is not a valid launcher.
+        """
+        # Imported here: common.py imports from core.errors, and a module-level import
+        # would make base.py part of that chain for every deployment consumer.
+        from madengine.core.errors import ConfigurationError, create_error_context
+
+        from .common import ensure_launcher_allowed, validate_launcher
+
+        context = self.config.additional_context or {}
+
+        def _accept(value: Optional[str], source: str) -> Optional[str]:
+            canonical = validate_launcher(value, source=source)
+            ensure_launcher_allowed(
+                canonical, self.DEPLOYMENT_TYPE, source=source
+            )
+            return canonical
+
+        distributed = context.get("distributed")
+        if isinstance(distributed, dict) and "launcher" in distributed:
+            distributed["launcher"] = _accept(
+                distributed["launcher"], "additional_context.distributed.launcher"
+            )
+
+        launcher_cfg = context.get("launcher")
+        if launcher_cfg is not None and not isinstance(launcher_cfg, dict):
+            # A bare string here is a natural mistake, since distributed.launcher *is*
+            # a string. Left alone it surfaces as AttributeError deep in the K8s
+            # template context, so name both valid shapes now.
+            raise ConfigurationError(
+                f"'launcher' in additional_context must be an object, got "
+                f"{type(launcher_cfg).__name__} ({launcher_cfg!r})",
+                context=create_error_context(
+                    operation="validate_launchers",
+                    component="deployment.base",
+                    additional_info={"launcher": launcher_cfg},
+                ),
+                suggestions=[
+                    'Use {"launcher": {"type": "torchrun", "nnodes": 2}}',
+                    'Or {"distributed": {"launcher": "torchrun", "nnodes": 2}}',
+                ],
+            )
+        if isinstance(launcher_cfg, dict) and "type" in launcher_cfg:
+            launcher_cfg["type"] = _accept(
+                launcher_cfg["type"], "additional_context.launcher.type"
+            )
+
+        deployment_config = self.manifest.get("deployment_config")
+        if isinstance(deployment_config, dict):
+            manifest_distributed = deployment_config.get("distributed")
+            if isinstance(manifest_distributed, dict) and "launcher" in manifest_distributed:
+                manifest_distributed["launcher"] = _accept(
+                    manifest_distributed["launcher"],
+                    "build_manifest.json deployment_config.distributed.launcher",
+                )
+
+        for model_name, model_info in (self.manifest.get("built_models") or {}).items():
+            if not isinstance(model_info, dict):
+                continue
+            model_distributed = model_info.get("distributed")
+            if isinstance(model_distributed, dict) and "launcher" in model_distributed:
+                model_distributed["launcher"] = _accept(
+                    model_distributed["launcher"],
+                    f"model '{model_name}' distributed.launcher",
+                )
 
     def _load_manifest(self, manifest_file: str) -> Dict:
         """
@@ -176,6 +253,7 @@ class BaseDeployment(ABC):
             DeploymentResult with status and metrics
         """
         result = None
+        cancel_hook = None
         try:
             # Step 1: Validate
             self.console.print(
@@ -201,10 +279,26 @@ class BaseDeployment(ABC):
             self.console.print(f"[blue]Deploying to {self.DEPLOYMENT_TYPE}...[/blue]")
             result = self.deploy()
 
-            if not result.is_success:
+            # A deploy() that ran the workload synchronously (skip_monitoring, e.g. a
+            # slurm_multi card inside an existing allocation) and failed still left its
+            # results: a launcher exits non-zero when any cell failed, after publishing
+            # the CSV with the cells that passed. Collect them below, as the monitored
+            # path does for a failed job. Any other failed deploy() never ran.
+            ran_and_failed = (
+                not result.is_success and result.skip_monitoring and result.deployment_id
+            )
+            if not result.is_success and not ran_and_failed:
                 if self.config.cleanup_on_failure:
                     self.cleanup(result.deployment_id)
                 return result
+
+            # A cancel calls os._exit and never reaches the KeyboardInterrupt
+            # handler below. Register the same cleanup for that path.
+            if result.deployment_id:
+                deployment_id = result.deployment_id
+                cancel_hook = lifecycle.register_cancel_hook(
+                    lambda deployment_id=deployment_id: self.cleanup(deployment_id)
+                )
 
             # Step 4: Monitor (optional)
             # Skip monitoring if deploy() already ran synchronously (e.g., inside salloc)
@@ -221,6 +315,9 @@ class BaseDeployment(ABC):
                     # Ensure empty metrics dict exists even if collection fails
                     result.metrics = {"successful_runs": [], "failed_runs": []}
 
+            if ran_and_failed and self.config.cleanup_on_failure:
+                self.cleanup(result.deployment_id)
+
             return result
 
         except KeyboardInterrupt:
@@ -235,6 +332,9 @@ class BaseDeployment(ABC):
                 deployment_id="",
                 message=f"Exception: {str(e)}",
             )
+        finally:
+            if cancel_hook is not None:
+                lifecycle.unregister_cancel_hook(cancel_hook)
 
     def _monitor_until_complete(self, deployment_id: str) -> DeploymentResult:
         """
@@ -473,6 +573,9 @@ class BaseDeployment(ABC):
                 "tpot",
                 "response_time",
                 "accuracy",
+                "exact_match",
+                "itl",
+                "e2el",
                 "precision",
                 "recall",
                 "f1",
@@ -605,7 +708,8 @@ class BaseDeployment(ABC):
             "docker_file,base_docker,docker_sha,docker_image,git_commit,machine_name,"
             "deployment_type,launcher,gpu_architecture,performance,metric,relative_change,"
             "status,build_duration,test_duration,dataname,data_provider_type,data_size,"
-            "data_download_duration,build_number,additional_docker_run_options"
+            "data_download_duration,build_number,additional_docker_run_options,"
+            "serving_mode,platform"
         )
         perf_csv_path.write_text(standard_header + "\n", encoding="utf-8")
 
@@ -646,6 +750,7 @@ class BaseDeployment(ABC):
             "data_download_duration",
             "build_number",
             "additional_docker_run_options",
+            "serving_mode",
         ]
         file_exists = perf_csv_path.exists()
         existing_header = None

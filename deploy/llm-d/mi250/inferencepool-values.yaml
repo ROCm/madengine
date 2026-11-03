@@ -1,0 +1,61 @@
+provider:
+  name: none
+inferencePool:
+  targetPorts:
+    - number: 8000
+  modelServerType: vllm
+  modelServerProtocol: http
+  modelServers:
+    matchLabels:
+      llm-d.ai/inference-serving: "true"
+experimentalHttpRoute:
+  enabled: true
+  inferenceGatewayName: llm-d-inference-gateway
+  requestTimeout: "600s"
+inferenceExtension:
+  image:
+    registry: ghcr.io
+    repository: llm-d/llm-d-router-endpoint-picker
+    tag: v0.11.0
+    pullPolicy: IfNotPresent
+  pluginsConfigFile: pd-epp.yaml
+  pluginsCustomConfig:
+    pd-epp.yaml: |
+      apiVersion: llm-d.ai/v1alpha1
+      kind: EndpointPickerConfig
+      plugins:
+        - type: approx-prefix-cache-producer
+          parameters:
+            maxPrefixTokensToMatch: 16384
+            lruCapacityPerServer: 31250
+        - type: prefix-cache-scorer
+        - type: queue-scorer
+        - type: prefill-filter
+        - type: decode-filter
+        - type: max-score-picker
+        - type: disagg-profile-handler
+          parameters:
+            deciders:
+              prefill: prefix-based-pd-decider
+        - type: prefix-based-pd-decider
+          parameters:
+            nonCachedTokens: 1
+      schedulingProfiles:
+        - name: prefill
+          plugins:
+            - pluginRef: prefill-filter
+            - pluginRef: max-score-picker
+            - pluginRef: prefix-cache-scorer
+              weight: 2
+            - pluginRef: queue-scorer
+              weight: 1
+        - name: decode
+          plugins:
+            - pluginRef: decode-filter
+            - pluginRef: max-score-picker
+            - pluginRef: prefix-cache-scorer
+              weight: 2
+            - pluginRef: queue-scorer
+              weight: 1
+  flags:
+    allow-experimental-plugins: "true"
