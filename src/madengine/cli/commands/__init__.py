@@ -14,6 +14,7 @@ from .report import report_app
 from .database import database
 from .cleanup import cleanup
 from .setup_page import setup_page
+from .stack import stack_app
 
 __all__ = [
     "build",
@@ -23,5 +24,6 @@ __all__ = [
     "database",
     "cleanup",
     "setup_page",
+    "stack_app",
 ]
 
