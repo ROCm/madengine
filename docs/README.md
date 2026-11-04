@@ -35,6 +35,7 @@ Complete documentation for madengine - AI model automation and distributed bench
 | Guide | Description |
 |-------|-------------|
 | **[CLI Reference](cli-reference.md)** | **Complete command-line options and examples** |
+| [Codebase Wiki](https://rocm.github.io/madengine/wiki/) | Single-page architecture and internals reference ([source](wiki/index.html)) |
 
 ## 🏗️ Architecture
 

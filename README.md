@@ -207,6 +207,7 @@ More local/K8s/SLURM/CI recipes: [Usage Guide](docs/usage.md) · [Configuration]
 | [Launchers](docs/launchers.md) | Distributed frameworks + capability matrices |
 | [Profiling](docs/profiling.md) | Performance analysis tools |
 | [Contributing](docs/contributing.md) | How to contribute |
+| [Codebase Wiki](https://rocm.github.io/madengine/wiki/) | Single-page architecture and internals reference ([source](docs/wiki/index.html)) |
 
 ## 🎯 Supported Launchers
 
