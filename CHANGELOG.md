@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A signal during console output no longer skips the teardown**: when SIGINT/SIGTERM/SIGHUP arrived while madengine was writing to stdout, the handler's own message raised `RuntimeError: reentrant call inside <_io.BufferedWriter>` before anything was cleaned up, so containers were left running, cancel hooks never ran and the exit status was 1, not 130. The handler now writes to the file descriptors directly and always exits 130.
 - **Placeholder Docker Hub credentials no longer log in** (#192): `tests/fixtures/dummy/credential.json` shipped `your-docker-username` / `your-docker-token`. Those values are non-blank, so e2e builds ran `docker login`, failed with `unauthorized`, and then hit Docker Hub's anonymous pull rate limit. Template usernames and passwords are now ignored the same way blank ones are. A real username and password still logs in, including a username such as `your-company`.
 
 ### Added
