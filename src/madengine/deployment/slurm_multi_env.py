@@ -61,8 +61,26 @@ class SubmitEnv:
 def user_env_vars(additional_context: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     """additional_context.env_vars without keys only a preset set, and the keys dropped.
 
-    Presets carry settings for madengine's own launchers; a slurm_multi script owns its
-    environment and the same card submitted without madengine never receives them.
+    For the self-managed path. load_slurm_config merges the slurm preset
+    profiles' env_vars into additional_context.env_vars, where they become
+    indistinguishable from what the user asked for. The templated launchers
+    rely on them. A slurm_multi card does not: it runs its own launcher
+    script, which owns its environment, and the same card submitted without
+    madengine (plain `sbatch --export=ALL` of the card script)
+    never receives them. Exporting them anyway makes the madengine run a
+    different experiment from the standalone one.
+
+    It is not hypothetical. MAD's run_xPyD_models.slurm sources a connector
+    env that sets HSA_ENABLE_SDMA=1 but forwards `-e K=${K:-default}`, so the
+    multi-node profile's HSA_ENABLE_SDMA=0 won: SDMA was off under madengine
+    and on under plain sbatch. The same profile's NCCL_SOCKET_IFNAME=eth0
+    preempts the card's own fabric detection (eno0 on AINIC, fenic0 on
+    Thor2), and NCCL_IB_DISABLE=1 would push NCCL onto TCP in any launcher
+    that forwards it.
+
+    Only preset-ONLY keys are dropped: a user who sets NCCL_IB_DISABLE
+    themselves still gets exactly their value, and the card's env_vars,
+    docker_env_vars and layered config are untouched.
     """
     env = dict(additional_context.get("env_vars") or {})
     preset_only = additional_context.get(PRESET_ENV_KEYS) or []

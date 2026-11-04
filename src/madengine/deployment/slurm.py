@@ -586,38 +586,6 @@ class SlurmDeployment(BaseDeployment):
             model_launcher=(model_info.get("distributed") or {}).get("launcher"),
         )
 
-    def _user_env_vars(self) -> Dict[str, str]:
-        """additional_context.env_vars without the keys only a preset set.
-
-        For the self-managed path. load_slurm_config merges the slurm preset
-        profiles' env_vars into additional_context.env_vars, where they become
-        indistinguishable from what the user asked for. The templated launchers
-        rely on them. A slurm_multi card does not: it runs its own launcher
-        script, which owns its environment, and the same card submitted without
-        madengine (plain `sbatch --export=ALL` of the card script)
-        never receives them. Exporting them anyway makes the madengine run a
-        different experiment from the standalone one.
-
-        It is not hypothetical. MAD's run_xPyD_models.slurm sources a connector
-        env that sets HSA_ENABLE_SDMA=1 but forwards `-e K=${K:-default}`, so the
-        multi-node profile's HSA_ENABLE_SDMA=0 won: SDMA was off under madengine
-        and on under plain sbatch. The same profile's NCCL_SOCKET_IFNAME=eth0
-        preempts the card's own fabric detection (eno0 on AINIC, fenic0 on
-        Thor2), and NCCL_IB_DISABLE=1 would push NCCL onto TCP in any launcher
-        that forwards it.
-
-        Only preset-ONLY keys are dropped: a user who sets NCCL_IB_DISABLE
-        themselves still gets exactly their value, and the card's env_vars,
-        docker_env_vars and layered config are untouched.
-        """
-        env, dropped = user_env_vars(self.config.additional_context)
-        if dropped:
-            self.console.print(
-                f"[dim]Not exporting SLURM preset env to the self-managed script "
-                f"(set them in env_vars to keep them): {', '.join(dropped)}[/dim]"
-            )
-        return env
-
     @staticmethod
     def _normalize_nodelist(nodelist: Optional[str]) -> Optional[str]:
         """Normalize nodelist to comma-separated without spaces for #SBATCH --nodelist."""
@@ -662,7 +630,7 @@ class SlurmDeployment(BaseDeployment):
         # The submit layer (slurm_multi_env.submit_env), the same on every path that
         # runs a slurm_multi card, weakest first: the card's layered config
         # (mad-config.yaml), docker_env_vars, the card's env_vars, the run's
-        # env_vars without preset-only keys (see _user_env_vars), and xP / yD from
+        # env_vars without preset-only keys (slurm_multi_env.user_env_vars), and xP / yD from
         # the card's sglang_disagg block when nothing above set them. Each name's
         # source goes to the launcher as MAD_ENV_SOURCES (below).
         try:
