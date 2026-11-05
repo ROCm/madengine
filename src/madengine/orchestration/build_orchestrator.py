@@ -1815,7 +1815,7 @@ exit 0
             # values came back as this run's additional_context.env_vars and could
             # no longer be told apart from the user's -- which is exactly the
             # distinction a slurm_multi card needs (see
-            # SlurmDeployment._user_env_vars).
+            # slurm_multi_env.user_env_vars).
             from madengine.deployment.config_loader import PRESET_ENV_KEYS
 
             for key in self.additional_context.get(PRESET_ENV_KEYS, []):

@@ -194,8 +194,7 @@ class TestPodHostnames:
 
 class TestRdmaNetworking:
     def test_host_network_puts_one_pod_per_node_across_runs(self, tmp_path, monkeypatch):
-        # Host-network pods share the node's ports (the shim agent's and the card's
-        # own), so no two -- of this run or another run, in any namespace -- may
+        # Host-network pods share the node's ports (the card's own), so no two -- of this run or another run, in any namespace -- may
         # land on one node.
         from madengine.deployment.k8s_slurm_multi import HOST_NETWORK_LABEL
         _, job, pod, _ = _prepared(tmp_path, monkeypatch, k8s={"host_network": True})

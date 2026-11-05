@@ -36,6 +36,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -840,6 +841,49 @@ def container_watchdog_command(filename: typing.Optional[str] = None) -> str:
     return "sh -c '" + watchdog_script(filename) + "' "
 
 
+class _FdWriter:
+    """A text stream that writes straight to a file descriptor, unbuffered.
+
+    For the signal handler: it may interrupt a write to the buffered
+    sys.stdout / sys.stderr, which cannot be re-entered.
+    """
+
+    def __init__(self, fd: int, encoding: str = "utf-8"):
+        self._fd = fd
+        self.encoding = encoding
+
+    def write(self, text: str) -> int:
+        data = text.encode(self.encoding, "replace")
+        while data:
+            try:
+                data = data[os.write(self._fd, data):]
+            except InterruptedError:
+                continue
+            except OSError:
+                break
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+    def isatty(self) -> bool:
+        try:
+            return os.isatty(self._fd)
+        except OSError:
+            return False
+
+
+def _use_unbuffered_console() -> None:
+    """Point sys.stdout / sys.stderr at their file descriptors, unbuffered."""
+    for attr, default_fd in (("stdout", 1), ("stderr", 2)):
+        stream = getattr(sys, attr, None)
+        try:
+            fd = stream.fileno() if stream is not None else default_fd
+        except (AttributeError, OSError, ValueError):
+            fd = default_fd
+        setattr(sys, attr, _FdWriter(fd, getattr(stream, "encoding", None) or "utf-8"))
+
+
 def install_signal_handlers() -> None:
     """Tear containers down when this process is signalled.
 
@@ -852,31 +896,39 @@ def install_signal_handlers() -> None:
 
     def handle(signum, frame):  # noqa: ANN001 - signal handler signature
         global _cleanup_in_progress
-        name = signal.Signals(signum).name
-        if _cleanup_in_progress:
-            print(f"\nReceived {name} again; exiting now.", flush=True)
-            os._exit(130)
-        _cleanup_in_progress = True
-        print(f"\nReceived {name}; stopping containers...", flush=True)
-        # Drop the heartbeats before anything else. Even if every docker call
-        # below times out, the containers now stop by themselves. Snapshot
-        # under the lock; the handler may be interrupting a holder of it.
-        with _heartbeat_lock:
-            paths = list(_heartbeat_paths)
-        for path in paths:
-            stop_heartbeat(path)
+        # The signal may land while the main thread is inside a write to
+        # sys.stdout / sys.stderr (madengine prints a lot). Writing to the same
+        # buffered stream from here then raises "RuntimeError: reentrant call
+        # inside <_io.BufferedWriter>", which used to escape this handler before
+        # any teardown ran: containers were left running and the process exited
+        # 1, not 130. Everything printed from here on goes straight to the file
+        # descriptors, and os._exit(130) runs whatever happens.
+        _use_unbuffered_console()
         try:
-            reap_registered(verbose=True, budget=SIGNAL_CLEANUP_BUDGET)
-        finally:
-            # os._exit skips finally blocks in the rest of the process, so
-            # cluster teardown has to run here, before that exit.
-            try:
-                run_cancel_hooks()
-            finally:
-                # os._exit skips interpreter shutdown deliberately: atexit hooks
-                # and destructors here would re-enter the teardown we just did,
-                # and any one of them could block past the grace period.
+            name = signal.Signals(signum).name
+            if _cleanup_in_progress:
+                print(f"\nReceived {name} again; exiting now.", flush=True)
                 os._exit(130)
+            _cleanup_in_progress = True
+            print(f"\nReceived {name}; stopping containers...", flush=True)
+            # Drop the heartbeats before anything else. Even if every docker call
+            # below times out, the containers now stop by themselves. Snapshot
+            # under the lock; the handler may be interrupting a holder of it.
+            with _heartbeat_lock:
+                paths = list(_heartbeat_paths)
+            for path in paths:
+                stop_heartbeat(path)
+            try:
+                reap_registered(verbose=True, budget=SIGNAL_CLEANUP_BUDGET)
+            finally:
+                # os._exit skips finally blocks in the rest of the process, so
+                # cluster teardown has to run here, before that exit.
+                run_cancel_hooks()
+        finally:
+            # os._exit skips interpreter shutdown deliberately: atexit hooks
+            # and destructors here would re-enter the teardown we just did,
+            # and any one of them could block past the grace period.
+            os._exit(130)
 
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         try:
