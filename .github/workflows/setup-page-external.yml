@@ -14,10 +14,6 @@
 #   - For a PRIVATE target repo, add a repo/org secret named SETUP_PAGE_TOKEN
 #     (a PAT with read access to the target repo). Public targets work with the
 #     default GITHUB_TOKEN.
-#
-# The Pages site is shared with wiki-pages.yml: the setup page is served at the
-# site root and the codebase wiki at /wiki/. Every deploy replaces the whole
-# site, so this workflow also re-publishes docs/wiki/index.html.
 
 name: Setup Page (external repo)
 
@@ -45,11 +41,10 @@ permissions:
   pages: write
   id-token: write
 
-# Allow only one concurrent deployment. Shared with wiki-pages.yml; do not
-# cancel, or one workflow could drop the other's in-flight deploy.
+# Allow only one concurrent deployment.
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -88,11 +83,6 @@ jobs:
             --output "${GITHUB_WORKSPACE}/_site/index.html" \
             --title "$TITLE" \
             --repo-url "${{ github.server_url }}/${{ inputs.target_repo }}"
-
-      - name: Include codebase wiki
-        run: |
-          mkdir -p _site/wiki
-          cp madengine/docs/wiki/index.html _site/wiki/index.html
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

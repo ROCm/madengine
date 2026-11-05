@@ -3143,7 +3143,7 @@ madengine database -f perf.csv --db benchmarks -c runs -k model,build_number --d
 <tr><td><code>requires_docker</code>, <code>requires_models</code></td><td>Needs a Docker daemon or model fixtures</td></tr>
 </tbody>
 </table>
-<p>Markers are opt-in per test (most e2e tests use <code>skipif</code> guards on detected hardware instead). Run a tier by path, not by marker. There is no test workflow in <span class="filepath">.github/workflows/</span> (it only holds the two GitHub Pages publishers: <code>setup-page-external.yml</code> and <code>wiki-pages.yml</code>), so run <code>pytest tests/unit</code> and the pre-commit hooks locally before opening a PR.</p>
+<p>Markers are opt-in per test (most e2e tests use <code>skipif</code> guards on detected hardware instead). Run a tier by path, not by marker. There is no test workflow in <span class="filepath">.github/workflows/</span> (it only holds the setup-page publisher), so run <code>pytest tests/unit</code> and the pre-commit hooks locally before opening a PR.</p>
 </section>
 
 <section id="contrib">
@@ -3246,7 +3246,7 @@ madengine database -f perf.csv --db benchmarks -c runs -k model,build_number --d
 </section>
 <footer class="footer">
   madengine wiki · reflects the <code>develop</code> line after v2.4.0 · single self-contained HTML file (no server, no external assets) · print-friendly (sidebar hidden, tabs expanded)<br>
-  Published to GitHub Pages at <code>/wiki/</code> by <span class="filepath">.github/workflows/wiki-pages.yml</span> on every push to <code>develop</code> that changes <span class="filepath">docs/wiki/</span>.<br>
+  Served by GitHub Pages (branch <code>develop</code>) at <code>/docs/wiki/</code>; a merge to <code>develop</code> that changes <span class="filepath">docs/wiki/index.html</span> updates it.<br>
   Maintenance: when a flag, context key, or default changes, update the section that cites its source file. Prefer linking to the code path over copying values that change often.
 </footer>
 
