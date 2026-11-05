@@ -309,15 +309,16 @@ def _validate_launcher_after_defaults(context: Dict[str, Any]) -> None:
 def _validate_platform(context: Dict[str, Any]) -> None:
     """Reject a platform string this branch does not run.
 
-    Omitted platform stays Docker. ``bare_metal`` selects conda. The retired
-    ``bare_metal`` object, an unknown platform, and a conda block on a Docker
-    run fail here, before a build or a scheduler submission.
+    Omitted platform stays Docker. ``podman`` selects the Podman CLI on the
+    local container path. ``bare_metal`` selects conda. The retired
+    ``bare_metal`` object, an unknown platform, and a conda block on a
+    container run fail here, before a build or a scheduler submission.
     """
     from madengine.core.errors import ConfigurationError
-    from madengine.orchestration.platform import resolve_context_platform
+    from madengine.orchestration.platform import apply_context_platform
 
     try:
-        resolve_context_platform(context)
+        apply_context_platform(context)
     except ConfigurationError as exc:
         console.print(f"❌ Invalid platform: [red]{exc}[/red]")
         for suggestion in exc.suggestions or []:

@@ -43,8 +43,8 @@ from madengine.orchestration.image_filtering import (
 from madengine.orchestration.image_filtering import (
     filter_images_by_skip_gpu_arch as _filter_by_skip_gpu_arch,
 )
+from madengine.orchestration.platform import apply_context_platform
 from madengine.utils.session_tracker import SessionTracker
-
 
 # The perf CSV the SLURM and k8s deployments append to. It is also what an
 # in-allocation madengine writes on a shared workspace, which is why the
@@ -269,6 +269,8 @@ class RunOrchestrator:
         session_start_row = self.session_tracker.start_session()
 
         try:
+            apply_context_platform(self.additional_context)
+
             # Check for MAD_CONTAINER_IMAGE (local image mode)
             # This must be checked before normal build/manifest flow
             mad_container_image = None
@@ -353,6 +355,11 @@ class RunOrchestrator:
             ]:
                 if key in deployment_config and key not in self.additional_context:
                     self.additional_context[key] = deployment_config[key]
+
+            # A manifest built with platform podman carries that choice. Re-apply
+            # after the merge so a run that only has the manifest still selects
+            # the Podman CLI before any container command.
+            apply_context_platform(self.additional_context)
 
             # Display manifest entries: context (from build) and deployment_config (run/deploy)
             self.rich_console.print("[bold blue]Build manifest breakdown[/bold blue]\n")
@@ -1832,7 +1839,8 @@ class RunOrchestrator:
         Infer deployment target from configuration structure.
 
         Convention over Configuration:
-        - ``platform`` of ``bare_metal`` → bare-metal (conda, no Docker).
+        - ``platform`` of ``bare_metal`` → bare-metal (conda, no container).
+          ``platform`` of ``podman`` → local containers via the Podman CLI.
           Omitted ``platform`` means Docker. A ``bare_metal`` key is rejected.
         - Presence of "llm_d" field → llm-d deployment
         - Presence of "k8s" or "kubernetes" field → k8s deployment

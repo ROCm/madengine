@@ -14,6 +14,19 @@
     "args": ""
   },
   {
+    "name": "dummy_podman",
+    "dockerfile": "docker/dummy",
+    "scripts": "scripts/dummy/run.sh",
+    "n_gpus": "1",
+    "owner": "mad.support@amd.com",
+    "training_precision": "",
+    "tags": [
+      "dummies",
+      "dummy_podman"
+    ],
+    "args": ""
+  },
+  {
     "name": "dummy2",
     "dockerfile": "docker/dummy",
     "scripts": "scripts/dummy/run.sh",
