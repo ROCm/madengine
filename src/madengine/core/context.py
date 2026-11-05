@@ -62,6 +62,7 @@ class Context:
         get_ctx_test: Get context test.
         get_gpu_vendor: Get GPU vendor.
         get_host_os: Get host OS.
+        get_is_wsl: Get whether the GPU is exposed through the WSL2 DXG driver.
         get_numa_balancing: Get NUMA balancing.
         get_system_ngpus: Get system number of GPUs.
         get_system_gpu_architecture: Get system GPU architecture.
@@ -233,6 +234,11 @@ class Context:
             if "host_os" not in self.ctx:
                 self.ctx["host_os"] = self.get_host_os()
                 print(f"Detected host OS: {self.ctx['host_os']}")
+
+            if "is_wsl" not in self.ctx:
+                self.ctx["is_wsl"] = self.get_is_wsl()
+                if self.ctx["is_wsl"]:
+                    print("Detected WSL2: GPU exposed via /dev/dxg (no KFD)")
 
             if "numa_balancing" not in self.ctx:
                 self.ctx["numa_balancing"] = self.get_numa_balancing()
@@ -463,6 +469,20 @@ class Context:
         return self.console.sh(
             "if [ -f \"$(which apt)\" ]; then echo 'HOST_UBUNTU'; elif [ -f \"$(which yum)\" ]; then echo 'HOST_CENTOS'; elif [ -f \"$(which zypper)\" ]; then echo 'HOST_SLES'; elif [ -f \"$(which tdnf)\" ]; then echo 'HOST_AZURE'; else echo 'Unable to detect Host OS'; fi || true"
         )
+
+    def get_is_wsl(self) -> bool:
+        """Get whether the GPU is exposed through the WSL2 DXG driver.
+
+        Returns:
+            bool: True when the GPU is reachable via /dev/dxg but not KFD.
+
+        Note:
+            The check is device-based rather than kernel-based (e.g. 'microsoft'
+            in /proc/version) because what matters to madengine is how the GPU is
+            exposed, not which kernel is running. WSL2 provides /dev/dxg and has
+            no /dev/kfd, no KFD topology, and no DRM render nodes.
+        """
+        return os.path.exists("/dev/dxg") and not os.path.exists("/dev/kfd")
 
     def get_numa_balancing(self) -> typing.Union[str, bool]:
         """Get NUMA balancing.
@@ -879,10 +899,18 @@ class Context:
                     for item in sorted(data, key=lambda x: x["gpu"]):
                         try:
                             render_str = item["render"]  # e.g., "renderD128"
-                            render_num = int(render_str.replace("renderD", ""))
-                            gpu_renderDs.append(render_num)
-                        except (KeyError, ValueError) as e:
-                            raise RuntimeError(f"Failed to parse renderD from amd-smi: {e}. Item: {item}")
+                            render_num = int(str(render_str).replace("renderD", ""))
+                        except (KeyError, ValueError):
+                            # amd-smi reports 'N/A' when the GPU has no DRM render
+                            # node, e.g. on WSL2 where it is exposed via /dev/dxg.
+                            # Return None rather than a partial list: callers index
+                            # it by GPU id, so a short list would misalign.
+                            print(
+                                "Note: amd-smi reports no renderD node "
+                                f"({item.get('render')!r}); skipping renderD mapping"
+                            )
+                            return None
+                        gpu_renderDs.append(render_num)
 
         except (RuntimeError, ValueError, KeyError) as e:
             # Re-raise with context
