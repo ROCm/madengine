@@ -127,6 +127,7 @@ LAUNCHERS: List[str] = [
     "vllm",
     "sglang",
     "sglang-disagg",
+    "vllm-disagg",
     "slurm_multi",
 ]
 

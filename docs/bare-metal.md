@@ -31,7 +31,7 @@ These forms are rejected before any env is created:
 | `"platform": "bare_metal"` together with `slurm`, `k8s`, `kubernetes`, or `llm_d` | Rejected |
 | Any other `platform` string | Rejected |
 
-`--config platform=bare_metal` is still rejected. The Hydra `platform` group only accepts `docker`. Pass bare metal through `--additional-context` or `--additional-context-file`.
+`--config platform=bare_metal` writes `"platform": "bare_metal"`, the same string as `--additional-context`. `singularity` and `podman` are still rejected.
 
 ## Prerequisites
 

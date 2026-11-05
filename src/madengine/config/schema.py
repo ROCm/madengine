@@ -77,8 +77,13 @@ class ConfigValidator:
             if ptype and ptype not in SUPPORTED_PLATFORMS:
                 errors.append(
                     f"Platform '{ptype}' is not yet supported. "
-                    f"Supported: {', '.join(sorted(SUPPORTED_PLATFORMS))}"
+                    f"Supported: {', '.join(sorted(SUPPORTED_PLATFORMS | {'bare_metal'}))}"
                 )
+        elif isinstance(platform, str) and platform not in {"docker", "bare_metal"}:
+            errors.append(
+                f"Platform '{platform}' is not yet supported. "
+                "Supported: bare_metal, docker"
+            )
 
         for key in raw:
             if key not in KNOWN_TOP_LEVEL_KEYS:
