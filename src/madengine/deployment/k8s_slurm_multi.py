@@ -31,6 +31,7 @@ import base64
 import io
 import os
 import re
+import secrets
 import tarfile
 import time
 from pathlib import Path
@@ -238,6 +239,8 @@ class KubernetesSlurmMultiMixin:
             "MAD_K8S_JOB_ID": self._slurm_multi_run_id, "MAD_K8S_IMAGE": image,
             "MAD_K8S_SCRIPT": script, "MAD_K8S_ARGS": model_info.get("args") or "",
             "MAD_K8S_AGENT_PORT": str(AGENT_PORT),
+            # The agents run any command sent to them: only this run's pods hold the token.
+            "MAD_K8S_AGENT_TOKEN": secrets.token_hex(32),
         })
         if model_info.get("multiple_results"):
             env["MAD_K8S_MULTIPLE_RESULTS"] = model_info["multiple_results"]
