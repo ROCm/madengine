@@ -846,20 +846,43 @@ class _FdWriter:
 
     For the signal handler: it may interrupt a write to the buffered
     sys.stdout / sys.stderr, which cannot be re-entered.
+
+    Best effort and bounded: a console is never worth more than the teardown it
+    reports on. When the reader of a pipe has stopped reading (a stalled pager or
+    log collector), a plain os.write blocks for good and the teardown never runs.
+    Each chunk is written only once select() says the fd can take it, at most
+    PIPE_BUF bytes (a pipe that is writable takes that much without blocking),
+    and a stream that stays full for ``budget`` seconds is given up on: this and
+    every later write to it is dropped. The fd is not made non-blocking, as that
+    flag is shared with every other process writing to it.
     """
 
-    def __init__(self, fd: int, encoding: str = "utf-8"):
+    CHUNK = 512  # POSIX PIPE_BUF minimum
+
+    def __init__(self, fd: int, encoding: str = "utf-8", budget: float = 2.0):
         self._fd = fd
         self.encoding = encoding
+        self._budget = budget
+        self._stalled = False
 
     def write(self, text: str) -> int:
+        if self._stalled:
+            return len(text)
+        import select
+
         data = text.encode(self.encoding, "replace")
+        deadline = time.monotonic() + self._budget
         while data:
             try:
-                data = data[os.write(self._fd, data):]
+                remaining = max(0.0, deadline - time.monotonic())
+                _, writable, _ = select.select([], [self._fd], [], remaining)
+                if not writable:
+                    self._stalled = True
+                    break
+                data = data[os.write(self._fd, data[: self.CHUNK]):]
             except InterruptedError:
                 continue
-            except OSError:
+            except (OSError, ValueError):
                 break
         return len(text)
 
@@ -907,7 +930,9 @@ def install_signal_handlers() -> None:
         try:
             name = signal.Signals(signum).name
             if _cleanup_in_progress:
-                print(f"\nReceived {name} again; exiting now.", flush=True)
+                # Exit first: the console may be what the first teardown is stuck
+                # on. The note is written only if stderr can take it right now.
+                _FdWriter(2, budget=0).write(f"\nReceived {name} again; exiting now.\n")
                 os._exit(130)
             _cleanup_in_progress = True
             print(f"\nReceived {name}; stopping containers...", flush=True)
