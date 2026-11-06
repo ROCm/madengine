@@ -207,7 +207,7 @@ class TestBuildOnComputeBuildArgs:
     context does not set. Without them a Dockerfile that picks its stack from
     MAD_SYSTEM_GPU_ARCHITECTURE builds the wrong one."""
 
-    def _build_line(self, tmp_path, ctx_args, card_args=None):
+    def _build_line(self, tmp_path, ctx_args, card_args=None, pins_tool=None):
         import os
         from madengine.orchestration.build_orchestrator import BuildOrchestrator
         orch = BuildOrchestrator.__new__(BuildOrchestrator)
@@ -223,13 +223,22 @@ class TestBuildOnComputeBuildArgs:
             model["docker_build_arg"] = card_args
         df = tmp_path / "docker" / "card.ubuntu.amd.Dockerfile"
         df.parent.mkdir(parents=True, exist_ok=True); df.write_text("FROM scratch\n")
+        if pins_tool:
+            (df.parent / "pins").mkdir(exist_ok=True)
+            (df.parent / "pins" / "pins.py").write_text(pins_tool)
+        import subprocess as _sp
+        real_run = _sp.run
+
+        def fake_run(cmd, *a, **kw):  # the pin-set tool runs; sbatch does not
+            if isinstance(cmd, list) and len(cmd) > 1 and str(cmd[1]).endswith("pins.py"):
+                return real_run(cmd, *a, **kw)
+            return MagicMock(returncode=0)
         cwd = os.getcwd()
         try:
             os.chdir(tmp_path)
             with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as dm:
                 dm.return_value.run.return_value = [model]
-                with patch("subprocess.run") as run:
-                    run.return_value = MagicMock(returncode=0)
+                with patch("subprocess.run", side_effect=fake_run):
                     orch._execute_build_on_compute(registry="localhost:5000/repo",
                                                    manifest_output=str(tmp_path / "m.json"))
             script = (tmp_path / "madengine_build_job.sh").read_text()
@@ -252,6 +261,26 @@ class TestBuildOnComputeBuildArgs:
     def test_build_output_is_on_stdout(self, tmp_path):
         # Spur's srun dropped the step's stderr, which is where docker build writes.
         assert self._build_line(tmp_path, None).endswith("2>&1")
+
+    PINS_TOOL = (
+        "import json, sys\n"
+        "a = sys.argv[1:]\n"
+        "print(json.dumps({'PINS': a[1], 'BASE_IMAGE': 'base-for-' + a[a.index('--arch') + 1],"
+        " 'MAX_JOBS': '32'}))\n"
+    )
+
+    def test_pin_set_build_args_reach_docker_build(self, tmp_path):
+        """A card naming a pin set gets the pin set's args here too, as in a local build."""
+        line = self._build_line(tmp_path, {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx950"},
+                                {"PINS": "vllm-kimi-k3"}, pins_tool=self.PINS_TOOL)
+        assert "--build-arg PINS=vllm-kimi-k3" in line
+        assert "--build-arg BASE_IMAGE=base-for-gfx950" in line
+        assert "--build-arg MAX_JOBS=32" in line
+
+    def test_pin_set_without_arch_is_refused_before_submitting(self, tmp_path):
+        from madengine.core.errors import ConfigurationError
+        with pytest.raises(ConfigurationError, match="needs MAD_SYSTEM_GPU_ARCHITECTURE"):
+            self._build_line(tmp_path, None, {"PINS": "vllm-kimi-k3"}, pins_tool=self.PINS_TOOL)
 
 
 class TestBuildOnComputeImageNames:

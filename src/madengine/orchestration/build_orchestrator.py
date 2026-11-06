@@ -1118,6 +1118,7 @@ class BuildOrchestrator:
         # Collect per-model build data (Dockerfile, image names) for all discovered models
         per_model_data: List[Dict] = []
         self.rich_console.print("[bold cyan]🐳 Docker Configuration:[/bold cyan]")
+        pin_builder = DockerBuilder(self.context, self.console)
         for model in models:
             model_name = model.get("name", "unknown")
             dockerfile = model.get("dockerfile", "")
@@ -1165,6 +1166,20 @@ class BuildOrchestrator:
             build_arg = dict(self.context.ctx.get("docker_build_arg", {}) or {})
             for card_arg, card_value in (model.get("docker_build_arg") or {}).items():
                 build_arg.setdefault(card_arg, card_value)
+            # ...and a pin set's args (BASE_IMAGE, ...) for the build's arch, as the
+            # local build adds them; without them the compute node built a pin-set
+            # Dockerfile from no base image.
+            try:
+                build_arg.update(pin_builder.pin_set_build_args(model, dockerfile_path, build_arg))
+            except RuntimeError as e:
+                raise ConfigurationError(
+                    str(e),
+                    context=create_error_context(
+                        operation="build_on_compute",
+                        component="BuildOrchestrator",
+                        additional_info={"model": model_name, "dockerfile": dockerfile_path},
+                    ),
+                ) from e
             build_arg_flags = " ".join(
                 f"--build-arg {shlex.quote(str(k))}={shlex.quote(str(v))}"
                 for k, v in build_arg.items()
