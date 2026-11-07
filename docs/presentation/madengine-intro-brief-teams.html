@@ -1,0 +1,806 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>madengine: a brief introduction</title>
+<meta name="description" content="An eleven-slide introduction to madengine: the problem it solves, what it is, quick start, the build → run → report pipeline, layer structure, features, launchers and parallelism, running real MAD models from one GPU to many nodes, and the additional_context keys people reach for first.">
+<style>
+/* ──────────────────────────────────────────────────────────────
+   Design tokens. Palette and type scale follow the claude.dev
+   "unreasonable effectiveness of HTML" post: warm paper / near-black
+   ink, one terracotta accent, mono labels, 1px rules, square corners.
+   ────────────────────────────────────────────────────────────── */
+:root{
+  --bg:#faf9f5; --ink:#141413; --ink-2:#4c4b45; --ink-3:#7b7a72; --ink-4:#5e5d59;
+  --line:#14141338; --line-soft:#1414131c; --panel:#ece9e0; --raised:#f1efe8;
+  --accent:#c15f3c; --accent-deep:#a94e2f; --hover-row:#1414130d;
+  --ok:#3e7a3e; --warn:#a2761f; --bad:#a04545; --blue:#2c6fa8; --violet:#7d5a9b;
+  --syn-k:#2c6fa8; --syn-s:#3e7a3e; --syn-n:#a2761f; --syn-c:#8a8880; --syn-f:#7d5a9b;
+  --sans:ui-sans-serif,-apple-system,"Segoe UI","Helvetica Neue",Inter,Roboto,Arial,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,"JetBrains Mono",Consolas,"Liberation Mono",monospace;
+  --gutter:clamp(20px,4vw,56px); --nav-h:46px; --foot-h:34px;
+  --ease:cubic-bezier(.19,1,.22,1);
+  color-scheme:light;
+}
+:root[data-scheme=dark]{
+  --bg:#141413; --ink:#faf9f5; --ink-2:#b0aea5; --ink-3:#87867f; --ink-4:#a8a69d;
+  --line:#faf9f529; --line-soft:#faf9f517; --panel:#1e1d1b; --raised:#1a1a18;
+  --accent:#d97757; --accent-deep:#c15f3c; --hover-row:#faf9f50b;
+  --ok:#9ac29a; --warn:#d9b45f; --bad:#c29a9a; --blue:#7fb3e6; --violet:#c39be0;
+  --syn-k:#7fb3e6; --syn-s:#9ac29a; --syn-n:#d9b45f; --syn-c:#6b6a64; --syn-f:#c39be0;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-scheme=light]){
+    --bg:#141413; --ink:#faf9f5; --ink-2:#b0aea5; --ink-3:#87867f; --ink-4:#a8a69d;
+    --line:#faf9f529; --line-soft:#faf9f517; --panel:#1e1d1b; --raised:#1a1a18;
+    --accent:#d97757; --accent-deep:#c15f3c; --hover-row:#faf9f50b;
+    --ok:#9ac29a; --warn:#d9b45f; --bad:#c29a9a; --blue:#7fb3e6; --violet:#c39be0;
+    --syn-k:#7fb3e6; --syn-s:#9ac29a; --syn-n:#d9b45f; --syn-c:#6b6a64; --syn-f:#c39be0;
+    color-scheme:dark;
+  }
+}
+
+*{box-sizing:border-box}
+html{scroll-snap-type:y proximity;scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:1rem;line-height:1.6;
+  -webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
+a{color:var(--accent-deep);text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}
+a:hover{text-decoration-color:currentColor}
+::selection{background:color-mix(in srgb,var(--accent) 30%,transparent)}
+code,kbd,samp{font-family:var(--mono);font-size:.86em}
+p{margin:0 0 .9em;text-wrap:pretty}
+b,strong{font-weight:600}
+
+@media (max-height:820px){html{font-size:15px}}
+@media (max-height:740px){html{font-size:13.5px}}
+/* ── Chrome: top nav, progress, footer ───────────────────────── */
+.nav{position:fixed;inset:0 0 auto 0;height:var(--nav-h);z-index:50;display:flex;align-items:center;gap:20px;
+  padding:0 var(--gutter);background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--line-soft);font-family:var(--mono);font-size:.72rem;letter-spacing:.02em;color:var(--ink-3)}
+.nav .brand{color:var(--ink);font-weight:600;text-decoration:none;white-space:nowrap}
+.nav .brand i{color:var(--accent);font-style:normal}
+.nav .chips{display:flex;gap:2px;flex:1;overflow-x:auto;scrollbar-width:none}
+.nav .chips::-webkit-scrollbar{display:none}
+.nav button,.nav a.chip{all:unset;cursor:pointer;padding:4px 8px;text-transform:uppercase;white-space:nowrap;color:var(--ink-3)}
+.nav button:hover,.nav a.chip:hover{color:var(--ink)}
+.nav a.chip.on{color:var(--accent-deep);box-shadow:inset 0 -1px 0 var(--accent)}
+.nav kbd{color:var(--ink-4);margin-right:4px}
+.nav .tools{display:flex;gap:2px}
+.bar{position:fixed;top:var(--nav-h);left:0;height:2px;width:0;background:var(--accent);z-index:51;transition:width .15s linear}
+.foot{position:fixed;inset:auto 0 0 0;height:var(--foot-h);z-index:50;display:flex;align-items:center;justify-content:space-between;
+  padding:0 var(--gutter);font-family:var(--mono);font-size:.68rem;color:var(--ink-3);letter-spacing:.03em;
+  background:linear-gradient(to top,var(--bg) 55%,transparent);pointer-events:none}
+.foot .asc{color:var(--accent)}
+.foot .hint{opacity:.8}
+
+/* ── Slides ──────────────────────────────────────────────────── */
+.slide{position:relative;min-height:100vh;min-height:100dvh;scroll-snap-align:start;scroll-margin-top:0;
+  padding:calc(var(--nav-h) + 44px) var(--gutter) calc(var(--foot-h) + 22px);
+  display:flex;flex-direction:column;justify-content:center;border-bottom:1px solid var(--line-soft)}
+.wrap{width:100%;max-width:1180px;margin:0 auto}
+.slide[data-top]{justify-content:flex-start;padding-top:calc(var(--nav-h) + 64px)}
+.sh{position:absolute;top:calc(var(--nav-h) + 16px);left:var(--gutter);right:var(--gutter);display:flex;justify-content:space-between;
+  max-width:1180px;margin:0 auto}
+.lb{font-family:var(--mono);font-size:.72rem;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-3);line-height:1.3}
+.lb.acc{color:var(--accent-deep)}
+h1,h2,h3,h4{font-family:var(--sans);font-weight:500;margin:0;text-wrap:balance;letter-spacing:-.015em}
+h1{font-size:clamp(2.3rem,5.4vw,4.5rem);line-height:1.04;letter-spacing:-.028em}
+h2{font-size:clamp(1.75rem,3.3vw,2.75rem);line-height:1.1;margin-bottom:.35em}
+h3{font-size:1.15rem;line-height:1.3;margin-bottom:.35em;letter-spacing:-.005em}
+h4{font-family:var(--mono);font-size:.74rem;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);font-weight:500;margin-bottom:.6em}
+.sf{font-size:clamp(1rem,1.45vw,1.25rem);line-height:1.5;color:var(--ink-2);max-width:66ch;margin:.45em 0 1.1em}
+.muted{color:var(--ink-3)} .sm{font-size:.88rem} .xs{font-size:.78rem}
+.mt{margin-top:1.1rem} .mt2{margin-top:1.6rem} .mb0{margin-bottom:0}
+
+/* grid helpers */
+.g{display:grid;gap:clamp(16px,2.4vw,32px)}
+.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.g5{grid-template-columns:repeat(5,minmax(0,1fr))}
+.g-7-5{grid-template-columns:minmax(0,7fr) minmax(0,5fr)}
+.g-5-7{grid-template-columns:minmax(0,5fr) minmax(0,7fr)}
+.g-6-6{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.g-4-8{grid-template-columns:minmax(0,4fr) minmax(0,8fr)}
+.g-5-7b{grid-template-columns:minmax(0,5fr) minmax(0,7fr)}
+.top{align-items:start} .mid{align-items:center}
+@media (max-width:900px){.g2,.g3,.g4,.g5,.g-7-5,.g-5-7,.g-6-6,.g-4-8,.g-5-7b{grid-template-columns:minmax(0,1fr)}}
+
+/* cards / callouts / tags */
+.card{border:1px solid var(--line);background:var(--raised);padding:16px 18px}
+.card h3{margin-bottom:.3em}
+.card p{margin:0;color:var(--ink-2);font-size:.92rem}
+.card .lb{display:block;margin-bottom:8px}
+.card.hl{border-color:var(--accent)}
+.call{border-left:2px solid var(--accent);background:var(--raised);padding:12px 16px;margin:1rem 0;font-size:.93rem;color:var(--ink-2)}
+.call b{color:var(--ink)}
+.call.warn{border-left-color:var(--warn)}
+.tag{display:inline-block;font-family:var(--mono);font-size:.64rem;letter-spacing:.05em;text-transform:uppercase;border:1px solid var(--line);
+  padding:1px 6px;color:var(--ink-3);vertical-align:middle;white-space:nowrap}
+.tag.acc{border-color:var(--accent);color:var(--accent-deep)}
+.tag.new{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+ul.l,ol.l{margin:0 0 1em;padding-left:1.1em;color:var(--ink-2)}
+ul.l li,ol.l li{margin:.28em 0}
+ul.l li::marker,ol.l li::marker{color:var(--accent)}
+ul.l.tight li{margin:.12em 0}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:.9rem;margin:0}
+.kv dt{font-family:var(--mono);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);padding-top:.25em}
+.kv dd{margin:0;color:var(--ink-2)}
+kbd{border:1px solid var(--line);padding:0 5px;background:var(--raised);font-size:.75rem}
+
+/* tables */
+table.t{width:100%;border-collapse:collapse;font-size:.88rem}
+table.t th{font-family:var(--mono);font-size:.66rem;font-weight:500;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);
+  text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:bottom}
+table.t td{padding:8px 10px;border-bottom:1px solid var(--line-soft);vertical-align:top;color:var(--ink-2)}
+table.t td:first-child{color:var(--ink);font-weight:500}
+table.t tbody tr:hover{background:var(--hover-row)}
+table.t.dense td{padding:5px 9px;font-size:.8rem;line-height:1.4} table.t.dense th{padding:6px 9px}
+table.t.c td,table.t.c th{text-align:center} table.t.c td:first-child,table.t.c th:first-child{text-align:left}
+table.t code{color:var(--ink)}
+.y{color:var(--accent-deep);font-weight:600} .n{color:var(--ink-3)}
+td.a{background:color-mix(in srgb,var(--accent) 22%,transparent);color:var(--ink)}
+td.m{background:color-mix(in srgb,var(--accent) 9%,transparent);color:var(--ink-2)}
+td.x{color:var(--ink-3)}
+
+/* figures */
+figure.fig{margin:0;border:1px solid var(--line-soft);padding:16px 16px 0}
+figure.fig .fl{display:flex;justify-content:space-between;margin-bottom:10px}
+figure.fig figcaption{border-top:1px solid var(--line-soft);margin:14px -16px 0;padding:9px 16px;font-size:.78rem;color:var(--ink-3)}
+figure.fig svg{display:block;width:100%;height:auto}
+svg .bx{fill:var(--raised);stroke:var(--line);stroke-width:1}
+svg .bx.a{stroke:var(--accent);stroke-width:1.4}
+svg .bx.f{fill:color-mix(in srgb,var(--accent) 16%,var(--raised));stroke:var(--accent)}
+svg .bx.d{stroke-dasharray:4 3}
+svg .ln{stroke:var(--ink-3);stroke-width:1.1;fill:none}
+svg .ln.a{stroke:var(--accent)} svg .ln.d{stroke-dasharray:4 3}
+svg text{font-family:var(--sans);fill:var(--ink);font-size:12.5px}
+svg text.m{font-family:var(--mono);font-size:10.5px;fill:var(--ink-3);letter-spacing:.03em}
+svg text.s{font-size:11px;fill:var(--ink-2)}
+svg text.t{font-weight:600;font-size:13.5px}
+svg text.ac{fill:var(--accent-deep)}
+svg text.c{text-anchor:middle}
+svg .ah{fill:var(--ink-3)} svg .aha{fill:var(--accent)}
+
+/* code */
+.code{border:1px solid var(--line);background:var(--raised);margin:0 0 1rem;min-width:0}
+.code .ch{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line-soft);
+  padding:5px 10px;font-family:var(--mono);font-size:.66rem;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3)}
+.code .ch button{all:unset;cursor:pointer;color:var(--ink-3);padding:0 4px}
+.code .ch button:hover{color:var(--accent-deep)}
+.code pre{margin:0;padding:12px 14px;overflow-x:auto;font-family:var(--mono);font-size:.76rem;line-height:1.7;color:var(--ink-2);tab-size:2;white-space:pre-wrap;overflow-wrap:anywhere}
+.code pre .k{color:var(--syn-k)} .code pre .s{color:var(--syn-s)} .code pre .n{color:var(--syn-n)}
+.code pre .c{color:var(--syn-c);font-style:italic} .code pre .f{color:var(--syn-f)} .code pre .p{color:var(--accent)}
+.code.sm pre{font-size:.7rem;line-height:1.62}
+.code.lg pre{font-size:.82rem}
+
+/* tabs */
+.tab-bar{display:flex;gap:0;border-bottom:1px solid var(--line);margin-bottom:14px;overflow-x:auto;scrollbar-width:none}
+.tab-bar button{all:unset;cursor:pointer;font-family:var(--mono);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;
+  padding:8px 14px;color:var(--ink-3);white-space:nowrap;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab-bar button:hover{color:var(--ink)}
+.tab-bar button.on{color:var(--accent-deep);border-bottom-color:var(--accent)}
+.tab-p{display:none} .tab-p.on{display:block}
+
+/* flow / ladder / layers */
+.flow{display:flex;align-items:stretch;gap:0;flex-wrap:wrap}
+.flow .st{flex:1 1 150px;border:1px solid var(--line);background:var(--raised);padding:12px 14px;position:relative;margin-right:22px;min-width:140px}
+.flow .st:last-child{margin-right:0}
+.flow .st:not(:last-child)::after{content:"→";position:absolute;right:-20px;top:50%;transform:translateY(-50%);color:var(--accent);font-family:var(--mono)}
+.flow .st b{display:block;font-family:var(--mono);font-size:.85rem;color:var(--accent-deep);font-weight:600}
+.flow .st span{font-size:.8rem;color:var(--ink-3);display:block;margin-top:2px}
+.layers{border:1px solid var(--line)}
+.layer{display:grid;grid-template-columns:150px 1fr;border-bottom:1px solid var(--line-soft);background:var(--raised)}
+.layer:last-child{border-bottom:0}
+.layer .nm{padding:10px 14px;border-right:1px solid var(--line-soft);font-family:var(--mono);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--accent-deep)}
+.layer .nm small{display:block;color:var(--ink-3);text-transform:none;letter-spacing:0;font-size:.68rem;margin-top:2px}
+.layer .it{padding:8px 12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.chip2{font-family:var(--mono);font-size:.7rem;border:1px solid var(--line);background:var(--bg);padding:2px 8px;color:var(--ink-2)}
+.chip2.a{border-color:var(--accent);color:var(--accent-deep)}
+@media (max-width:700px){.layer{grid-template-columns:1fr}.layer .nm{border-right:0;border-bottom:1px solid var(--line-soft)}}
+.ladder{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;border:1px solid var(--line)}
+.ladder>div{padding:16px 16px 14px;border-right:1px solid var(--line-soft);background:var(--raised);position:relative}
+.ladder>div:last-child{border-right:0}
+.ladder .big{font-size:2.4rem;font-weight:500;letter-spacing:-.03em;line-height:1;color:var(--ink)}
+.ladder .big small{font-size:.9rem;color:var(--ink-3);font-weight:400;letter-spacing:0;margin-left:4px}
+.ladder ul{list-style:none;margin:10px 0 0;padding:0;font-size:.82rem;color:var(--ink-2)}
+.ladder li{padding:3px 0;border-top:1px solid var(--line-soft)}
+.ladder code{color:var(--ink)}
+@media (max-width:900px){.ladder{grid-template-columns:1fr 1fr}}
+.ladder2{display:block}
+.rung{display:flex;gap:10px;align-items:baseline;padding:10px 0;border-bottom:1px solid var(--line-soft)}
+.rung:first-child{border-top:1px solid var(--line)}
+.rung .n{font-family:var(--mono);font-size:.7rem;color:var(--accent-deep);min-width:2.2em}
+.rung b{font-weight:600}
+.rung span.d{color:var(--ink-2);font-size:.9rem}
+.bars{display:grid;gap:7px}
+.bar-r{display:grid;grid-template-columns:270px 1fr 36px;gap:10px;align-items:center;font-size:.84rem}
+.bar-r .tr{height:14px;background:var(--panel);position:relative}
+.bar-r .tr i{position:absolute;inset:0 auto 0 0;background:var(--accent)}
+.bar-r:nth-child(n+2) .tr i{background:color-mix(in srgb,var(--accent) 78%,var(--bg))}
+.bar-r:nth-child(n+4) .tr i{background:color-mix(in srgb,var(--accent) 58%,var(--bg))}
+.bar-r:nth-child(n+6) .tr i{background:color-mix(in srgb,var(--accent) 40%,var(--bg))}
+.bar-r b{font-family:var(--mono);font-size:.8rem;text-align:right}
+@media (max-width:700px){.bar-r{grid-template-columns:120px 1fr 30px}}
+.stat{border-top:1px solid var(--line);padding-top:10px}
+.stat b{display:block;font-size:2.5rem;font-weight:500;letter-spacing:-.03em;line-height:1}
+.stat span{font-size:.82rem;color:var(--ink-3)}
+.dec{border:1px solid var(--line)}
+.dec .r{display:grid;grid-template-columns:44px minmax(0,1fr) 28px minmax(0,1.1fr);gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line-soft);background:var(--raised)}
+.dec .r:last-child{border-bottom:0}
+.dec .r .no{font-family:var(--mono);font-size:.7rem;color:var(--ink-3)}
+.dec .r .ar{font-family:var(--mono);color:var(--accent)}
+.dec .r .res{font-weight:600}
+.dec .r .res small{display:block;font-weight:400;color:var(--ink-3);font-size:.76rem}
+.agenda a{display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:16px;padding:11px 0;border-bottom:1px solid var(--line-soft);
+  text-decoration:none;color:var(--ink);align-items:baseline}
+.agenda a:first-child{border-top:1px solid var(--line)}
+.agenda a:hover{background:var(--hover-row)}
+.agenda .no{font-family:var(--mono);font-size:.74rem;color:var(--accent-deep)}
+.agenda b{font-weight:500;font-size:1.15rem}
+.agenda span.d{display:block;color:var(--ink-3);font-size:.86rem;margin-top:1px}
+.agenda .rg{font-family:var(--mono);font-size:.7rem;color:var(--ink-3)}
+.meta{display:flex;flex-wrap:wrap;gap:12px 36px;margin:2rem 0 0;padding-top:14px;border-top:1px solid var(--line)}
+.meta div{min-width:120px} .meta dt{font-family:var(--mono);font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3)}
+.meta dd{margin:2px 0 0;font-size:.9rem}
+.secnum{font-size:clamp(5rem,16vw,12rem);font-weight:500;line-height:.85;letter-spacing:-.05em;color:var(--accent);margin:0 0 .15em}
+.divider h2{font-size:clamp(2rem,4.6vw,3.6rem)}
+
+/* reveal */
+.js .rv{opacity:0;transform:translateY(10px);transition:opacity .7s var(--ease),transform .7s var(--ease);transition-delay:calc(var(--d,0)*70ms)}
+.js .slide.in .rv{opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce){.js .rv{opacity:1;transform:none;transition:none}html{scroll-behavior:auto}}
+
+/* outline overlay */
+#outline{position:fixed;inset:0;z-index:80;background:color-mix(in srgb,var(--bg) 94%,transparent);backdrop-filter:blur(6px);display:none;overflow:auto;
+  padding:calc(var(--nav-h) + 30px) var(--gutter) 60px}
+#outline.open{display:block}
+#outline .cols{max-width:1180px;margin:0 auto;columns:3 300px;column-gap:40px}
+#outline section{break-inside:avoid;margin-bottom:22px}
+#outline a{display:flex;gap:10px;padding:3px 0;text-decoration:none;color:var(--ink-2);font-size:.88rem;border-bottom:1px solid var(--line-soft)}
+#outline a:hover{color:var(--accent-deep)} #outline a i{font-style:normal;font-family:var(--mono);font-size:.7rem;color:var(--ink-3);min-width:2em}
+#outline a.cur{color:var(--accent-deep)}
+
+/* cover */
+.cover h1{max-width:15ch} .cover .sf{max-width:58ch}
+.cover .wrap{padding-top:2vh}
+
+@media print{
+  @page{size:A4 landscape;margin:0}
+  html{scroll-snap-type:none}
+  .nav,.bar,.foot,#outline{display:none!important}
+  .slide{min-height:0;height:calc(100vh - 2px);overflow:hidden;page-break-after:always;break-after:page;border:0;padding:44px 48px 28px;scroll-snap-align:none}
+  .js .rv{opacity:1;transform:none}
+  .sh{top:16px}
+  .wrap{zoom:.8}
+  .slide:last-of-type{break-after:auto;page-break-after:auto}
+  .slide[data-top]{padding-top:44px}
+}
+</style>
+</head>
+<body>
+
+<!-- shared SVG defs -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+    <marker id="aha" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="aha" d="M0 0L10 5L0 10z"/></marker>
+  </defs>
+</svg>
+
+<nav class="nav" aria-label="Deck navigation">
+  <a class="brand" href="#s01">madengine<i>/</i>brief</a>
+  <div class="chips" id="chips"></div>
+  <div class="tools">
+    <button id="bOutline" title="Outline (O)"><kbd>O</kbd>Outline</button>
+    <button id="bTheme" title="Toggle light/dark (T)"><kbd>T</kbd>Theme</button>
+    <button id="bPrint" title="Print / save as PDF (P)"><kbd>P</kbd>PDF</button>
+  </div>
+</nav>
+<div class="bar" id="bar"></div>
+<div class="foot"><span class="asc" id="asc">░░░░░░░░░░░░░░░░░░░░░░░░ 00%</span><span class="hint">← → move · 1–5 sections · O outline · T theme</span></div>
+<div id="outline" role="dialog" aria-label="Outline"><div class="cols" id="outlineCols"></div></div>
+
+<main id="deck">
+
+<!-- ═══════════ COVER ═══════════ -->
+<section class="slide cover" data-noheader data-title="madengine in eleven slides">
+  <div class="wrap">
+    <div class="lb acc rv">AMD ROCm · MAD ecosystem · Brief introduction</div>
+    <h1 class="rv" style="--d:1;margin-top:.35em">madengine: run any MAD model, anywhere, with the same command</h1>
+    <p class="sf rv" style="--d:2">One CLI that takes a model from a catalog entry to a benchmark number: on one GPU in Docker, eight GPUs in a conda prefix, or many nodes on SLURM, Spur and Kubernetes, or behind an llm-d gateway.</p>
+    <dl class="meta rv" style="--d:3">
+      <div><dt>Audience</dt><dd>Model engineers, benchmark owners, cluster operators</dd></div>
+      <div><dt>Covers</dt><dd>madengine 2.4, unreleased develop, and the 3.0 preview</dd></div>
+      <div><dt>Format</dt><dd><span data-total></span> slides · about 15 minutes</dd></div>
+      <div><dt>Full deck</dt><dd><a href="madengine-intro-teams.html">madengine-intro-teams.html</a></dd></div>
+    </dl>
+    <p class="lb rv" style="--d:4;margin-top:2.2rem">Press → to begin · O for the outline · T to switch theme · P to save as PDF</p>
+  </div>
+</section>
+
+<!-- ═══════════ 01 OVERVIEW ═══════════ -->
+<section class="slide" data-sec="Overview" data-title="The same model, five ways to run it">
+  <div class="wrap g g-6-6 mid">
+    <div>
+      <div class="lb acc rv">The problem</div>
+      <h2 class="rv" style="--d:1">The same model, five different ways to run it</h2>
+      <p class="sf rv" style="--d:2">A benchmark that works on a workstation rarely survives a move to a cluster. Image names, launchers, schedulers and result formats all change, and the number you report stops meaning the same thing.</p>
+      <div class="ladder2 rv" style="--d:3">
+        <div class="rung"><span class="n">01</span><span><b>docker run</b> <span class="d">by hand: device flags, mounts, environment</span></span></div>
+        <div class="rung"><span class="n">02</span><span><b>sbatch scripts</b> <span class="d">per cluster: modules, srun fan-out, rank variables</span></span></div>
+        <div class="rung"><span class="n">03</span><span><b>Kubernetes manifests</b> <span class="d">Jobs, PVCs, secrets, GPU resource names</span></span></div>
+        <div class="rung"><span class="n">04</span><span><b>Serving stacks</b> <span class="d">helm releases and gateways, as with llm-d</span></span></div>
+        <div class="rung"><span class="n">05</span><span><b>Result formats</b> <span class="d">every harness prints something different</span></span></div>
+      </div>
+    </div>
+    <div class="rv" style="--d:2">
+      <h4>With madengine: one model card, one flag changes</h4>
+      <div class="code"><div class="ch"><span>bash</span><button data-copy>copy</button></div><pre data-lang="bash"># local Docker
+madengine run --tags pyt_vllm_llama-3.1-8b_fp8
+
+# SLURM: add a slurm block
+madengine run --tags pyt_vllm_llama-3.1-8b_fp8 \
+  --additional-context '{"slurm": {"partition": "gpu"}}'
+
+# Kubernetes: add a k8s block
+madengine run --tags pyt_vllm_llama-3.1-8b_fp8 \
+  --additional-context '{"k8s": {"gpu_count": 1}}'
+
+# llm-d: add an llm_d block
+madengine run --tags pyt_vllm_qwen3-32b \
+  --additional-context-file \
+    examples/llm-d-configs/01-attach-existing-stack.json</pre></div>
+      <div class="call"><b>Same model card. Same perf.csv.</b> The context decides where it runs, and no code changes between targets.</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Overview" data-title="A catalog, a runner, and a contract">
+  <div class="wrap">
+    <div class="lb acc rv">What it is</div>
+    <h2 class="rv" style="--d:1">A catalog, a runner, and a contract</h2>
+    <div class="g g3 top mt rv" style="--d:2">
+      <div class="card"><span class="lb">MAD · the catalog</span><h3>What to run</h3><p>Model cards, Dockerfiles and per-model scripts, picked by name or tag.</p></div>
+      <div class="card hl"><span class="lb">madengine · the runner</span><h3>How and where to run it</h3><p>Builds images, picks the target from the config, starts the launcher, watches the run.</p></div>
+      <div class="card"><span class="lb">perf.csv · the contract</span><h3>What came out</h3><p>One result schema for every target, failed runs included.</p></div>
+    </div>
+    <div class="g g-5-7 top mt2">
+      <div class="rv" style="--d:3">
+        <h4>By the numbers</h4>
+        <div class="g g2">
+          <div class="stat"><b>121</b><span>static model cards, plus ~470 generated for Primus and JAX</span></div>
+          <div class="stat"><b>6</b><span>execution targets: Docker, conda, SLURM, Spur, Kubernetes, llm-d</span></div>
+          <div class="stat"><b>10</b><span>launcher names, from torchrun to vllm-disagg</span></div>
+          <div class="stat"><b>30</b><span>profiling and tracing presets, stackable</span></div>
+        </div>
+        <p class="xs muted mt">Most static cards are vLLM serving (42) and disaggregated prefill/decode (34). Counts are from a MAD checkout, Nov 2026.</p>
+      </div>
+      <div class="rv" style="--d:4">
+        <h4>A model card, abridged</h4>
+        <div class="code sm"><div class="ch"><span>scripts/vllm/models.json</span></div><pre data-lang="json">{
+  "name": "pyt_vllm_llama-3.1-8b",          // what --tags matches
+  "tags": ["pyt", "vllm", "inference"],
+  "dockerfile": "../../docker/pyt_vllm",     // the image recipe
+  "scripts": "run.sh",                       // the entry point
+  "args": "--model_repo meta-llama/Llama-3.1-8B-Instruct",
+  "n_gpus": "-1"                             // -1: every visible GPU
+}</pre></div>
+        <div class="call"><b>The whole contract:</b> the script prints <code>performance: 1234 tokens_per_second</code>, or writes a CSV for a sweep. madengine does the rest.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Overview" data-title="Quick start">
+  <div class="wrap g g-6-6 top">
+    <div>
+      <div class="lb acc rv">Quick start</div>
+      <h2 class="rv" style="--d:1">Four commands to a first number</h2>
+      <p class="sf rv" style="--d:2">Install madengine, clone MAD, find a model, run it. The container, the log scan and the result row come with it.</p>
+      <div class="code rv" style="--d:3"><div class="ch"><span>bash · from your MAD checkout</span><button data-copy>copy</button></div><pre data-lang="bash">pip install git+https://github.com/ROCm/madengine.git
+git clone https://github.com/ROCm/MAD.git &amp;&amp; cd MAD
+
+madengine discover --tags pyt_vllm_llama-3.1-8b_fp8
+
+export MAD_SECRETS_HFTOKEN="&lt;your Hugging Face token&gt;"
+madengine run --tags pyt_vllm_llama-3.1-8b_fp8 \
+  --keep-model-dir --live-output</pre></div>
+    </div>
+    <div class="rv" style="--d:3">
+      <h4>What happens</h4>
+      <ol class="l">
+        <li><b>Discover</b> finds the card by name or tag in the catalog.</li>
+        <li><b>Build</b> makes the image from the card's Dockerfile.</li>
+        <li><b>Run</b> starts a container with a watchdog as PID 1.</li>
+        <li><b>Results</b> land in <code>perf.csv</code>. Failed runs are recorded as <code>FAILURE</code>, so every attempt appears.</li>
+      </ol>
+      <div class="call"><b>Seven commands in all:</b> <code>discover</code> <code>build</code> <code>run</code> <code>report</code> <code>database</code> <code>cleanup</code> <code>setup-page</code>. <code>--live-output</code> streams logs, <code>--keep-alive</code> leaves the container up for debugging.</div>
+      <div class="call"><b>Prerequisites:</b> Docker, Python 3.9+, and ROCm or CUDA drivers. If ROCm is not auto-detected, set <code>MAD_ROCM_PATH</code>.</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" data-sec="Overview" data-title="Build once, run anywhere">
+  <div class="wrap">
+    <div class="lb acc rv">The pipeline</div>
+    <h2 class="rv" style="--d:1">Build once, run anywhere</h2>
+    <p class="sf rv" style="--d:2">Build and run can be separate steps. The manifest carries the image and the Context that built it, so the same artifact runs on a workstation, a SLURM login node, or a cluster that only pulls from a registry.</p>
+    <div class="flow rv" style="--d:3">
+      <div class="st"><b>discover</b><span>find models by tag</span></div>
+      <div class="st"><b>build</b><span>image per model</span></div>
+      <div class="st"><b>manifest</b><span>build_manifest.json</span></div>
+      <div class="st"><b>run</b><span>infer target, execute</span></div>
+      <div class="st"><b>perf.csv</b><span>one row per result</span></div>
+      <div class="st"><b>report</b><span>HTML · email · MongoDB</span></div>
+    </div>
+    <div class="g g2 mt2 top">
+      <div class="code rv" style="--d:3"><div class="ch"><span>bash · split workflow</span><button data-copy>copy</button></div><pre data-lang="bash"># CI or laptop: build and push
+madengine build --tags pyt_vllm_llama-3.3-70b \
+  --registry docker.io/myorg
+
+# any target: run from the manifest
+madengine run --manifest-file build_manifest.json</pre></div>
+      <ul class="l rv" style="--d:4">
+        <li><b>Pre-built images:</b> <code>--use-image &lt;ref&gt;</code> or <code>MAD_CONTAINER_IMAGE</code> skips the build entirely.</li>
+        <li><b>Build on compute:</b> <code>--build-on-compute --registry …</code> builds inside a SLURM job and pushes.</li>
+        <li><b>Pinned digests:</b> <code>--require-pinned-image</code> pulls <code>repo@sha256:…</code> and fails instead of running a moved tag.</li>
+      </ul>
+    </div>
+    <div class="call rv" style="--d:5"><b>A cancelled run does not hold your GPU.</b> A PID 1 watchdog stops the container when its heartbeat goes stale, signal handlers tear down containers and submitted jobs, and <code>madengine cleanup</code> sweeps anything left over.</div>
+  </div>
+</section>
+
+<!-- ═══════════ 02 ARCHITECTURE ═══════════ -->
+<section class="slide" data-sec="Architecture" data-title="Layer structure">
+  <div class="wrap g g-7-5 top">
+    <div>
+      <div class="lb acc rv">Layer structure</div>
+      <h2 class="rv" style="--d:1">Seven layers, each with one job</h2>
+      <div class="layers mt rv" style="--d:2">
+        <div class="layer"><div class="nm">CLI<small>Typer + Rich</small></div><div class="it"><span class="chip2 a">discover</span><span class="chip2 a">build</span><span class="chip2 a">run</span><span class="chip2">+ 4 more</span></div></div>
+        <div class="layer"><div class="nm">Orchestration<small>what happens, in order</small></div><div class="it"><span class="chip2">BuildOrchestrator</span><span class="chip2">RunOrchestrator</span><span class="chip2 a">build_manifest.json</span></div></div>
+        <div class="layer"><div class="nm">Core<small>shared services</small></div><div class="it"><span class="chip2 a">Context</span><span class="chip2">Console</span><span class="chip2">Docker wrapper</span><span class="chip2">lifecycle</span></div></div>
+        <div class="layer"><div class="nm">Execution<small>this machine</small></div><div class="it"><span class="chip2">ContainerRunner</span><span class="chip2">BareMetalRunner</span><span class="chip2">DockerBuilder</span></div></div>
+        <div class="layer"><div class="nm">Deployment<small>a cluster</small></div><div class="it"><span class="chip2 a">DeploymentFactory</span><span class="chip2">Slurm</span><span class="chip2">Spur</span><span class="chip2">Kubernetes</span><span class="chip2">llm-d</span></div></div>
+        <div class="layer"><div class="nm">Launchers<small>inside the job</small></div><div class="it"><span class="chip2">torchrun</span><span class="chip2">torchtitan</span><span class="chip2">megatron-lm</span><span class="chip2">vllm</span><span class="chip2">sglang</span><span class="chip2">+ 5 more</span></div></div>
+        <div class="layer"><div class="nm">Reporting<small>after the run</small></div><div class="it"><span class="chip2">perf.csv</span><span class="chip2">HTML</span><span class="chip2">email</span><span class="chip2">MongoDB</span></div></div>
+      </div>
+      <p class="xs muted mt">Entry point: <code>madengine.cli.app:cli_main</code>. Execution runs on this machine, Deployment submits to a cluster.</p>
+    </div>
+    <div class="rv" style="--d:3">
+      <h4>Where it runs is inferred from the keys</h4>
+      <table class="t dense">
+        <thead><tr><th>Key in the Context</th><th>Target</th></tr></thead>
+        <tbody>
+          <tr><td><code>"platform": "bare_metal"</code></td><td>Bare metal (conda)</td></tr>
+          <tr><td><code>"llm_d": {…}</code></td><td>llm-d</td></tr>
+          <tr><td><code>"k8s": {…}</code></td><td>Kubernetes</td></tr>
+          <tr><td><code>"slurm": {"scheduler": "spur"}</code></td><td>Spur</td></tr>
+          <tr><td><code>"slurm": {…}</code></td><td>SLURM</td></tr>
+          <tr><td class="muted">none of the above</td><td>Local Docker</td></tr>
+        </tbody>
+      </table>
+      <div class="call"><b>Convention over configuration.</b> There is no <code>deploy</code> flag. The first match wins, so moving a job between clusters is a diff of one block. Conflicting blocks are rejected before submission.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 03 FEATURES ═══════════ -->
+<section class="slide" data-sec="Features" data-title="Feature overview">
+  <div class="wrap">
+    <div class="lb acc rv">Feature overview</div>
+    <h2 class="rv" style="--d:1">What you get without writing glue</h2>
+    <div class="g g4 mt rv" style="--d:2">
+      <div class="card"><span class="lb">Execution</span><h3>Container-native</h3><p>Docker with ROCm and CUDA device handling, mounts, GPU and CPU pinning, least-privilege defaults.</p></div>
+      <div class="card"><span class="lb">Execution</span><h3>Bare metal</h3><p><code>"platform": "bare_metal"</code> runs in a conda, mamba or micromamba prefix.</p></div>
+      <div class="card"><span class="lb">Clusters</span><h3>SLURM, Spur, K8s, llm-d</h3><p>Add a block and the target follows. Presets fill in the rest.</p></div>
+      <div class="card"><span class="lb">Parallelism</span><h3>Ten launcher names</h3><p>Training and inference, templated or self-managed, with per-launcher environment contracts.</p></div>
+      <div class="card"><span class="lb">Analysis</span><h3>Profilers</h3><p>rocprof and rocprofv3 presets, rocm-trace-lite, Kineto traces with TraceLens, power and VRAM.</p></div>
+      <div class="card"><span class="lb">Supply chain</span><h3>Pinned images</h3><p>Digests recorded on every push. <code>--require-pinned-image</code> refuses a tag that moved.</p></div>
+      <div class="card"><span class="lb">Safety</span><h3>Reliable runs</h3><p>A log error scan stops a quiet crash reporting SUCCESS. A watchdog frees the GPU when a run is cancelled.</p></div>
+      <div class="card"><span class="lb">Output</span><h3>Reports and history</h3><p>One <code>perf.csv</code> schema, HTML and email reports, and a MongoDB upload.</p></div>
+    </div>
+    <p class="xs muted mt rv" style="--d:3">Also built in: Hydra YAML config groups, data providers (local, NAS, MinIO, S3), and rocEnvTool environment capture.</p>
+  </div>
+</section>
+
+<section class="slide" data-sec="Features" data-title="Launchers and where they run">
+  <div class="wrap">
+    <div class="lb acc rv">Launchers</div>
+    <h2 class="rv" style="--d:1">Three launcher contracts, ten names</h2>
+    <p class="sf rv" style="--d:2">A launcher is how a workload starts inside its own container, not the scheduler or the platform. Validation rejects a launcher on a target with no arm for it.</p>
+    <div class="g g3 rv" style="--d:3">
+      <div class="card"><span class="lb">Contract 1</span><h3>Templated</h3><p><code>torchrun</code> <code>deepspeed</code> <code>megatron-lm</code> <code>torchtitan</code> <code>vllm</code> <code>sglang</code> <code>sglang-disagg</code> <code>vllm-disagg</code>. The deployment templates render the start command.</p></div>
+      <div class="card"><span class="lb">Contract 2</span><h3>Self-managed</h3><p><code>slurm_multi</code>. The card's own <code>.slurm</code> script starts its containers. Used by MAD's disaggregated and communication benchmarks.</p></div>
+      <div class="card"><span class="lb">Contract 3</span><h3>Primus</h3><p><code>primus</code>. A local single-node run. The model script starts Primus. A cluster block is rejected.</p></div>
+    </div>
+    <table class="t c dense mt rv" style="--d:4">
+      <thead><tr><th>Launcher</th><th>Local Docker</th><th>SLURM</th><th>Spur</th><th>Kubernetes</th><th>llm-d</th></tr></thead>
+      <tbody>
+        <tr><td><code>torchrun</code> · <code>deepspeed</code> · <code>megatron-lm</code> · <code>torchtitan</code></td><td class="a">✓</td><td class="a">✓</td><td class="a">✓</td><td class="a">✓</td><td class="x">—</td></tr>
+        <tr><td><code>vllm</code></td><td class="a">✓</td><td class="a">✓</td><td class="a">✓</td><td class="a">✓</td><td class="m">stamped</td></tr>
+        <tr><td><code>sglang-disagg</code></td><td class="x">—</td><td class="a">✓ min 2</td><td class="a">✓</td><td class="a">✓ min 3</td><td class="x">—</td></tr>
+        <tr><td><code>vllm-disagg</code> <span class="tag new">3.0</span></td><td class="x">—</td><td class="a">✓ min 2</td><td class="a">✓</td><td class="a">✓ min 3</td><td class="m">stamped</td></tr>
+        <tr><td><code>slurm_multi</code></td><td class="x">—</td><td class="a">✓</td><td class="a">✓</td><td class="a">✓</td><td class="x">—</td></tr>
+        <tr><td><code>primus</code></td><td class="a">✓</td><td class="x">—</td><td class="x">—</td><td class="x">—</td><td class="x">—</td></tr>
+      </tbody>
+    </table>
+    <p class="xs muted" style="margin-top:8px">Local means one node. <code>sglang</code> matches <code>vllm</code> except on llm-d. <b>stamped</b>: llm-d is a deployment, not a launcher value. Its result rows record <code>launcher=vllm</code>, or <code>vllm-disagg</code> when prefill replicas run.</p>
+  </div>
+</section>
+
+<section class="slide" data-sec="Features" data-title="Parallel strategies by launcher">
+  <div class="wrap">
+    <div class="lb acc rv">Parallelism</div>
+    <h2 class="rv" style="--d:1">Which launcher parallelizes what</h2>
+    <p class="sf rv" style="--d:2"><b>Auto</b> means madengine configures it. <b>Manual</b> means the launcher supports it, but your model script or config sets the degrees.</p>
+    <table class="t c rv" style="--d:3">
+      <thead><tr><th>Launcher</th><th>TP</th><th>PP</th><th>DP · FSDP · ZeRO</th><th>CP</th><th>EP</th><th>Primary use</th></tr></thead>
+      <tbody>
+        <tr><td><code>torchrun</code></td><td class="m">Manual</td><td class="x">—</td><td class="m">Manual (DDP, FSDP)</td><td class="x">—</td><td class="x">—</td><td style="text-align:left">General distributed training</td></tr>
+        <tr><td><code>torchtitan</code></td><td class="a">Auto</td><td class="a">Auto</td><td class="a">Auto (FSDP2)</td><td class="m">Manual</td><td class="x">—</td><td style="text-align:left">Large-scale LLM pre-training</td></tr>
+        <tr><td><code>deepspeed</code></td><td class="m">Manual</td><td class="m">Manual</td><td class="a">Auto (ZeRO)</td><td class="x">—</td><td class="x">—</td><td style="text-align:left">Memory-efficient training</td></tr>
+        <tr><td><code>megatron-lm</code></td><td class="a">Auto</td><td class="a">Auto</td><td class="a">Implicit</td><td class="a">Auto</td><td class="x">—</td><td style="text-align:left">Very large transformers</td></tr>
+        <tr><td><code>vllm</code></td><td class="a">Auto</td><td class="m">SLURM auto · K8s off</td><td class="a">Auto (replicas)</td><td class="x">—</td><td class="m">Manual</td><td style="text-align:left">High-throughput serving</td></tr>
+        <tr><td><code>sglang-disagg</code></td><td class="a">Auto</td><td class="x">—</td><td class="a">Role-based</td><td class="x">—</td><td class="x">—</td><td style="text-align:left">Prefill/decode specialization</td></tr>
+      </tbody>
+    </table>
+    <p class="xs muted" style="margin-top:8px"><b>TP</b> tensor, <b>PP</b> pipeline, <b>DP</b> data, <b>FSDP/ZeRO</b> sharded data parallel, <b>CP</b> context (sequence), <b>EP</b> expert. Omitted: <code>primus</code> (all manual, set in the experiment YAML) and plain <code>sglang</code> (TP auto, DP limited).</p>
+    <div class="call mt rv" style="--d:4">Expert parallelism and DP attention for MoE models such as DeepSeek-V3 live in the model's own disaggregated scripts (<code>DP_MODE=1</code>, MoRI-EP, DeepEP), run through <code>slurm_multi</code>. See the hands-on ladder next.</div>
+  </div>
+</section>
+
+<!-- ═══════════ 04 HANDS-ON ═══════════ -->
+<section class="slide" data-sec="Hands-on" data-title="One card, from one GPU to many nodes" data-top>
+  <div class="wrap">
+    <div class="lb acc rv">Hands-on with real MAD models</div>
+    <h2 class="rv" style="--d:1">Four rungs, the same tool</h2>
+    <div class="ladder mt rv" style="--d:2">
+      <div><span class="lb">Rung 1 · local Docker</span><div class="big">1<small>GPU</small></div>
+        <ul><li><code>pyt_vllm_llama-3.1-8b_fp8</code></li><li><code>pyt_huggingface_gpt2</code></li></ul></div>
+      <div><span class="lb">Rung 2 · local Docker · K8s</span><div class="big">8<small>GPUs, 1 node</small></div>
+        <ul><li><code>pyt_vllm_kimi-k3</code></li><li><code>primus_train/megatron_MI300X_llama3.1_8B-BF16-pretrain</code></li></ul></div>
+      <div><span class="lb">Rung 3 · SLURM · Spur · K8s</span><div class="big">2<small>nodes</small></div>
+        <ul><li><code>pyt_kvcache_transfer_bench_all</code></li><li><code>pyt_sglang_disagg_mori_io_llama-3.1-8b</code></li></ul></div>
+      <div><span class="lb">Rung 4 · all clusters · llm-d</span><div class="big">N<small>nodes</small></div>
+        <ul><li><code>pyt_sglang_disagg_mori_dp_deepseek-v3</code></li><li><code>pyt_vllm_deepseek-r1</code> via llm-d</li></ul></div>
+    </div>
+    <table class="t dense mt2 rv" style="--d:3">
+      <thead><tr><th>Target</th><th>What you add to the Context</th><th>How ranks start</th></tr></thead>
+      <tbody>
+        <tr><td>Local Docker</td><td>Nothing. Optionally <code>docker_gpus</code>, <code>docker_env_vars</code></td><td><code>docker run</code>, watchdog as PID 1</td></tr>
+        <tr><td>Bare metal</td><td><code>"platform": "bare_metal"</code> and the card's <code>conda</code> block</td><td><code>conda run -p</code>, script calls the launcher</td></tr>
+        <tr><td>SLURM</td><td><code>"slurm": {partition, nodes, gpus_per_node, time}</code></td><td><code>sbatch</code> then <code>srun</code>, rank from <code>SLURM_PROCID</code></td></tr>
+        <tr><td>Spur</td><td><code>"slurm": {"scheduler": "spur", …}</code></td><td>Job array, rank from <code>SLURM_ARRAY_TASK_ID</code></td></tr>
+        <tr><td>Kubernetes</td><td><code>"k8s": {gpu_count, namespace, …}</code></td><td>Indexed Job, rank from <code>JOB_COMPLETION_INDEX</code></td></tr>
+        <tr><td>llm-d</td><td><code>"llm_d": {…}</code> and <code>"k8s": {"gpu_count": 0}</code></td><td>HTTP benchmark client to a gateway</td></tr>
+      </tbody>
+    </table>
+    <div class="call rv" style="--d:4">Whatever the target, you get <b>validation before submission</b>, <b>the same <code>perf.csv</code></b>, and <b>cleanup of only what madengine created</b>. The full deck walks through ten worked examples.</div>
+  </div>
+</section>
+
+<!-- ═══════════ 05 CONTEXT ═══════════ -->
+<section class="slide" data-sec="Context" data-title="additional_context cookbook and next steps" data-top>
+  <div class="wrap">
+  <div class="g g-7-5 top">
+    <div>
+      <div class="lb acc rv">The additional_context cookbook</div>
+      <h2 class="rv" style="--d:1">I want to… so I add…</h2>
+      <table class="t dense mt rv" style="--d:2">
+        <thead><tr><th>I want to</th><th>Add to the Context</th></tr></thead>
+        <tbody>
+          <tr><td>Build on a different base image</td><td><code>"docker_build_arg": {"BASE_DOCKER": "…"}</code></td></tr>
+          <tr><td>Skip the build, run an image I have</td><td><code>"MAD_CONTAINER_IMAGE": "repo:tag"</code> or <code>--use-image</code></td></tr>
+          <tr><td>Set env vars, local Docker</td><td><code>"docker_env_vars": {"HSA_ENABLE_SDMA": "0"}</code></td></tr>
+          <tr><td>Set env vars on a cluster</td><td><code>"env_vars": {"NCCL_DEBUG": "INFO"}</code></td></tr>
+          <tr><td>Mount weights or datasets</td><td><code>"docker_mounts": {"/inside": "/on/host"}</code></td></tr>
+          <tr><td>Use a subset of GPUs or CPUs</td><td><code>"docker_gpus": "0,2-4,7"</code>, <code>"docker_cpus": "0-15"</code></td></tr>
+          <tr><td>Profile or trace the run</td><td><code>"tools": [{"name": "rocprofv3_lightweight"}]</code></td></tr>
+          <tr><td>Run a script before or after</td><td><code>"pre_scripts"</code>, <code>"post_scripts"</code></td></tr>
+          <tr><td>Choose how it is parallelized</td><td><code>"distributed": {"launcher": …, "nnodes": …}</code></td></tr>
+        </tbody>
+      </table>
+      <p class="xs muted mt">Prefer a JSON file for anything with booleans or nesting. <code>--config</code> cannot be combined with <code>--additional-context</code>.</p>
+    </div>
+    <div class="rv" style="--d:3">
+      <h4>A newer base, no Dockerfile edit</h4>
+      <div class="code sm"><div class="ch"><span>bash</span><button data-copy>copy</button></div><pre data-lang="bash">madengine build --tags pyt_vllm_llama-3.3-70b \
+  --additional-context '{
+    "docker_build_arg": {
+      "BASE_DOCKER": "vllm/vllm-openai-rocm:&lt;newer-tag&gt;"
+    }
+  }'</pre></div>
+      <h4>Stack profilers, first is innermost</h4>
+      <div class="code sm"><div class="ch"><span>json</span><button data-copy>copy</button></div><pre data-lang="json">{
+  "tools": [
+    { "name": "rocprofv3_lightweight" },
+    { "name": "gpu_info_power_profiler" },
+    { "name": "tracelens" }
+  ]
+}</pre></div>
+      <div class="call warn"><b>Pick one GPU profiler</b> and keep a baseline run with no tools. Do not combine <code>rocprof*</code> with <code>rocm_trace_lite</code>.</div>
+    </div>
+  </div>
+  <div class="call rv" style="--d:4"><b>Next steps:</b> <code>docs/usage.md</code> · <code>configuration.md</code> · <code>launchers.md</code> · <code>deployment.md</code> · <code>llm-d.md</code> · <code>profiling.md</code> · <code>examples/</code>. The <a href="madengine-intro-teams.html">full deck</a> has ten worked examples and profiler recipes. Questions: <a href="https://github.com/ROCm/madengine">ROCm/madengine</a>.</div>
+  </div>
+</section>
+
+</main>
+
+<script>
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  document.documentElement.classList.add('js');
+
+  /* ── storage: sandboxed frames (e.g. Teams) block localStorage ── */
+  const store = {
+    get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} }
+  };
+
+  /* ── theme ─────────────────────────────────────────────── */
+  const root = document.documentElement;
+  const saved = store.get('deck-scheme');
+  if (saved) root.dataset.scheme = saved;
+  const toggleTheme = () => {
+    const dark = root.dataset.scheme ? root.dataset.scheme === 'dark'
+      : matchMedia('(prefers-color-scheme:dark)').matches;
+    root.dataset.scheme = dark ? 'light' : 'dark';
+    store.set('deck-scheme', root.dataset.scheme);
+  };
+
+  /* ── slides, headers, ids ──────────────────────────────── */
+  const slides = $$('.slide');
+  const total = slides.length;
+  const pad = n => String(n).padStart(2, '0');
+  slides.forEach((s, i) => {
+    s.id = 's' + pad(i + 1);
+    if (!s.hasAttribute('data-noheader')) {
+      const h = document.createElement('div');
+      h.className = 'sh';
+      h.innerHTML = `<span class="lb">${s.dataset.sec || ''}</span><span class="lb">${pad(i + 1)} / ${total}</span>`;
+      s.prepend(h);
+    }
+  });
+  $$('[data-total]').forEach(e => e.textContent = total);
+
+  /* ── sections ──────────────────────────────────────────── */
+  const sections = [];
+  slides.forEach((s, i) => {
+    const n = s.dataset.sec;
+    if (!n || s.hasAttribute('data-nochip')) return;
+    let sec = sections.find(x => x.name === n);
+    if (!sec) { sec = { name: n, first: i, last: i }; sections.push(sec); }
+    sec.last = i;
+  });
+  const chips = $('#chips');
+  sections.forEach((sec, k) => {
+    const a = document.createElement('a');
+    a.className = 'chip'; a.href = '#' + slides[sec.first].id; a.dataset.sec = sec.name;
+    a.innerHTML = `<kbd>${k + 1}</kbd>${sec.name}`;
+    chips.appendChild(a);
+  });
+  $$('[data-sec-link]').forEach(a => {
+    const sec = sections.find(x => x.name === a.dataset.secLink);
+    if (sec) a.href = '#' + slides[sec.first].id;
+  });
+  $$('[data-rg]').forEach(e => {
+    const sec = sections.find(x => x.name === e.dataset.rg);
+    if (sec) e.textContent = sec.first === sec.last ? `slide ${sec.first + 1}` : `slides ${sec.first + 1}–${sec.last + 1}`;
+  });
+
+  /* ── outline ───────────────────────────────────────────── */
+  const outline = $('#outline'), oc = $('#outlineCols');
+  [{ name: 'Start', idx: slides.map((s, i) => i).filter(i => !slides[i].dataset.sec || slides[i].dataset.sec === 'Agenda') },
+   ...sections.map(sec => ({ name: sec.name, idx: slides.map((s, i) => i).filter(i => slides[i].dataset.sec === sec.name) }))
+  ].forEach(g => {
+    const el = document.createElement('section');
+    el.innerHTML = `<h4>${g.name}</h4>` + g.idx.map(i =>
+      `<a href="#${slides[i].id}" data-i="${i}"><i>${pad(i + 1)}</i>${slides[i].dataset.title || ''}</a>`).join('');
+    oc.appendChild(el);
+  });
+  const setOutline = open => outline.classList.toggle('open', open);
+  outline.addEventListener('click', e => { if (e.target.closest('a') || e.target === outline) setOutline(false); });
+
+  /* ── navigation ────────────────────────────────────────── */
+  let cur = 0;
+  const go = i => {
+    i = Math.max(0, Math.min(total - 1, i));
+    slides[i].scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion:reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  };
+  const bar = $('#bar'), asc = $('#asc');
+  const update = () => {
+    const mid = innerHeight * 0.45;
+    let k = 0;
+    for (let i = 0; i < total; i++) if (slides[i].getBoundingClientRect().top <= mid) k = i;
+    if (k !== cur || !update.init) {
+      cur = k; update.init = true;
+      try { history.replaceState(null, '', '#' + slides[k].id); } catch (e) {}
+      const sec = slides[k].dataset.sec;
+      $$('.chip').forEach(c => c.classList.toggle('on', c.dataset.sec === sec));
+      $$('#outline a').forEach(a => a.classList.toggle('cur', +a.dataset.i === k));
+    }
+    const max = document.documentElement.scrollHeight - innerHeight;
+    const p = max > 0 ? Math.min(1, scrollY / max) : 0;
+    bar.style.width = (p * 100).toFixed(1) + '%';
+    const n = Math.round(p * 24);
+    asc.textContent = '█'.repeat(n) + '░'.repeat(24 - n) + ' ' + pad(Math.round(p * 100)) + '%';
+  };
+  addEventListener('scroll', () => requestAnimationFrame(update), { passive: true });
+  addEventListener('resize', update);
+
+  addEventListener('keydown', e => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.target.closest && e.target.closest('input,textarea,[contenteditable]')) return;
+    const k = e.key;
+    if (k === 'Escape') { setOutline(false); return; }
+    if (outline.classList.contains('open') && k !== 'o' && k !== 'O') return;
+    if (['ArrowRight', 'ArrowDown', 'PageDown', ' ', 'j'].includes(k)) { e.preventDefault(); go(cur + 1); }
+    else if (['ArrowLeft', 'ArrowUp', 'PageUp', 'k'].includes(k)) { e.preventDefault(); go(cur - 1); }
+    else if (k === 'Home') { e.preventDefault(); go(0); }
+    else if (k === 'End') { e.preventDefault(); go(total - 1); }
+    else if (/^[1-9]$/.test(k) && sections[+k - 1]) go(sections[+k - 1].first);
+    else if (k === 'o' || k === 'O') setOutline(!outline.classList.contains('open'));
+    else if (k === 't' || k === 'T') toggleTheme();
+    else if (k === 'p' || k === 'P') window.print();
+  });
+  $('#bOutline').onclick = () => setOutline(true);
+  $('#bTheme').onclick = toggleTheme;
+  $('#bPrint').onclick = () => window.print();
+
+  let tx = 0, ty = 0;
+  addEventListener('touchstart', e => { tx = e.touches[0].clientX; ty = e.touches[0].clientY; }, { passive: true });
+  addEventListener('touchend', e => {
+    const dx = e.changedTouches[0].clientX - tx, dy = e.changedTouches[0].clientY - ty;
+    if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 2) go(cur + (dx < 0 ? 1 : -1));
+  }, { passive: true });
+
+  /* ── reveal on enter ───────────────────────────────────── */
+  const io = new IntersectionObserver(es => es.forEach(en => { if (en.isIntersecting) en.target.classList.add('in'); }),
+    { threshold: 0.12 });
+  slides.forEach(s => io.observe(s));
+
+  /* ── tabs ──────────────────────────────────────────────── */
+  $$('.tabs').forEach(t => {
+    $$(':scope > .tab-bar button', t).forEach(b => b.addEventListener('click', () => {
+      $$(':scope > .tab-bar button', t).forEach(x => x.classList.toggle('on', x === b));
+      $$(':scope > .tab-p', t).forEach(p => p.classList.toggle('on', p.dataset.t === b.dataset.t));
+    }));
+  });
+
+  /* ── code: highlight + copy ────────────────────────────── */
+  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const hl = {
+    json: s => esc(s).replace(/(\/\/[^\n]*)|("(?:[^"\\]|\\.)*")(\s*:)?|\b(true|false|null|-?\d+(?:\.\d+)?)\b/g,
+      (m, c, str, colon, n) => c ? `<span class="c">${c}</span>` : str ? (colon ? `<span class="k">${str}</span>${colon}` : `<span class="s">${str}</span>`) : `<span class="n">${n}</span>`),
+    bash: s => esc(s).replace(/(#[^\n]*)|(&quot;[^\n]*?&quot;|"[^"\n]*"|'[^']*')|(^|\s)(--?[a-zA-Z][\w-]*)/gm,
+      (m, c, str, sp, fl) => c ? `<span class="c">${c}</span>` : str ? `<span class="s">${str}</span>` : `${sp}<span class="f">${fl}</span>`),
+    yaml: s => esc(s).replace(/(#[^\n]*)|^(\s*-?\s*)([\w.-]+)(:)/gm,
+      (m, c, ind, key, col) => c ? `<span class="c">${c}</span>` : `${ind}<span class="k">${key}</span>${col}`),
+    plain: s => esc(s)
+  };
+  $$('pre[data-lang]').forEach(pre => {
+    const src = pre.textContent;
+    pre.dataset.src = src;
+    pre.innerHTML = (hl[pre.dataset.lang] || hl.plain)(src);
+  });
+  $$('[data-copy]').forEach(b => b.addEventListener('click', () => {
+    const pre = b.closest('.code').querySelector('pre');
+    navigator.clipboard?.writeText(pre.dataset.src ?? pre.textContent).then(() => {
+      const t = b.textContent; b.textContent = 'copied'; setTimeout(() => b.textContent = t, 1200);
+    });
+  }));
+
+  /* ── start ─────────────────────────────────────────────── */
+  const start = location.hash && $(location.hash);
+  if (start && start.classList.contains('slide')) start.scrollIntoView({ block: 'start', behavior: 'instant' });
+  update();
+})();
+</script>
+</body>
+</html>
