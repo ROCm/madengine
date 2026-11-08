@@ -53,6 +53,7 @@ def _build_deployment(
     distributed_overrides: dict = None,
     timeout: int = None,
     cli_timeout: int = None,
+    include_default_port: bool = True,
 ) -> SlurmDeployment:
     """SlurmDeployment over a minimal torchrun manifest, output_dir under tmp_path."""
     manifest = {
@@ -85,8 +86,9 @@ def _build_deployment(
         "nnodes": 2,
         "nproc_per_node": 8,
         "backend": "nccl",
-        "port": 29500,
     }
+    if include_default_port:
+        distributed_config["port"] = 29500
     distributed_config.update(distributed_overrides or {})
 
     cfg_kwargs = {} if timeout is None else {"timeout": timeout}
@@ -466,11 +468,13 @@ class TestMasterPort:
 
     def test_master_port_used_when_port_is_omitted(self, tmp_path):
         deployment = _build_deployment(
-            tmp_path, distributed_overrides={"master_port": 30001}
+            tmp_path,
+            distributed_overrides={"master_port": 30001},
+            include_default_port=False,
         )
-        deployment.distributed_config.pop("port", None)
         rendered = _render(deployment)
         assert "--master_port=30001" in rendered
+        assert "--master_port=29500" not in rendered
 
 
 # ---------------------------------------------------------------------------

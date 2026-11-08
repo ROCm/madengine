@@ -307,6 +307,21 @@ class TestKubernetesLauncherDispatch:
             one = _k8s_deployment(tmp_path, "vllm-disagg", nnodes=1)
             one._prepare_template_context(MODEL_ENTRY, IMAGE_INFO)
 
+    def test_vllm_disagg_quotes_model_args(self, tmp_path):
+        deployment = _k8s_deployment(tmp_path, "vllm-disagg", nnodes=3)
+        command = deployment._generate_vllm_disagg_command(
+            3,
+            8,
+            29500,
+            "scripts/vllm dir/run.sh",
+            "--model $HOME; echo pwned",
+        )
+        assert (
+            "cd '/workspace/scripts/vllm dir' && bash run.sh "
+            "--model '$HOME;' echo pwned"
+        ) in command
+        assert "$HOME;" not in command.replace("'$HOME;'", "")
+
     def test_the_documented_megatron_spelling_reaches_megatron(self, tmp_path):
         """The original bug: this produced no launcher command and no headless service."""
         deployment = _k8s_deployment(tmp_path, "megatron-lm")

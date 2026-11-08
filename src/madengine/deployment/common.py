@@ -454,7 +454,7 @@ def _check_disagg_node_count(
     launcher: str,
     deployment: str,
 ) -> None:
-    nnodes = distributed.get("nnodes", launcher_obj.get("nnodes", 1))
+    nnodes = _disagg_node_count(context, distributed, launcher_obj)
     if not isinstance(nnodes, int):
         return
     key = _DISAGG_BLOCK_KEYS[launcher]
@@ -475,6 +475,27 @@ def _check_disagg_node_count(
         )
     except ValueError as exc:
         _reject_context(str(exc))
+
+
+def _disagg_node_count(
+    context: Dict[str, Any],
+    distributed: Dict[str, Any],
+    launcher_obj: Dict[str, Any],
+) -> Any:
+    """Node count for a disaggregated launcher.
+
+    ``distributed.nnodes`` wins, then ``launcher.nnodes``. A short SLURM or
+    Spur config that only sets ``slurm.nodes`` is the allocation size the
+    job will actually use, so that count is next. One node is the last
+    resort, and both disaggregated launchers reject it.
+    """
+    for value in (distributed.get("nnodes"), launcher_obj.get("nnodes")):
+        if value is not None:
+            return value
+    slurm = context.get("slurm")
+    if isinstance(slurm, dict) and slurm.get("nodes") is not None:
+        return slurm.get("nodes")
+    return 1
 
 
 def _context_scale_warnings(

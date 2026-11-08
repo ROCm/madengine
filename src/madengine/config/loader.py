@@ -7,6 +7,7 @@ from typing import Any, List, Optional, Tuple, cast
 
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
+from hydra.core.override_parser.overrides_parser import OverridesParser
 from omegaconf import DictConfig, OmegaConf
 
 from madengine.core.errors import ConfigurationError
@@ -136,11 +137,29 @@ class HydraConfigLoader:
         """
         user_file, overrides = HydraConfigLoader._parse_args(config_args)
         for override in overrides:
-            key = override.split("=", 1)[0].lstrip("+").lstrip("~")
-            if key == "distributed.enabled":
+            if HydraConfigLoader._override_sets_distributed_enabled(override):
                 return True
         if not user_file:
             return False
         loaded = OmegaConf.load(user_file)
         distributed = loaded.get("distributed") if loaded is not None else None
         return isinstance(distributed, (dict, DictConfig)) and "enabled" in distributed
+
+    @staticmethod
+    def _override_sets_distributed_enabled(override: str) -> bool:
+        """True when this Hydra override assigns ``distributed.enabled``.
+
+        Dotted keys (``distributed.enabled=false``) and mapping values
+        (``distributed={launcher: torchrun, enabled: false}``) both count.
+        A mapping that does not mention ``enabled`` does not.
+        """
+        key = override.split("=", 1)[0].lstrip("+").lstrip("~")
+        if key == "distributed.enabled":
+            return True
+        if key != "distributed" or "=" not in override:
+            return False
+        try:
+            value = OverridesParser.create().parse_overrides([override])[0].value()
+        except Exception:
+            return False
+        return isinstance(value, dict) and "enabled" in value

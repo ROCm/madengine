@@ -13,6 +13,7 @@ KNOWN_TOP_LEVEL_KEYS = {
     "model",
     "docker",
     "build",
+    "conda",
     "env_vars",
     "debug",
     "live_output",

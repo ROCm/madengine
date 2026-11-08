@@ -339,6 +339,16 @@ class TestContextDisagreements:
             )
         assert exc_info.value.exit_code == ExitCode.INVALID_ARGS
 
+    @pytest.mark.parametrize("launcher", ["sglang-disagg", "vllm-disagg"])
+    def test_disagg_uses_slurm_nodes_when_nnodes_is_unset(self, launcher):
+        result = validate_additional_context(
+            additional_context=_context(
+                slurm={"partition": "gpu", "nodes": 2},
+                distributed={"launcher": launcher},
+            )
+        )
+        assert result["distributed"]["launcher"] == launcher
+
     def test_disagg_on_one_slurm_node_is_rejected(self):
         with pytest.raises(typer.Exit) as exc_info:
             validate_additional_context(
@@ -436,6 +446,23 @@ class TestHydraContext:
     def test_enabled_override_false_stays_off(self):
         ctx, _meta = load_config(["launcher=torchrun", "distributed.enabled=false"])
         assert ctx["distributed"]["enabled"] is False
+
+    def test_mapping_enabled_false_stays_off(self):
+        ctx, _meta = load_config(["distributed={launcher: torchrun, enabled: false}"])
+        assert ctx["distributed"]["enabled"] is False
+
+    def test_mapping_without_enabled_still_launches(self):
+        ctx, _meta = load_config(["distributed={launcher: torchrun, nnodes: 1}"])
+        assert ctx["distributed"]["enabled"] is True
+
+    def test_bare_metal_conda_block_is_kept(self, tmp_path: Path):
+        job = tmp_path / "job.yaml"
+        job.write_text(
+            "platform: bare_metal\n" "conda:\n" "  conda_bin: /path/to/micromamba\n"
+        )
+        ctx, _meta = load_config([str(job)])
+        assert ctx["platform"] == "bare_metal"
+        assert ctx["conda"]["conda_bin"] == "/path/to/micromamba"
 
     def test_slurm_multi_group_is_unchanged(self):
         ctx, _meta = load_config(["launcher=slurm_multi"])

@@ -3,9 +3,35 @@
 
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
+import shlex
 from pathlib import Path
 
 from .common import resolve_disagg_topology, sglang_disagg_block
+
+
+def _shell_script_command(
+    model_script: str, model_args: str = "", *, workspace: bool = True
+) -> str:
+    """Quote ``cd <dir> && bash <script> <args>``.
+
+    Arguments are split and quoted the same way as
+    ``K8sTemplateContext._build_model_command``, so ``$HOME``, semicolons,
+    and command substitutions stay arguments to the script.
+    """
+    script_path = Path(model_script)
+    directory = script_path.parent
+    if workspace:
+        directory = Path("/workspace") / directory
+    args = (model_args or "").strip()
+    quoted_args = (
+        " ".join(shlex.quote(arg) for arg in shlex.split(args)) if args else ""
+    )
+    command = (
+        f"cd {shlex.quote(str(directory))} && bash {shlex.quote(script_path.name)}"
+    )
+    if quoted_args:
+        command = f"{command} {quoted_args}"
+    return command
 from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
 
 
@@ -570,9 +596,7 @@ echo "SGLang Disaggregated setup complete"
         )
         if not isinstance(vllm_disagg_config, dict):
             vllm_disagg_config = {}
-        script_dir = str(Path(model_script).parent)
-        script_name = Path(model_script).name
-        run_cmd = f"cd /workspace/{script_dir} && bash {script_name} {model_args}".strip()
+        run_cmd = _shell_script_command(model_script, model_args)
         xP, yD = resolve_disagg_topology(
             nnodes,
             vllm_disagg_config.get("prefill_nodes"),
@@ -659,9 +683,7 @@ echo "=========================================="
             raise ValueError(f"model_script must be non-empty string, got {model_script}")
 
         # Run script from its directory so relative paths (run_vllm.py, configs/) resolve
-        script_dir = str(Path(model_script).parent)
-        script_name = Path(model_script).name
-        run_cmd = f"cd /workspace/{script_dir} && bash {script_name} {model_args}".strip()
+        run_cmd = _shell_script_command(model_script, model_args)
         
         # For single-node, simple TP setup (no Ray needed)
         if nnodes == 1:
@@ -780,9 +802,7 @@ trap "ray stop --force 2>/dev/null || true" EXIT"""
             raise ValueError(f"model_script must be non-empty string, got {model_script}")
 
         # Run script from its directory so relative paths resolve; pass model args
-        script_dir = str(Path(model_script).parent)
-        script_name = Path(model_script).name
-        run_cmd = f"cd /workspace/{script_dir} && bash {script_name} {model_args}".strip()
+        run_cmd = _shell_script_command(model_script, model_args)
 
         # For single-node, simple TP setup
         if nnodes == 1:
@@ -1024,13 +1044,9 @@ torchrun \\
                 ]
             )
 
-        script_dir = str(Path(model_script).parent)
-        script_name = str(Path(model_script).name)
-        args_tail = (model_args or "").strip()
-        if args_tail:
-            lines.append(f"cd {script_dir} && bash {script_name} {args_tail}")
-        else:
-            lines.append(f"cd {script_dir} && bash {script_name}")
+        lines.append(
+            _shell_script_command(model_script, model_args, workspace=False)
+        )
 
         return "\n".join(lines)
 
