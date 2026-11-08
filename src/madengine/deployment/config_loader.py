@@ -255,6 +255,19 @@ class ConfigLoader:
 
         # Layer 3: User configuration (highest priority)
         preset_env = dict(config.get("env_vars") or {})
+        # Presets write distributed.port. Hydra launcher groups write
+        # master_port and leave port unset. Drop the preset port so an
+        # explicit master_port is the one the job script uses. A config
+        # that sets port itself, including a legacy port-only file, keeps it.
+        user_dist = user_config.get("distributed") or {}
+        preset_dist = config.get("distributed")
+        if (
+            isinstance(user_dist, dict)
+            and isinstance(preset_dist, dict)
+            and user_dist.get("master_port") is not None
+            and "port" not in user_dist
+        ):
+            preset_dist.pop("port", None)
         config = cls.deep_merge(config, user_config)
 
         # Once merged, a preset's env_vars are indistinguishable from ones the

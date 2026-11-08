@@ -88,7 +88,7 @@ class TestLoadConfigEndToEnd:
 
     def test_unsupported_platform_raises(self):
         with pytest.raises(ConfigurationError, match="not yet supported"):
-            load_config(["platform=bare_metal"])
+            load_config(["platform=singularity"])
 
     def test_container_image_promoted(self):
         ctx, meta = load_config(["model.container_image=myimage:latest"])
