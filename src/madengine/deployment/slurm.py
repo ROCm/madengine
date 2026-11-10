@@ -591,7 +591,7 @@ class SlurmDeployment(BaseDeployment):
     def _user_env_vars(self) -> Dict[str, str]:
         """additional_context.env_vars without the keys only a preset set.
 
-        For the self-managed path. load_slurm_config merges the slurm preset
+        For the self-managed path and multi-node Primus. load_slurm_config merges the slurm preset
         profiles' env_vars into additional_context.env_vars, where they become
         indistinguishable from what the user asked for. The templated launchers
         rely on them. A slurm_multi card does not: it runs its own launcher
@@ -619,7 +619,7 @@ class SlurmDeployment(BaseDeployment):
             del env[key]
         if dropped:
             self.console.print(
-                f"[dim]Not exporting SLURM preset env to the self-managed script "
+                f"[dim]Not exporting SLURM preset env "
                 f"(set them in env_vars to keep them): {', '.join(dropped)}[/dim]"
             )
         return env
@@ -1369,7 +1369,15 @@ class SlurmDeployment(BaseDeployment):
             "account": self.slurm_config.get("account"),
             "modules": self.slurm_config.get("modules", []),
             "submission_bin_dir": self._submission_bin_dir(),
-            "env_vars": self.config.additional_context.get("env_vars", {}),
+            # Multi-node Primus owns its fabric and runtime env (runner/helpers/envs/
+            # base_env.sh only fills unset values), so the multi-node profile's
+            # NCCL_IB_DISABLE=1 / NCCL_SOCKET_IFNAME=eth0 / HSA_ENABLE_SDMA=0 must not
+            # preempt it. Values the user set in env_vars are kept.
+            "env_vars": (
+                self._user_env_vars()
+                if launcher_type == "primus" and self.nodes > 1
+                else self.config.additional_context.get("env_vars", {})
+            ),
             "shared_workspace": self.slurm_config.get("shared_workspace"),
             "shared_data": self.config.additional_context.get("shared_data"),
             "results_dir": self.slurm_config.get("results_dir"),

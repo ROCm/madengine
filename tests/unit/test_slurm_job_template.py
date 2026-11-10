@@ -53,6 +53,7 @@ def _build_deployment(
     distributed_overrides: dict = None,
     timeout: int = None,
     cli_timeout: int = None,
+    env_vars: dict = None,
 ) -> SlurmDeployment:
     """SlurmDeployment over a minimal torchrun manifest, output_dir under tmp_path."""
     manifest = {
@@ -101,6 +102,7 @@ def _build_deployment(
             "guest_os": "UBUNTU",
             "slurm": slurm_config,
             "distributed": distributed_config,
+            **({"env_vars": env_vars} if env_vars else {}),
         },
         **cfg_kwargs,
     )
@@ -471,6 +473,47 @@ class TestMasterPort:
         deployment.distributed_config.pop("port", None)
         rendered = _render(deployment)
         assert "--master_port=30001" in rendered
+
+
+class TestPrimusMultiNodeLeavesFabricToPrimus:
+    """Multi-node Primus picks NIC/HCA and runtime tuning in runner/helpers/envs/
+    base_env.sh, only for unset variables. The job script must not preset them."""
+
+    AUTO_DETECT = "Try to auto-detect InfiniBand"
+
+    def test_multi_node_primus_skips_preset_env_and_nic_detection(self, tmp_path):
+        rendered = _render(
+            _build_deployment(tmp_path, distributed_overrides={"launcher": "primus"})
+        )
+        assert self.AUTO_DETECT not in rendered
+        for key in ("NCCL_IB_DISABLE", "NCCL_SOCKET_IFNAME", "HSA_ENABLE_SDMA"):
+            assert f'export {key}="' not in rendered
+
+    def test_user_env_vars_are_kept(self, tmp_path):
+        rendered = _render(
+            _build_deployment(
+                tmp_path,
+                distributed_overrides={"launcher": "primus"},
+                env_vars={"NCCL_SOCKET_IFNAME": "ib0"},
+            )
+        )
+        assert 'export NCCL_SOCKET_IFNAME="ib0"' in rendered
+        assert 'export NCCL_IB_DISABLE="' not in rendered
+
+    def test_single_node_primus_is_unchanged(self, tmp_path):
+        rendered = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": 1},
+                distributed_overrides={"launcher": "primus", "nnodes": 1},
+            )
+        )
+        assert self.AUTO_DETECT in rendered
+
+    def test_torchrun_multi_node_is_unchanged(self, tmp_path):
+        rendered = _render(_build_deployment(tmp_path))
+        assert self.AUTO_DETECT in rendered
+        assert 'export NCCL_IB_DISABLE="1"' in rendered
 
 
 # ---------------------------------------------------------------------------

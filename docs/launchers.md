@@ -279,9 +279,16 @@ Optional **`primus.backend`** (e.g. `MaxText`, `megatron`) emits `export BACKEND
 
 **Features**:
 - Launcher sets `PRIMUS_ROOT` (default `/workspace/Primus` on K8s after init), `PRIMUS_CONFIG_PATH`, optional `PRIMUS_CLI_EXTRA`, and optional `BACKEND` (from `primus.backend` or inferred from `primus_pretrain/...` model names); no `MAD_MULTI_NODE_RUNNER`
-- Model script (e.g. `run.sh`) sets `EXP` and calls Primus `run_pretrain.sh`
-- NNODES, NODE_RANK, MASTER_ADDR, etc. set by madengine job template
-- Use with MAD-Internal Primus submodule and `scripts/primus_pretrain/run.sh`
+- Model script (e.g. `run.sh`) sets `EXP` and calls `primus-cli direct`, which runs torchrun on each node
+- NNODES, NODE_RANK, MASTER_ADDR, MASTER_PORT, GPUS_PER_NODE set by madengine job template
+- Use with the ROCm/MAD Primus submodule and `scripts/primus_train/run.sh`
+
+**Multi-node**: madengine stays the scheduler (one task per SLURM node, one pod per K8s index); every node runs `primus-cli direct` in its own container. On SLURM with `nodes > 1`:
+- `GPUS_PER_NODE` and shell variables matching `PRIMUS_*`, `NCCL_*`, `RCCL_*`, `GLOO_*`, `IONIC_*`, `HIPBLASLT_*` are forwarded into the container, as Primus's own container launcher does; `docker_env_vars` values win.
+- Primus picks the NIC/HCA and RCCL tuning itself (`runner/helpers/envs/base_env.sh`, only for unset variables), so madengine skips its NIC auto-detect and does not export the multi-node profile's preset-only `env_vars` (e.g. `NCCL_IB_DISABLE=1`, `NCCL_SOCKET_IFNAME=eth0`, `HSA_ENABLE_SDMA=0`). Values you set in `env_vars` are still exported.
+- Only the node holding the last global rank logs throughput; `collect_results` picks the node CSV with performance values for `perf.csv`.
+
+Example: `examples/slurm-configs/basic/10-primus-multi-node.json`.
 
 **Container image**: Prefer `docker/primus.ubuntu.amd.Dockerfile` with `COPY scripts/Primus/ /workspace/Primus/` and `PRIMUS_ROOT=/workspace/Primus`. On **Kubernetes**, the Job’s emptyDir hides image files under `/workspace`; madengine bundles `scripts/Primus/examples/...` into the ConfigMap as `Primus/examples/...` so the init container recreates `/workspace/Primus`. `run.sh` resolves `PRIMUS_ROOT` in that order (see script comments).
 

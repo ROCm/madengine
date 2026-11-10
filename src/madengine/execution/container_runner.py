@@ -84,6 +84,15 @@ SLURM_PASSTHROUGH_ENV_VARS = [
     'SGLANG_NODE_IPS', 'SGLANG_NODE_RANK', 'SGLANG_TP_SIZE',
 ]
 
+# Additional shell variables forwarded for the Primus launcher on SLURM, matching
+# what Primus's own container launcher forwards (runner/primus-cli-container.sh and
+# container.options.env in runner/.primus.yaml). primus-cli direct defaults
+# GPUS_PER_NODE to 8 when it is absent.
+PRIMUS_PASSTHROUGH_ENV_VARS = ('GPUS_PER_NODE', 'USING_AINIC')
+PRIMUS_PASSTHROUGH_ENV_PREFIXES = (
+    'PRIMUS_', 'NCCL_', 'RCCL_', 'GLOO_', 'IONIC_', 'HIPBLASLT_',
+)
+
 
 def _print_run_env_table(
     gpu_vendor: str,
@@ -278,6 +287,21 @@ class ContainerRunner:
         for var_name in SLURM_PASSTHROUGH_ENV_VARS:
             if var_name in os.environ:
                 self.context.ctx["docker_env_vars"][var_name] = os.environ[var_name]
+                merged += 1
+        return merged
+
+    def _merge_primus_env_from_shell(self) -> int:
+        """Copy the Primus-forwarded shell variables into ``docker_env_vars``,
+        leaving values already set there untouched. Returns how many were added."""
+        docker_env = self.context.ctx["docker_env_vars"]
+        merged = 0
+        for var_name, value in os.environ.items():
+            if var_name in docker_env:
+                continue
+            if var_name in PRIMUS_PASSTHROUGH_ENV_VARS or var_name.startswith(
+                PRIMUS_PASSTHROUGH_ENV_PREFIXES
+            ):
+                docker_env[var_name] = value
                 merged += 1
         return merged
 
@@ -1708,6 +1732,11 @@ class ContainerRunner:
         
         # Check shell environment and add to docker_env_vars
         merged_from_env = self._merge_slurm_env_from_shell()
+        if (
+            os.environ.get("MAD_DEPLOYMENT_TYPE") == "slurm"
+            and self._resolve_launcher(model_info) == "primus"
+        ):
+            merged_from_env += self._merge_primus_env_from_shell()
         
         # CRITICAL FIX for rocm/vllm image: Override RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES
         # The rocm/vllm Docker image has RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=1 baked in,

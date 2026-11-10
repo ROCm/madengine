@@ -1259,6 +1259,42 @@ class TestSlurmEnvPassthrough:
         assert ctx.ctx["docker_env_vars"] == {}
 
 
+class TestPrimusEnvPassthrough:
+    """Primus launcher on SLURM forwards what primus-cli-container.sh forwards."""
+
+    def test_forwards_primus_prefixes_and_gpus_per_node(self):
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {}}
+        runner = ContainerRunner(context=ctx, console=MagicMock())
+        shell = {
+            "GPUS_PER_NODE": "4",
+            "NCCL_IB_HCA": "mlx5_0",
+            "PRIMUS_TP": "2",
+            "IONIC_LOG": "1",
+            "UNRELATED_VAR": "x",
+        }
+
+        with patch.dict(os.environ, shell, clear=True):
+            merged = runner._merge_primus_env_from_shell()
+
+        docker_env = ctx.ctx["docker_env_vars"]
+        assert merged == 4
+        assert "UNRELATED_VAR" not in docker_env
+        assert docker_env["GPUS_PER_NODE"] == "4"
+        assert docker_env["NCCL_IB_HCA"] == "mlx5_0"
+
+    def test_existing_docker_env_wins(self):
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {"NCCL_IB_HCA": "from-context"}}
+        runner = ContainerRunner(context=ctx, console=MagicMock())
+
+        with patch.dict(os.environ, {"NCCL_IB_HCA": "from-shell"}, clear=True):
+            merged = runner._merge_primus_env_from_shell()
+
+        assert merged == 0
+        assert ctx.ctx["docker_env_vars"]["NCCL_IB_HCA"] == "from-context"
+
+
 class TestWslGpuArg:
     """GPU argument generation on WSL2 hosts (ROCM-30980).
 

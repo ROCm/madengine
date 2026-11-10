@@ -486,6 +486,9 @@ echo ""
 {% if network_interface %}
 export NCCL_SOCKET_IFNAME={{ network_interface }}
 export GLOO_SOCKET_IFNAME={{ network_interface }}
+{% elif launcher_type == 'primus' and nodes > 1 %}
+# Primus selects NCCL_SOCKET_IFNAME/GLOO_SOCKET_IFNAME and NCCL_IB_HCA itself inside
+# the container (runner/helpers/envs/base_env.sh), but only when they are unset.
 {% else %}
 # Try to auto-detect InfiniBand or high-speed network interface
 if [ -z "${NCCL_SOCKET_IFNAME}" ]; then
