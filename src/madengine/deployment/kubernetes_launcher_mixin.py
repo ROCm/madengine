@@ -961,7 +961,11 @@ torchrun \\
             )
             lines.extend(
                 [
-                    "# Multi-node: Indexed Job + headless Service (pod-0 DNS as master)",
+                    "# Multi-node: Indexed Job + headless Service (pod-0 DNS as master).",
+                    # Each pod has its own disk. Primus otherwise downloads the
+                    # tokenizer on rank 0 only and the other ranks wait for that
+                    # file, so the rendezvous never gets the second client.
+                    "export PRIMUS_SHARED_FS=0",
                     f'export MASTER_ADDR="{master_dns}"',
                     f"export MASTER_PORT={master_port}",
                     f"export NNODES={nnodes}",

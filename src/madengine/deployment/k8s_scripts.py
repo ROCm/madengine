@@ -311,6 +311,24 @@ class KubernetesScriptsMixin:
             model_scripts_contents[key] = content
             return True
 
+        # The image's prepare hook waits on rank 0's tokenizer file. Kubernetes
+        # pods do not share that disk, so overlay the checkout's copy, which
+        # downloads on every rank when PRIMUS_SHARED_FS=0.
+        prepare_hook = (
+            primus_repo
+            / "runner"
+            / "helpers"
+            / "hooks"
+            / "train"
+            / "pretrain"
+            / "torchtitan"
+            / "prepare.py"
+        )
+        if prepare_hook.is_file() and _add_primus_file(prepare_hook):
+            self.console.print(
+                "[dim]Primus K8s: bundled torchtitan prepare hook[/dim]"
+            )
+
         req = primus_repo / "requirements.txt"
         if req.is_file():
             if _add_primus_file(req):

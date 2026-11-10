@@ -47,6 +47,7 @@ class TestGeneratePrimusCommand:
         assert "export BACKEND=" not in cmd
         assert "MASTER_ADDR" in cmd
         assert "NNODES=1" in cmd
+        assert "PRIMUS_SHARED_FS" not in cmd
 
     def test_backend_inferred_from_model_name(self):
         h = _PrimusCommandHarness(
@@ -85,6 +86,7 @@ class TestGeneratePrimusCommand:
         assert "madengine-j-0.madengine-j.ns1.svc.cluster.local" in cmd
         assert "JOB_COMPLETION_INDEX" in cmd
         assert "NNODES=2" in cmd
+        assert "export PRIMUS_SHARED_FS=0" in cmd
 
     def test_multi_node_master_dns_uses_short_headless_subdomain(self):
         """Headless Service / Pod subdomain must be a DNS label (≤63); hostname stays Job name-index."""

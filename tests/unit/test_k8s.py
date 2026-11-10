@@ -1852,3 +1852,23 @@ class TestPrimusConfigMapBundleSize:
             tmp_path, monkeypatch, "examples/torchtitan/c.yaml", {"torchtitan": 1024}
         )
         assert "Primus/examples/torchtitan/a.yaml" in contents
+
+    def test_torchtitan_prepare_hook_bundled(self, tmp_path, monkeypatch):
+        hook = (
+            tmp_path
+            / "scripts"
+            / "Primus"
+            / "runner"
+            / "helpers"
+            / "hooks"
+            / "train"
+            / "pretrain"
+            / "torchtitan"
+            / "prepare.py"
+        )
+        hook.parent.mkdir(parents=True)
+        hook.write_text("PRIMUS_SHARED_FS\n", encoding="utf-8")
+        contents = self._bundle(
+            tmp_path, monkeypatch, "examples/torchtitan/c.yaml", {"torchtitan": 1024}
+        )
+        assert contents[str(hook.relative_to(tmp_path / "scripts"))] == "PRIMUS_SHARED_FS\n"
