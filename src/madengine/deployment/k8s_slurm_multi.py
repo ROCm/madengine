@@ -39,11 +39,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from madengine.core.timeout import resolve_run_timeout
 
 from .common import is_self_managed_launcher
-from .config_loader import PRESET_ENV_KEYS, PRESET_K8S_KEYS
+from .config_loader import PRESET_K8S_KEYS
 from .k8s_secrets import image_pull_secret_refs_for_job
+from .slurm_multi_env import submit_env
 
 SHIM_DIR = Path(__file__).parent / "k8s_shim"
-AGENT_PORT = 29711
 # On every host-network pod of a slurm_multi run, so any two keep to separate nodes.
 HOST_NETWORK_LABEL = "madengine-slurm-multi-host-network"
 # ConfigMaps are capped at 1 MiB in total; leave room for the object's own fields.
@@ -124,22 +124,29 @@ class KubernetesSlurmMultiMixin:
     """Prepare and collect a slurm_multi card on Kubernetes (see module docstring)."""
 
     def _slurm_multi_env(self, model_info: Dict, image: str) -> Dict[str, str]:
-        """The card's env_vars plus the run's, without preset-only keys.
+        """The card's submit layer, as on SLURM and Spur (slurm_multi_env.submit_env).
 
-        On SLURM a slurm_multi card gets exactly this (SlurmDeployment._user_env_vars):
-        presets carry settings for madengine's own launchers -- here the AMD
-        multi-GPU preset's NCCL_IB_DISABLE=1 and NCCL_SOCKET_IFNAME=eth0 -- and
-        handing them to a script that owns its environment changes its transport.
+        Before, this path took only the card's env_vars and the run's, so the card's
+        layered config (mad-config.yaml), docker_env_vars and the sglang_disagg
+        xP / yD never reached a pod, though they reach the same card on SLURM.
+        Presets' env stays out, as there: presets carry settings for madengine's own
+        launchers -- here the AMD multi-GPU preset's NCCL_IB_DISABLE=1 and
+        NCCL_SOCKET_IFNAME=eth0 -- and handing them to a script that owns its
+        environment changes its transport.
         """
-        ctx = self.config.additional_context
-        preset_only = set(ctx.get(PRESET_ENV_KEYS) or [])
-        env = {k: str(v) for k, v in (model_info.get("env_vars") or {}).items()}
-        env.update({k: str(v) for k, v in (ctx.get("env_vars") or {}).items() if k not in preset_only})
-        env["DOCKER_IMAGE_NAME"] = image
+        script = model_info.get("scripts") or ""
+        submit, warnings, _ = submit_env(
+            model_info, self.config.additional_context,
+            Path(script).parent if script else None,
+            self.config.additional_context.get("distributed") or {},
+        )
+        for warning in warnings:
+            self.console.print(f"[yellow]⚠ {warning}[/yellow]")
+        submit.set("DOCKER_IMAGE_NAME", image, "madengine")
         # The launchers coordinate through files under LOG_PATH, so it must be shared
         # by every pod: the results volume is (ReadWriteMany for multi-node).
-        env.setdefault("LOG_PATH", "/results/logs")
-        return env
+        submit.setdefault("LOG_PATH", "/results/logs", "madengine")
+        return submit.final()
 
     def _slurm_multi_image(self, model_info: Dict, image_info: Dict, model_key: str) -> str:
         for ref in (image_info.get("registry_image"), image_info.get("docker_image"),
@@ -237,7 +244,6 @@ class KubernetesSlurmMultiMixin:
             "MAD_K8S_NNODES": str(nnodes), "MAD_K8S_NODE_PREFIX": prefix,
             "MAD_K8S_JOB_ID": self._slurm_multi_run_id, "MAD_K8S_IMAGE": image,
             "MAD_K8S_SCRIPT": script, "MAD_K8S_ARGS": model_info.get("args") or "",
-            "MAD_K8S_AGENT_PORT": str(AGENT_PORT),
         })
         if model_info.get("multiple_results"):
             env["MAD_K8S_MULTIPLE_RESULTS"] = model_info["multiple_results"]
@@ -262,7 +268,6 @@ class KubernetesSlurmMultiMixin:
                 "exec bash /workspace/.mad-k8s/mad_k8s_node.sh"
             ],
             "env": [{"name": k, "value": v} for k, v in sorted(env.items())],
-            "ports": [{"name": "mad-k8s", "containerPort": AGENT_PORT}],
             "resources": {"limits": {**gpu_res, **extra}, "requests": requests},
             "volumeMounts": [
                 {"name": "mad-k8s-bundle", "mountPath": "/mad-k8s-bundle", "readOnly": True},
@@ -289,12 +294,10 @@ class KubernetesSlurmMultiMixin:
         }
         if k8s.get("host_network"):
             # The node's NICs (and their RoCE GIDs) instead of the pod network. On
-            # the node's network every fixed port is shared with the node: the shim
-            # agent's AGENT_PORT and the card's own servers and barriers. So no two
-            # host-network pods of slurm_multi runs -- of this run or any other --
-            # may share a node; require one per node rather than let the second
-            # fail to bind. A per-run agent port would not be enough: the card's
-            # ports are fixed by the card.
+            # the node's network every fixed port is shared with the node: the
+            # card's own servers and barriers. So no two host-network pods of
+            # slurm_multi runs -- of this run or any other -- may share a node;
+            # require one per node rather than let the second fail to bind.
             pod_spec["hostNetwork"] = True
             pod_spec["dnsPolicy"] = "ClusterFirstWithHostNet"
             pod_labels[HOST_NETWORK_LABEL] = "true"
@@ -332,8 +335,9 @@ class KubernetesSlurmMultiMixin:
                      "binaryData": {"scripts.tgz": base64.b64encode(bundle).decode()}}
         service = {"apiVersion": "v1", "kind": "Service", "metadata": meta(self.service_name),
                    "spec": {"clusterIP": "None", "publishNotReadyAddresses": True,
-                            "selector": {"job-name": self.job_label},
-                            "ports": [{"name": "mad-k8s", "port": AGENT_PORT}]}}
+                            # Headless, for the pods' DNS names only: the pods reach
+                            # each other on the card's own ports, not through it.
+                            "selector": {"job-name": self.job_label}}}
         job = {"apiVersion": "batch/v1", "kind": "Job", "metadata": meta(self.job_name), "spec": job_spec}
         return {"configmap": configmap, "service": service, "job": job, "nnodes": nnodes,
                 "gpus": gpus, "image": image}
