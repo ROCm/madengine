@@ -322,6 +322,17 @@ def test_dockerhub_registry_payload():
     assert build_registry_secret_data(creds) is not None
 
 
+def test_placeholder_dockerhub_credentials_do_not_make_a_pull_secret():
+    creds = {
+        "dockerhub": {
+            "repository": "your-org/your-repo",
+            "username": "your-docker-username",
+            "password": "your-docker-token",
+        }
+    }
+    assert build_registry_secret_data(creds) is None
+
+
 def test_estimate_configmap_payload_bytes():
     ctx = {
         "manifest_content": "x" * 100,
@@ -970,8 +981,17 @@ class TestK8sRequirePinnedImage:
         }
         (tmp_path / "build_manifest.json").write_text(json.dumps(manifest))
 
+        # A kubeconfig of its own, so the test does not depend on the machine
+        # having one (loading it opens no connection).
+        kubeconfig = tmp_path / "kubeconfig"
+        kubeconfig.write_text(
+            "apiVersion: v1\nkind: Config\ncurrent-context: t\n"
+            "clusters: [{name: t, cluster: {server: 'https://127.0.0.1:1'}}]\n"
+            "users: [{name: t, user: {token: x}}]\n"
+            "contexts: [{name: t, context: {cluster: t, user: t}}]\n"
+        )
         additional_context = {
-            "k8s": {"namespace": "default"},
+            "k8s": {"namespace": "default", "kubeconfig": str(kubeconfig)},
             "gpu_vendor": "AMD",
             "guest_os": "UBUNTU",
         }
@@ -1114,6 +1134,16 @@ class TestK8sPodLogContainerParam:
             target="k8s",
             manifest_file="build_manifest.json",
             additional_context={"k8s": {"namespace": "default"}},
+        )
+        # __init__ loads the host's kubeconfig (or in-cluster config) and fails on a
+        # machine with neither; these tests only exercise the log calls on core_v1.
+        monkeypatch.setattr(
+            "madengine.deployment.kubernetes.k8s_config.load_kube_config",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "madengine.deployment.kubernetes.k8s_config.load_incluster_config",
+            lambda *args, **kwargs: None,
         )
         deployment = KubernetesDeployment(cfg)
         deployment.core_v1 = MagicMock()
@@ -1521,8 +1551,25 @@ class TestK8sResultsKubectlKubeconfig:
             json.dumps({"built_images": {}, "built_models": {}, "context": {}})
         )
         monkeypatch.chdir(tmp_path)
+        # The deployment pins kubectl to a kubeconfig it can read and to its
+        # context, so the "~" path is a real file under a temporary HOME.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("KUBECONFIG", raising=False)
+        if kubeconfig:
+            path = Path(os.path.expanduser(kubeconfig))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                "apiVersion: v1\nkind: Config\ncurrent-context: t\n"
+                "clusters: [{name: t, cluster: {server: 'https://127.0.0.1:1'}}]\n"
+                "users: [{name: t, user: {token: x}}]\n"
+                "contexts: [{name: t, context: {cluster: t, user: t}}]\n"
+            )
         monkeypatch.setattr(
             "madengine.deployment.kubernetes.k8s_config.load_kube_config",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "madengine.deployment.kubernetes.k8s_config.load_incluster_config",
             lambda *args, **kwargs: None,
         )
         k8s = {"namespace": "ns1"}
@@ -1543,6 +1590,8 @@ class TestK8sResultsKubectlKubeconfig:
             "kubectl",
             "--kubeconfig",
             os.path.expanduser(self.KUBECONFIG),
+            "--context",
+            "t",
             "cp",
             "a",
             "b",
@@ -1599,7 +1648,7 @@ class TestK8sResultsKubectlKubeconfig:
         assert calls
         expanded = os.path.expanduser(self.KUBECONFIG)
         for cmd in calls:
-            assert cmd[:4] == ["kubectl", "--kubeconfig", expanded, "cp"]
+            assert cmd[:6] == ["kubectl", "--kubeconfig", expanded, "--context", "t", "cp"]
 
     def test_no_kubectl_command_is_built_outside_the_helper(self):
         import ast

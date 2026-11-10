@@ -2,15 +2,62 @@
 
 import json
 import os
-import pytest
+from pathlib import Path
 from unittest.mock import MagicMock, mock_open, patch
 
+import pytest
+
 from madengine.core.auth import (
+    _usable_credentials,
     explain_registry_denial,
     has_ambient_docker_auth,
+    is_placeholder_credential,
     load_credentials,
     login_to_registry,
 )
+
+
+class TestPlaceholderCredentials:
+    """Template dockerhub values are not credentials. Real ones still are."""
+
+    def test_shipped_templates_are_placeholders(self):
+        for value in (
+            "your-docker-username",
+            "your-docker-token",
+            "your-dockerhub-password-or-token",
+            "your-username",
+            "your-token-or-password",
+            " YOUR-DOCKER-USERNAME ",
+        ):
+            assert is_placeholder_credential(value)
+
+    def test_real_secrets_are_not_placeholders(self):
+        for value in ("your-company", "your-token-123", "user", "s3cret", "", None):
+            assert not is_placeholder_credential(value)
+
+    def test_template_pair_is_not_usable(self):
+        assert not _usable_credentials(
+            {"username": "your-docker-username", "password": "your-docker-token"}
+        )
+
+    def test_real_your_prefix_is_usable(self):
+        assert _usable_credentials({"username": "your-company", "password": "s3cret"})
+
+    def test_one_template_field_is_not_usable(self):
+        assert not _usable_credentials(
+            {"username": "real-user", "password": "your-docker-token"}
+        )
+
+    def test_dummy_fixture_dockerhub_is_not_usable(self):
+        fixture = (
+            Path(__file__).resolve().parents[2]
+            / "tests"
+            / "fixtures"
+            / "dummy"
+            / "credential.json"
+        )
+        data = json.loads(fixture.read_text())
+        assert not _usable_credentials(data["dockerhub"])
 
 
 class TestLoadCredentials:
@@ -175,6 +222,30 @@ class TestLoginToRegistry:
             login_to_registry("docker.io", credentials, console, rich_console, raise_on_failure=True)
         console.sh.assert_not_called()
 
+    def test_template_credentials_do_not_login(self, mock_ambient):
+        """Shipped your-docker-* values must not run docker login."""
+        console, rich_console = self._mocks()
+        credentials = {
+            "dockerhub": {
+                "repository": "your-org/your-repo",
+                "username": "your-docker-username",
+                "password": "your-docker-token",
+            }
+        }
+        with pytest.raises(RuntimeError, match="username|password"):
+            login_to_registry(
+                "docker.io", credentials, console, rich_console, raise_on_failure=True
+            )
+        console.sh.assert_not_called()
+
+    def test_real_username_prefixed_your_still_logs_in(self, mock_ambient):
+        """A real username such as your-company is not a template."""
+        console, rich_console = self._mocks()
+        credentials = {"dockerhub": {"username": "your-company", "password": "s3cret"}}
+        login_to_registry("docker.io", credentials, console, rich_console)
+        console.sh.assert_called_once()
+        assert "--username your-company" in console.sh.call_args[0][0]
+
     def test_docker_io_normalised_to_dockerhub(self, mock_ambient):
         """docker.io registry is looked up under the 'dockerhub' key."""
         console, rich_console = self._mocks()
@@ -252,6 +323,21 @@ class TestLoginToRegistryWithAmbientAuth:
         login_to_registry("docker.io", credentials, console, rich_console)
         console.sh.assert_called_once()
         assert "--username user" in console.sh.call_args[0][0]
+
+    @patch("madengine.core.auth.has_ambient_docker_auth", return_value=True)
+    def test_template_credentials_defer_to_ambient_auth(self, mock_ambient):
+        """Template dockerhub values must not replace an existing docker login."""
+        console, rich_console = self._mocks()
+        credentials = {
+            "dockerhub": {
+                "username": "your-docker-username",
+                "password": "your-dockerhub-password-or-token",
+            }
+        }
+        login_to_registry(
+            "docker.io", credentials, console, rich_console, raise_on_failure=True
+        )
+        console.sh.assert_not_called()
 
     @patch("madengine.core.auth.has_ambient_docker_auth", return_value=False)
     def test_whitespace_only_credentials_are_not_credentials(self, mock_ambient):

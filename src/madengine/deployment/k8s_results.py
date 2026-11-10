@@ -8,7 +8,6 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """
 
 import json
-import os
 import re
 import subprocess
 import time
@@ -282,17 +281,13 @@ class KubernetesResultsMixin:
     )
 
     def _kubectl_cmd(self, *args: str) -> List[str]:
-        """Build a kubectl command, honoring ``k8s.kubeconfig``.
+        """Build a kubectl command pinned to the deployment's kubeconfig and context.
 
-        Job creation uses the Python client, which reads this path. Result
-        collection shells out to kubectl, which otherwise falls back to
-        localhost:8080 when ``KUBECONFIG`` is unset.
+        Job creation uses the Python client, which reads them. Result collection
+        shells out to kubectl, which otherwise falls back to localhost:8080 when
+        ``KUBECONFIG`` is unset, or to a different current context.
         """
-        cmd = ["kubectl"]
-        kubeconfig = self.k8s_config.get("kubeconfig")
-        if kubeconfig:
-            cmd += ["--kubeconfig", os.path.expanduser(str(kubeconfig))]
-        return cmd + list(args)
+        return self.kubectl_cmd(*args)
 
     def _launch_settings(self, model_info: Dict) -> Dict[str, Any]:
         """Same launcher resolution the job template uses."""
@@ -454,6 +449,9 @@ class KubernetesResultsMixin:
             "successful_runs": [],
             "failed_runs": [],
         }
+
+        if getattr(self, "_slurm_multi", False):
+            return self._collect_slurm_multi_results(deployment_id, results)
 
         # Create results directory for this deployment
         results_dir = Path(f"./k8s_results/{deployment_id}")
@@ -1133,7 +1131,7 @@ class KubernetesResultsMixin:
             collector_pod_spec = {
                 "apiVersion": "v1",
                 "kind": "Pod",
-                "metadata": {"name": coll_pod_name, "namespace": self.namespace},
+                "metadata": {"name": coll_pod_name, "namespace": self.namespace, "labels": {"app": "madengine", "madengine-collector": "true"}},
                 "spec": collector_spec,
             }
 

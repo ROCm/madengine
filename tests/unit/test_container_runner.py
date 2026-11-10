@@ -439,7 +439,14 @@ class TestRunContainerSkipModelRun:
         return runner
 
     def _run_container_with_mocks(
-        self, runner, model_info, docker_sh_calls, sh_side_effect=None, **kwargs
+        self,
+        runner,
+        model_info,
+        docker_sh_calls,
+        sh_side_effect=None,
+        docker_options=None,
+        gather_system_env_details=None,
+        **kwargs,
     ):
         """Call run_container with all the infrastructure mocked away.
 
@@ -464,12 +471,20 @@ class TestRunContainerSkipModelRun:
             docker_sh_calls.append(cmd)
             return "ok"
 
+        def capture_docker_init(*args, **kwargs):
+            if docker_options is not None:
+                docker_options.append(args[2])
+
         with patch.object(ContainerRunner, "_resolve_docker_image", return_value="ci-dummy"), \
              patch.object(ContainerRunner, "get_gpu_arg", return_value=""), \
              patch.object(ContainerRunner, "get_cpu_arg", return_value=""), \
              patch.object(ContainerRunner, "get_env_arg", return_value=""), \
              patch.object(ContainerRunner, "get_mount_arg", return_value=""), \
-             patch.object(ContainerRunner, "gather_system_env_details"), \
+             patch.object(
+                 ContainerRunner,
+                 "gather_system_env_details",
+                 side_effect=gather_system_env_details,
+             ), \
              patch.object(ContainerRunner, "ensure_perf_csv_exists"), \
              patch("madengine.utils.rocm_path_resolver.finalize_container_rocm_path"), \
              patch("madengine.execution.container_runner._print_run_env_table"), \
@@ -477,7 +492,7 @@ class TestRunContainerSkipModelRun:
              patch("madengine.execution.container_runner.update_perf_csv"), \
              patch("madengine.execution.container_runner.update_perf_super_json"), \
              patch("madengine.execution.container_runner.update_perf_super_csv"), \
-             patch.object(Docker, "__init__", return_value=None), \
+             patch.object(Docker, "__init__", side_effect=capture_docker_init), \
              patch.object(Docker, "docker_run_cmd", "docker run ci-dummy", create=True), \
              patch.object(Docker, "sh", side_effect=sh_side_effect or _record_sh), \
              patch.object(Docker, "__del__", return_value=None), \
@@ -532,6 +547,212 @@ class TestRunContainerSkipModelRun:
         assert any(
             "run.sh" in c and "cd " in c for c in docker_sh_calls
         ), f"Model script was not executed: {docker_sh_calls}"
+
+
+class TestContainerFusePrivileges:
+    def _runner_with_provider(self, provider=None):
+        runner = ContainerRunner.__new__(ContainerRunner)
+        runner.data = MagicMock()
+        runner.data.find_dataprovider.return_value = provider
+        return runner
+
+    def test_regular_run_does_not_request_fuse_privileges(self):
+        runner = self._runner_with_provider()
+
+        assert not runner._requires_fuse_mount_for_data("")
+        assert runner._get_fuse_mount_options(False) == ""
+
+    def test_non_mirrored_nas_requests_fuse_privileges(self):
+        provider = MagicMock(provider_type="nas", config={})
+        runner = self._runner_with_provider(provider)
+
+        assert runner._requires_fuse_mount_for_data("weights")
+        assert runner._get_fuse_mount_options(True) == (
+            "--cap-add SYS_ADMIN --device /dev/fuse "
+        )
+
+    def test_mirrored_nas_does_not_request_fuse_privileges(self):
+        provider = MagicMock(provider_type="nas", config={"mirrorlocal": "/tmp/cache"})
+        runner = self._runner_with_provider(provider)
+
+        assert not runner._requires_fuse_mount_for_data("weights")
+
+    def test_rocprof_tool_requests_sys_admin(self):
+        assert ContainerRunner._requires_sys_admin_for_tools(
+            [{"name": "rocprofv3_lightweight"}]
+        )
+
+    def test_non_profiling_tools_do_not_request_sys_admin(self):
+        assert not ContainerRunner._requires_sys_admin_for_tools(
+            [{"name": "torch_profiler_dynolog"}]
+        )
+
+    def test_non_nas_provider_does_not_request_fuse_privileges(self):
+        provider = MagicMock(provider_type="local", config={})
+        runner = self._runner_with_provider(provider)
+
+        assert not runner._requires_fuse_mount_for_data("weights")
+
+    def test_regular_run_renders_without_sys_admin_or_fuse(self):
+        runner = TestRunContainerSkipModelRun()._make_runner()
+        docker_options = []
+        model_info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+        }
+
+        TestRunContainerSkipModelRun()._run_container_with_mocks(
+            runner,
+            model_info,
+            [],
+            docker_options=docker_options,
+            skip_model_run=True,
+            keep_alive=True,
+        )
+
+        assert len(docker_options) == 1
+        assert "SYS_ADMIN" not in docker_options[0]
+        assert "/dev/fuse" not in docker_options[0]
+
+    def test_generated_pre_scripts_do_not_leak_to_later_runs(self):
+        runner = TestRunContainerSkipModelRun()._make_runner()
+        runner.context.ctx["pre_scripts"] = []
+        model_info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+        }
+
+        def add_generated_rocenv(scripts, *_):
+            scripts["pre_scripts"].append({"path": "generated/rocenv.sh"})
+
+        docker_options = []
+        harness = TestRunContainerSkipModelRun()
+        for _ in range(2):
+            harness._run_container_with_mocks(
+                runner,
+                model_info,
+                [],
+                docker_options=docker_options,
+                gather_system_env_details=add_generated_rocenv,
+                skip_model_run=True,
+                keep_alive=True,
+            )
+
+        assert runner.context.ctx["pre_scripts"] == []
+        assert all("SYS_ADMIN" not in options for options in docker_options)
+
+    def test_non_mirrored_nas_run_renders_sys_admin_and_fuse(self):
+        runner = TestRunContainerSkipModelRun()._make_runner()
+        provider = MagicMock(provider_type="nas", config={})
+        runner.data = MagicMock()
+        runner.data.find_dataprovider.return_value = provider
+        runner.data.get_mountpaths.return_value = []
+        runner.data.get_env.return_value = None
+        docker_options = []
+        model_info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+            "data": "weights",
+        }
+
+        TestRunContainerSkipModelRun()._run_container_with_mocks(
+            runner,
+            model_info,
+            [],
+            docker_options=docker_options,
+            skip_model_run=True,
+            keep_alive=True,
+        )
+
+        assert "--cap-add SYS_ADMIN --device /dev/fuse" in docker_options[0]
+
+    def test_mirrored_nas_run_does_not_render_fuse_privileges(self):
+        runner = TestRunContainerSkipModelRun()._make_runner()
+        provider = MagicMock(
+            provider_type="nas", config={"mirrorlocal": "/tmp/cache"}
+        )
+        runner.data = MagicMock()
+        runner.data.find_dataprovider.return_value = provider
+        runner.data.get_mountpaths.return_value = []
+        runner.data.get_env.return_value = None
+        docker_options = []
+        model_info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+            "data": "weights",
+        }
+
+        TestRunContainerSkipModelRun()._run_container_with_mocks(
+            runner,
+            model_info,
+            [],
+            docker_options=docker_options,
+            skip_model_run=True,
+            keep_alive=True,
+        )
+
+        assert "SYS_ADMIN" not in docker_options[0]
+        assert "/dev/fuse" not in docker_options[0]
+
+    def test_rocprof_run_renders_sys_admin_without_fuse(self):
+        runner = TestRunContainerSkipModelRun()._make_runner()
+        runner.context.ctx["tools"] = [{"name": "rocprofv3_lightweight"}]
+        docker_options = []
+        model_info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+        }
+
+        TestRunContainerSkipModelRun()._run_container_with_mocks(
+            runner,
+            model_info,
+            [],
+            docker_options=docker_options,
+            skip_model_run=True,
+            keep_alive=True,
+        )
+
+        assert "--cap-add SYS_ADMIN" in docker_options[0]
+        assert "/dev/fuse" not in docker_options[0]
+
+    def test_model_options_remain_an_explicit_privilege_opt_in(self):
+        runner = TestRunContainerSkipModelRun()._make_runner()
+        docker_options = []
+        model_info = {
+            "name": "dummy",
+            "scripts": "scripts/dummy/run.sh",
+            "args": "",
+            "n_gpus": "1",
+            "tags": [],
+            "additional_docker_run_options": "--cap-add SYS_ADMIN --device /dev/fuse",
+        }
+
+        TestRunContainerSkipModelRun()._run_container_with_mocks(
+            runner,
+            model_info,
+            [],
+            docker_options=docker_options,
+            skip_model_run=True,
+            keep_alive=True,
+        )
+
+        assert len(docker_options) == 1
+        assert "--cap-add SYS_ADMIN --device /dev/fuse" in docker_options[0]
 
 
 class TestPostScriptsAfterWorkloadFailure:
@@ -1036,6 +1257,93 @@ class TestSlurmEnvPassthrough:
             runner._merge_slurm_env_from_shell()
 
         assert ctx.ctx["docker_env_vars"] == {}
+
+
+class TestWslGpuArg:
+    """GPU argument generation on WSL2 hosts (ROCM-30980).
+
+    WSL2 exposes the GPU via /dev/dxg and has no KFD device, so passing
+    --device=/dev/kfd makes docker run fail with "no such file or directory".
+    """
+
+    def _runner(self, is_wsl, gpu_renderDs=None):
+        context = MagicMock()
+        context.ctx = {
+            "docker_env_vars": {"MAD_GPU_VENDOR": "AMD", "MAD_SYSTEM_NGPUS": "1"},
+            "docker_gpus": "0",
+            "gpu_renderDs": gpu_renderDs,
+            "rocm_path": "/opt/rocm",
+            "is_wsl": is_wsl,
+        }
+        return ContainerRunner(context)
+
+    def test_wsl_uses_dxg_not_kfd(self):
+        """On WSL the GPU is passed through /dev/dxg; /dev/kfd must not appear."""
+        runner = self._runner(is_wsl=True)
+
+        with patch("os.path.isfile", return_value=True):
+            result = runner.get_gpu_arg("1")
+
+        assert "--device=/dev/dxg" in result
+        assert "/dev/kfd" not in result
+
+    def test_wsl_mounts_dxg_libraries_and_sets_detection_env(self):
+        """libdxcore/librocdxg/dids.conf are mounted into default lookup paths."""
+        runner = self._runner(is_wsl=True)
+
+        with patch("os.path.isfile", return_value=True):
+            result = runner.get_gpu_arg("1")
+
+        assert "-v /usr/lib/wsl/lib/libdxcore.so:/usr/lib/libdxcore.so" in result
+        assert "-v /opt/rocm/lib/librocdxg.so:/usr/lib/librocdxg.so" in result
+        assert (
+            "-v /opt/rocm/share/rocdxg/dids.conf:/usr/share/rocdxg/dids.conf" in result
+        )
+        assert "--env HSA_ENABLE_DXG_DETECTION=1" in result
+
+    def test_wsl_skips_missing_host_libraries(self):
+        """Missing mount sources are skipped: docker would create a shadowing dir."""
+        runner = self._runner(is_wsl=True)
+
+        with patch("os.path.isfile", return_value=False):
+            result = runner.get_gpu_arg("1")
+
+        assert "--device=/dev/dxg" in result
+        assert "-v" not in result
+
+    def test_wsl_omits_renderd_when_unavailable(self):
+        """gpu_renderDs is None on WSL, so no renderD devices are requested."""
+        runner = self._runner(is_wsl=True, gpu_renderDs=None)
+
+        with patch("os.path.isfile", return_value=True):
+            result = runner.get_gpu_arg("1")
+
+        assert "renderD" not in result
+
+    def test_native_linux_behaviour_unchanged(self):
+        """Non-WSL AMD hosts keep the existing /dev/kfd + renderD arguments."""
+        runner = self._runner(is_wsl=False, gpu_renderDs=[128])
+
+        result = runner.get_gpu_arg("1")
+
+        assert "--device=/dev/kfd" in result
+        assert "--device=/dev/dri/renderD128" in result
+        assert "/dev/dxg" not in result
+
+    def test_missing_is_wsl_key_defaults_to_kfd(self):
+        """A context without is_wsl (e.g. from an older manifest) is not WSL."""
+        context = MagicMock()
+        context.ctx = {
+            "docker_env_vars": {"MAD_GPU_VENDOR": "AMD", "MAD_SYSTEM_NGPUS": "1"},
+            "docker_gpus": "0",
+            "gpu_renderDs": [128],
+        }
+        runner = ContainerRunner(context)
+
+        result = runner.get_gpu_arg("1")
+
+        assert "--device=/dev/kfd" in result
+        assert "/dev/dxg" not in result
 
 
 class TestGitSafeDirectory:

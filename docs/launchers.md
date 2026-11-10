@@ -24,7 +24,7 @@ madengine provides unified support for multiple distributed frameworks, enabling
 | **vLLM** | Inference | High-throughput LLM serving | ✅ | ✅ | ✅ |
 | **SGLang** | Inference | Fast LLM inference | ✅ | ✅ | ✅ |
 | **SGLang Disaggregated** | Inference | Large-scale disaggregated inference | ✅ | ✅ | ✅ (min 2 on SLURM, 3 on K8s) |
-| **slurm_multi** | Escape hatch | Self-managed multi-container topologies | ❌ | ✅ | ✅ |
+| **slurm_multi** | Escape hatch | Self-managed multi-container topologies | ✅ (see [deployment](deployment.md#slurm_multi-cards-on-kubernetes)) | ✅ | ✅ |
 
 > **llm-d is not a launcher.** A launcher is a way madengine starts a workload *inside its own container*. [llm-d](llm-d.md) is a deployment target: the model servers are long-lived Kubernetes Deployments behind an Inference Gateway, managed by helm, and madengine's container is only the HTTP benchmark client. Use `llm_d` in `--additional-context`, not `distributed.launcher`. Result rows record that split: `deployment_type` is `llm-d`, `launcher` is the model server (`vllm`), and `serving_mode` is `disaggregated` or `aggregated`. When the card sets `multiple_results`, that CSV is preferred over log `performance:` aggregation, same as local Docker and plain Kubernetes.
 
@@ -924,7 +924,7 @@ SGLANG_NODE_RANK=${SLURM_PROCID}
 ```text
 Unknown launcher 'xyz' in distributed.launcher
 ```
-Solution: Use one of: `torchrun`, `deepspeed`, `megatron-lm`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg` (or `sglang_disagg`), `slurm_multi` (or `slurm-multi`). `slurm_multi` runs on SLURM only. The string `megatron` is not accepted; use `megatron-lm` (`--config launcher=megatron` is only a Hydra group alias of that name).
+Solution: Use one of: `torchrun`, `deepspeed`, `megatron-lm`, `torchtitan`, `primus`, `vllm`, `sglang`, `sglang-disagg` (or `sglang_disagg`), `slurm_multi` (or `slurm-multi`). `slurm_multi` runs on SLURM and Kubernetes, not llm-d. The string `megatron` is not accepted; use `megatron-lm` (`--config launcher=megatron` is only a Hydra group alias of that name).
 
 **2. Multi-Node Communication Fails**
 ```bash

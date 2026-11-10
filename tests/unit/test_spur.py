@@ -667,6 +667,13 @@ class TestNodePreflight:
     actively harmful there: every array task requests --nodes=1, so a multi-node
     #SBATCH --nodelist would make each task demand all of them."""
 
+    @pytest.fixture(autouse=True)
+    def _madengine_on_path(self):
+        # prepare() runs `madengine --version` on the submit host; whether the test
+        # runner has the CLI on PATH has nothing to do with the preflight.
+        with patch.object(SlurmDeployment, "_validate_cli_availability", return_value=True):
+            yield
+
     @staticmethod
     def _submit(deployment):
         with patch("madengine.deployment.slurm.subprocess.run") as mock_run:

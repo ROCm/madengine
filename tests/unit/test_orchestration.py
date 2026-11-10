@@ -1165,8 +1165,8 @@ class TestSelfManagedLauncherImpliesSlurm:
         ({"distributed": {"launcher": "torchrun"}}, "local"),
         ({"distributed": {"launcher": "vllm"}}, "local"),
         ({"distributed": {}}, "local"),
-        # An explicit k8s block still wins; slurm_multi is SLURM-only by construction
-        # but the explicit target is the user's stated intent.
+        # An explicit k8s block still wins: Kubernetes runs a slurm_multi card's
+        # own script too, and the explicit target is the user's stated intent.
         ({"k8s": {}, "distributed": {"launcher": "slurm_multi"}}, "k8s"),
     ])
     def test_inference(self, config, expected):

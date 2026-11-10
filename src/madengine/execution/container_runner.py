@@ -828,7 +828,10 @@ class ContainerRunner:
 
         # Create docker arg to assign requested GPUs
         if gpu_vendor.find("AMD") != -1:
-            gpu_arg = "--device=/dev/kfd "
+            if self.context.ctx.get("is_wsl"):
+                gpu_arg = self.get_wsl_gpu_arg()
+            else:
+                gpu_arg = "--device=/dev/kfd "
             gpu_renderDs = self.context.ctx["gpu_renderDs"]
             if gpu_renderDs is not None:
                 for idx in range(0, int(requested_gpus)):
@@ -847,12 +850,86 @@ class ContainerRunner:
         print(f"GPU arguments: {gpu_arg}")
         return gpu_arg
 
+    def get_wsl_gpu_arg(self) -> str:
+        """Get the GPU arguments for docker run on a WSL2 host.
+
+        Returns:
+            str: The docker device, mount and env arguments for /dev/dxg access.
+
+        Note:
+            WSL2 has no KFD device, so ROCm routes compute through the DXG driver
+            via libdxcore (host) and librocdxg (ROCm). Both must be visible inside
+            the container. See https://github.com/ROCm/librocdxg for the flags.
+        """
+        gpu_arg = "--device=/dev/dxg "
+
+        rocm_path = self.context.ctx.get("rocm_path") or "/opt/rocm"
+        dids_conf = os.path.join(rocm_path, "share", "rocdxg", "dids.conf")
+        wsl_lib_mounts = {
+            "/usr/lib/wsl/lib/libdxcore.so": "/usr/lib/libdxcore.so",
+            os.path.join(rocm_path, "lib", "librocdxg.so"): "/usr/lib/librocdxg.so",
+            dids_conf: "/usr/share/rocdxg/dids.conf",
+        }
+        for host_path, container_path in wsl_lib_mounts.items():
+            # Docker silently creates a directory when the mount source is
+            # missing, which would shadow any copy already in the image.
+            if os.path.isfile(host_path):
+                gpu_arg += f"-v {shlex.quote(host_path)}:{shlex.quote(container_path)} "
+            else:
+                print(f"Warning: WSL GPU library not found on host: {host_path}")
+
+        # Required by ROCm runtimes older than 7.13 to probe /dev/dxg; newer
+        # releases detect DXG automatically and ignore it.
+        gpu_arg += "--env HSA_ENABLE_DXG_DETECTION=1 "
+        return gpu_arg
+
     def get_cpu_arg(self) -> str:
         """Get the CPU arguments for docker run."""
         if "docker_cpus" not in self.context.ctx:
             return ""
         cpus = self.context.ctx["docker_cpus"].replace(" ", "")
         return f"--cpuset-cpus {cpus} "
+
+    def _requires_fuse_mount_for_data(self, datanames: str) -> bool:
+        """Return whether selected data providers need an in-container SSHFS mount.
+
+        NAS data without ``mirrorlocal`` is mounted through SSHFS in
+        ``NASDataProvider.prepare_data``. That path needs both ``/dev/fuse`` and
+        ``CAP_SYS_ADMIN``. Local, object-store, mirrored NAS, and custom data
+        providers do not.
+        """
+        if not datanames or not self.data:
+            return False
+
+        for dataname in datanames.split(","):
+            provider = self.data.find_dataprovider(dataname)
+            if (
+                getattr(provider, "provider_type", None) == "nas"
+                and "mirrorlocal" not in getattr(provider, "config", {})
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _get_fuse_mount_options(requires_fuse_mount: bool) -> str:
+        """Return the least-privilege Docker options for the SSHFS data path."""
+        if not requires_fuse_mount:
+            return ""
+        return "--cap-add SYS_ADMIN --device /dev/fuse "
+
+    @staticmethod
+    def _requires_sys_admin_for_tools(tools: typing.Any) -> bool:
+        """Return whether selected profiling tools need kernel performance access."""
+        if not isinstance(tools, list):
+            return False
+
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            name = str(tool.get("name", "")).lower()
+            if name.startswith(("rocprof", "perf")):
+                return True
+        return False
 
     def _resolve_launcher(
         self, model_info: typing.Dict, announce: bool = False
@@ -1550,12 +1627,12 @@ class ContainerRunner:
         if gpu_vendor.find("AMD") != -1:
             docker_options = (
                 "--network host -u root --group-add video "
-                "--cap-add=SYS_PTRACE --cap-add SYS_ADMIN --device /dev/fuse "
+                "--cap-add=SYS_PTRACE "
                 "--security-opt seccomp=unconfined --security-opt apparmor=unconfined --ipc=host "
             )
         elif gpu_vendor.find("NVIDIA") != -1:
             docker_options = (
-                "-u root --cap-add=SYS_PTRACE --cap-add SYS_ADMIN --cap-add SYS_NICE --device /dev/fuse "
+                "-u root --cap-add=SYS_PTRACE --cap-add SYS_NICE "
                 "--security-opt seccomp=unconfined --security-opt apparmor=unconfined "
                 "--network host --ipc=host "
             )
@@ -1570,13 +1647,13 @@ class ContainerRunner:
         }
 
         if "pre_scripts" in self.context.ctx:
-            pre_encapsulate_post_scripts["pre_scripts"] = self.context.ctx[
-                "pre_scripts"
-            ]
+            pre_encapsulate_post_scripts["pre_scripts"] = list(
+                self.context.ctx["pre_scripts"]
+            )
         if "post_scripts" in self.context.ctx:
-            pre_encapsulate_post_scripts["post_scripts"] = self.context.ctx[
-                "post_scripts"
-            ]
+            pre_encapsulate_post_scripts["post_scripts"] = list(
+                self.context.ctx["post_scripts"]
+            )
         if "encapsulate_script" in self.context.ctx:
             pre_encapsulate_post_scripts["encapsulate_script"] = self.context.ctx[
                 "encapsulate_script"
@@ -1593,6 +1670,14 @@ class ContainerRunner:
         # Gather data and environment
         run_env = {}
         mount_datapaths = None
+        requires_fuse_mount = False
+        # Keep SYS_ADMIN for an explicit user pre-script, whose requirements
+        # cannot be inferred by madengine, and for the built-in performance
+        # profiling tools below. The default rocenv pre-script is added later
+        # and intentionally does not affect this decision.
+        requires_sys_admin_for_profiling = bool(
+            self.context.ctx.get("pre_scripts")
+        ) or self._requires_sys_admin_for_tools(self.context.ctx.get("tools"))
 
         # Merge docker_env_vars from additional_context into context
         # Also check shell environment for SLURM-passed variables
@@ -1687,6 +1772,9 @@ class ContainerRunner:
         if "data" in model_info and model_info["data"] != "" and self.data:
             mount_datapaths = self.data.get_mountpaths(model_info["data"])
             model_dataenv = self.data.get_env(model_info["data"])
+            requires_fuse_mount = self._requires_fuse_mount_for_data(
+                model_info["data"]
+            )
             if model_dataenv is not None:
                 run_env.update(model_dataenv)
             run_env["MAD_DATANAME"] = model_info["data"]
@@ -1718,6 +1806,9 @@ class ContainerRunner:
         resolved_gpu_count = resolve_runtime_gpus(model_info, self.additional_context)
         docker_options += self.get_gpu_arg(str(resolved_gpu_count))
         docker_options += self.get_cpu_arg()
+        docker_options += self._get_fuse_mount_options(requires_fuse_mount)
+        if requires_sys_admin_for_profiling and not requires_fuse_mount:
+            docker_options += "--cap-add SYS_ADMIN "
 
         # Generate MAD_MULTI_NODE_RUNNER for Docker local deployment.
         # SLURM and K8s generate this in their deployment layers (slurm.py,

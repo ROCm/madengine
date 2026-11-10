@@ -800,8 +800,12 @@ class TestInsideExistingAllocation:
             '*) printf "h1\\nh2\\nh3\\nh4\\n" ;; esac\n'
         )
         scontrol.chmod(0o755)
+        # STEP_NODELIST expands through the template's mad_expand_nodelist.
+        fn = next(i for i, l in enumerate(lines) if l.startswith("mad_expand_nodelist()"))
+        fn_end = next(i for i in range(fn, len(lines)) if lines[i] == "}")
         snippet = "\n".join(
             ["export SLURM_NTASKS=4"]
+            + lines[fn : fn_end + 1]
             + lines[start : start + 3]
             + ['echo "$STEP_NODELIST $MASTER_ADDR $WORLD_SIZE"']
         )
