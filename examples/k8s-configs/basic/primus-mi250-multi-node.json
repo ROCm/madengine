@@ -1,0 +1,28 @@
+{
+  "_comment": "Primus on the MI250 cluster (context mad-mi250-k8s-cluster, resource amd.com/gpu). Four workers, 8 GPUs each; llm-d-bench already holds 1 GPU on every worker, so this asks for 1 GPU on each of 2 pods.",
+  "_description": "Two-pod Primus pretrain. The image must be the MAD primus image (PRIMUS_ROOT=/opt/primus); the Job emptyDir hides /workspace.",
+  "_usage": "From a ROCm/MAD checkout, pass this file (it lives in the madengine repo): madengine build --tags primus_train/torchtitan_MI300X_qwen3_1.7B-pretrain --additional-context-file <madengine>/examples/k8s-configs/basic/primus-mi250-multi-node.json --registry dockerhub && madengine run --manifest-file build_manifest.json --additional-context-file <madengine>/examples/k8s-configs/basic/primus-mi250-multi-node.json --live-output. The cluster pulls rocm/mad-private with the dockerhub-rocm secret in namespace default.",
+  "_note": "The experiment YAML is an MI300X recipe; MI250 is gfx90a and has no Primus GPU env file, so run.sh leaves PRIMUS_GPU_MODEL unset and Primus uses base_env.sh. prepare_experiment.sh downloads Qwen/Qwen3-1.7B and exits unless docker_env_vars.HF_TOKEN is set. backoff_limit is 0 so that missing-token failure is not retried.",
+
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+
+  "k8s": {
+    "namespace": "default",
+    "gpu_resource_name": "amd.com/gpu",
+    "gpu_count": 1,
+    "cpu": "8",
+    "memory": "64Gi",
+    "backoff_limit": 0
+  },
+
+  "distributed": {
+    "launcher": "primus",
+    "nnodes": 2,
+    "nproc_per_node": 1,
+    "master_port": 29500,
+    "primus": {
+      "config_path": "examples/torchtitan/configs/MI300X/qwen3_1.7B-pretrain.yaml"
+    }
+  }
+}
