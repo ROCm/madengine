@@ -1865,7 +1865,7 @@ export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc
         )
         config_path = primus_cfg.get("config_path")
         if config_path is None and not card_sets_config_path(model_args):
-            config_path = "exp_pretrain.yaml"
+            config_path = "examples/megatron/exp_pretrain.yaml"
         cli_extra = primus_cfg.get("cli_extra", "")
         lines = ["# Primus launcher (model script runs primus-cli)"]
         if config_path is not None:
