@@ -19,6 +19,7 @@ from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
 from madengine.deployment.base import DeploymentConfig, create_jinja_env
 from madengine.deployment.k8s_names import (
     sanitize_k8s_container_name,
+    sanitize_k8s_job_name,
     sanitize_k8s_label_value,
     sanitize_k8s_object_name,
 )
@@ -472,6 +473,29 @@ class TestSanitizeK8sObjectName:
         n = sanitize_k8s_object_name("madengine", "///")
         assert "madengine" in n
         assert "/" not in n
+
+
+@pytest.mark.unit
+class TestSanitizeK8sJobName:
+    """Indexed Job pods are named "{job}-{index}" and must be DNS labels."""
+
+    MODEL = "primus_train/torchtitan_MI300X_qwen3_1.7B-pretrain"
+
+    def test_single_node_keeps_existing_name(self):
+        assert sanitize_k8s_job_name(self.MODEL, 1) == sanitize_k8s_object_name(
+            "madengine", self.MODEL, max_total_len=63
+        )
+
+    def test_multi_node_removes_dot(self):
+        name = sanitize_k8s_job_name(self.MODEL, 2)
+        assert name == "madengine-primus-train-torchtitan-mi300x-qwen3-1-7b-pretrain"
+        assert "." not in name
+
+    @pytest.mark.parametrize("nnodes", [2, 10, 100])
+    def test_multi_node_leaves_room_for_pod_index(self, nnodes):
+        name = sanitize_k8s_job_name("z" * 200, nnodes)
+        assert len(f"{name}-{nnodes - 1}") <= 63
+        assert name == sanitize_k8s_container_name(name)
 
 
 @pytest.mark.unit
