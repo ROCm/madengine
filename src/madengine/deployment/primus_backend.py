@@ -44,6 +44,15 @@ def merged_primus_config(
     return out
 
 
+def card_sets_config_path(model_args: str) -> bool:
+    """True when the model card's ``args`` pass ``--config_path`` (MAD ``primus_train``).
+
+    The model script prefers ``PRIMUS_CONFIG_PATH`` over ``--config_path``, so a
+    launcher fallback default exported for such a card would replace its experiment.
+    """
+    return "--config_path" in (model_args or "").split()
+
+
 def infer_primus_examples_overlay_subdirs(
     config_path: str,
     *,

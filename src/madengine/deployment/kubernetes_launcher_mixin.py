@@ -5,7 +5,11 @@
 
 from pathlib import Path
 
-from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
+from .primus_backend import (
+    card_sets_config_path,
+    infer_primus_backend_from_model_name,
+    merged_primus_config,
+)
 
 
 class KubernetesLauncherMixin:
@@ -889,9 +893,8 @@ torchrun \\
         Generate Primus launcher command for K8s Indexed Jobs.
 
         Primus (TorchTitan, Megatron, MaxText, etc.) runs via ``run.sh`` →
-        ``examples/run_pretrain.sh``, which expects ``NNODES``, ``NODE_RANK``,
-        ``GPUS_PER_NODE``, ``MASTER_ADDR``, and ``MASTER_PORT`` (see Primus
-        ``run_pretrain.sh``). For multi-node jobs, ``NODE_RANK`` is
+        ``primus-cli direct``, which expects ``NNODES``, ``NODE_RANK``,
+        ``GPUS_PER_NODE``, ``MASTER_ADDR``, and ``MASTER_PORT``. For multi-node jobs, ``NODE_RANK`` is
         ``JOB_COMPLETION_INDEX`` (Indexed Job); the job template must export
         ``JOB_COMPLETION_INDEX`` for Primus the same way as for torchrun.
 
@@ -913,15 +916,23 @@ torchrun \\
             manifest if isinstance(manifest, dict) else None,
             self.config.additional_context,
         )
-        config_path = primus_cfg.get("config_path", "examples/torchtitan/configs/MI300X/qwen3_1.7B-pretrain.yaml")
+        config_path = primus_cfg.get("config_path")
+        if config_path is None and not card_sets_config_path(model_args):
+            config_path = "examples/torchtitan/configs/MI300X/qwen3_1.7B-pretrain.yaml"
         cli_extra = primus_cfg.get("cli_extra", "")
-        config_path_quoted = config_path.replace('"', '\\"')
         lines = [
-            "# Primus launcher (run.sh → Primus examples/run_pretrain.sh)",
-            # Dockerfile uses PRIMUS_ROOT=/workspace/Primus; ConfigMap extracts Primus/… there.
+            "# Primus launcher (run.sh → primus-cli direct)",
             'export PRIMUS_ROOT="${PRIMUS_ROOT:-/workspace/Primus}"',
-            f'export PRIMUS_CONFIG_PATH="{config_path_quoted}"',
+            # The Job's emptyDir hides the image's /workspace, so the init container
+            # only recreates the ConfigMap's Primus/... files there. An image that keeps
+            # Primus outside /workspace (PRIMUS_ROOT=/opt/primus) gets them laid over it.
+            'if [ "$PRIMUS_ROOT" != /workspace/Primus ] && [ -d /workspace/Primus ]; then',
+            '    cp -r /workspace/Primus/. "$PRIMUS_ROOT/" || echo "Warning: could not overlay ConfigMap Primus files onto $PRIMUS_ROOT"',
+            "fi",
         ]
+        if config_path is not None:
+            config_path_quoted = config_path.replace('"', '\\"')
+            lines.append(f'export PRIMUS_CONFIG_PATH="{config_path_quoted}"')
         if (cli_extra or "").strip():
             cli_extra_quoted = cli_extra.replace('"', '\\"')
             lines.append(f'export PRIMUS_CLI_EXTRA="{cli_extra_quoted}"')

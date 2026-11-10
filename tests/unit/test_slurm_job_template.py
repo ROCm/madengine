@@ -510,6 +510,17 @@ class TestPrimusMultiNodeLeavesFabricToPrimus:
         )
         assert self.AUTO_DETECT in rendered
 
+    def test_card_config_path_is_not_replaced_by_fallback(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path, distributed_overrides={"launcher": "primus"}
+        )
+        card = dict(MODEL_ENTRY, args="--config_path examples/m.yaml")
+        context = deployment._prepare_template_context(card)
+        assert "PRIMUS_CONFIG_PATH" not in context["launcher_command"]
+
+        context = deployment._prepare_template_context(MODEL_ENTRY)
+        assert 'PRIMUS_CONFIG_PATH="exp_pretrain.yaml"' in context["launcher_command"]
+
     def test_torchrun_multi_node_is_unchanged(self, tmp_path):
         rendered = _render(_build_deployment(tmp_path))
         assert self.AUTO_DETECT in rendered

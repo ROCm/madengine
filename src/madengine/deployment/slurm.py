@@ -52,7 +52,11 @@ from .common import (
     validate_launcher,
 )
 from .config_loader import PRESET_ENV_KEYS, ConfigLoader, apply_deployment_config
-from .primus_backend import infer_primus_backend_from_model_name, merged_primus_config
+from .primus_backend import (
+    card_sets_config_path,
+    infer_primus_backend_from_model_name,
+    merged_primus_config,
+)
 from .slurm_node_selector import SlurmNodeSelector
 
 
@@ -1339,6 +1343,7 @@ class SlurmDeployment(BaseDeployment):
             nproc_per_node=nproc_per_node,
             master_port=master_port,
             model_name=model_info.get("name", "") or "",
+            model_args=model_info.get("args", "") or "",
         )
 
         return {
@@ -1410,6 +1415,7 @@ class SlurmDeployment(BaseDeployment):
         nproc_per_node: int,
         master_port: int,
         model_name: str = "",
+        model_args: str = "",
     ) -> str:
         """
         Generate launcher-specific command based on launcher type.
@@ -1445,7 +1451,11 @@ class SlurmDeployment(BaseDeployment):
             )
         elif launcher_type == "primus":
             return self._generate_primus_command(
-                nnodes, nproc_per_node, master_port, model_name=model_name
+                nnodes,
+                nproc_per_node,
+                master_port,
+                model_name=model_name,
+                model_args=model_args,
             )
         else:
             # For unknown launchers, provide basic environment variables
@@ -1836,12 +1846,13 @@ export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc
         nproc_per_node: int,
         master_port: int,
         model_name: str = "",
+        model_args: str = "",
     ) -> str:
         """
         Generate Primus launcher environment for SLURM.
 
         Primus (Megatron-LM, TorchTitan, Jax/MaxText) runs via model script that calls
-        run_pretrain.sh; NNODES, NODE_RANK, MASTER_ADDR, etc. are set by the job script.
+        primus-cli; NNODES, NODE_RANK, MASTER_ADDR, etc. are set by the job script.
         We only export PRIMUS_CONFIG_PATH and optional PRIMUS_CLI_EXTRA. No MAD_MULTI_NODE_RUNNER.
         """
         primus_cfg = merged_primus_config(
@@ -1852,14 +1863,15 @@ export MAD_MULTI_NODE_RUNNER="torchrun --nnodes={nnodes} --nproc_per_node={nproc
             ),
             self.config.additional_context,
         )
-        config_path = primus_cfg.get("config_path", "exp_pretrain.yaml")
+        config_path = primus_cfg.get("config_path")
+        if config_path is None and not card_sets_config_path(model_args):
+            config_path = "exp_pretrain.yaml"
         cli_extra = primus_cfg.get("cli_extra", "")
-        # Safe shell quoting for config_path and cli_extra
-        config_path_quoted = config_path.replace('"', '\\"')
-        lines = [
-            f"# Primus launcher (model script runs run_pretrain.sh)",
-            f'export PRIMUS_CONFIG_PATH="{config_path_quoted}"',
-        ]
+        lines = ["# Primus launcher (model script runs primus-cli)"]
+        if config_path is not None:
+            # Safe shell quoting for config_path and cli_extra
+            config_path_quoted = config_path.replace('"', '\\"')
+            lines.append(f'export PRIMUS_CONFIG_PATH="{config_path_quoted}"')
         if (cli_extra or "").strip():
             cli_extra_quoted = cli_extra.replace('"', '\\"')
             lines.append(f'export PRIMUS_CLI_EXTRA="{cli_extra_quoted}"')
@@ -2651,65 +2663,6 @@ export MASTER_PORT={master_port}
         }
         flatten_tags(result)
         return result
-
-    def _select_best_multiple_results_csv(
-        self, candidates: List[Path]
-    ) -> Optional[Path]:
-        """Pick the CSV with the most non-empty performance entries.
-
-        In multi-node SLURM runs every node copies its local multi-results CSV
-        into job_dir/node_<rank>/. Only some nodes observe the final throughput
-        and populate the performance column; others have the file but with empty
-        values (e.g. master perf empty while a worker has the real numbers).
-        Ranking candidates by the count of non-empty performance rows lets
-        downstream aggregation use the richest data instead of depending on
-        node-0 winning the race or being non-empty. Header/row keys are stripped
-        so a leading space in the CSV header (some Primus configs) still matches.
-        Ties break on total row count; candidates[0] is the ultimate fallback.
-        """
-        if not candidates:
-            return None
-        if len(candidates) == 1:
-            return candidates[0]
-        import csv as _csv
-
-        best_candidate: Optional[Path] = None
-        best_score = -1
-        best_rows = -1
-        for candidate in candidates:
-            non_empty_perf = 0
-            total_rows = 0
-            has_perf_column = False
-            try:
-                with open(candidate, "r", encoding="utf-8", errors="ignore") as f:
-                    reader = _csv.DictReader(f)
-                    fieldnames = reader.fieldnames or []
-                    stripped_fields = [fn.strip() for fn in fieldnames]
-                    has_perf_column = "performance" in stripped_fields
-                    for row in reader:
-                        total_rows += 1
-                        if has_perf_column:
-                            normalized_row = {
-                                (k.strip() if isinstance(k, str) else k): v
-                                for k, v in row.items()
-                            }
-                            value = (normalized_row.get("performance") or "").strip()
-                            if value:
-                                non_empty_perf += 1
-            except Exception:
-                continue
-            score = non_empty_perf if has_perf_column else 0
-            if score > best_score or (score == best_score and total_rows > best_rows):
-                best_score = score
-                best_rows = total_rows
-                best_candidate = candidate
-        if best_candidate is None:
-            return candidates[0]
-        if best_score > 0:
-            self.console.print(
-                f"[dim]  Selected multiple_results CSV with {best_score} non-empty performance rows: {best_candidate}[/dim]"
-            )
-        return best_candidate
 
     def collect_results(self, deployment_id: str) -> Dict[str, Any]:
         """Collect performance results from SLURM output files.

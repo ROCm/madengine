@@ -283,14 +283,16 @@ Optional **`primus.backend`** (e.g. `MaxText`, `megatron`) emits `export BACKEND
 - NNODES, NODE_RANK, MASTER_ADDR, MASTER_PORT, GPUS_PER_NODE set by madengine job template
 - Use with the ROCm/MAD Primus submodule and `scripts/primus_train/run.sh`
 
-**Multi-node**: madengine stays the scheduler (one task per SLURM node, one pod per K8s index); every node runs `primus-cli direct` in its own container. On SLURM with `nodes > 1`:
+**Multi-node**: madengine stays the scheduler (one task per SLURM node, one pod per K8s index); every node runs `primus-cli direct` in its own container. On Kubernetes with `nnodes > 1` the preset-only `env_vars` below are likewise not set on the pods. On SLURM with `nodes > 1`:
 - `GPUS_PER_NODE` and shell variables matching `PRIMUS_*`, `NCCL_*`, `RCCL_*`, `GLOO_*`, `IONIC_*`, `HIPBLASLT_*` are forwarded into the container, as Primus's own container launcher does; `docker_env_vars` values win.
 - Primus picks the NIC/HCA and RCCL tuning itself (`runner/helpers/envs/base_env.sh`, only for unset variables), so madengine skips its NIC auto-detect and does not export the multi-node profile's preset-only `env_vars` (e.g. `NCCL_IB_DISABLE=1`, `NCCL_SOCKET_IFNAME=eth0`, `HSA_ENABLE_SDMA=0`). Values you set in `env_vars` are still exported.
 - Only the node holding the last global rank logs throughput; `collect_results` picks the node CSV with performance values for `perf.csv`.
 
 Example: `examples/slurm-configs/basic/10-primus-multi-node.json`.
 
-**Container image**: Prefer `docker/primus.ubuntu.amd.Dockerfile` with `COPY scripts/Primus/ /workspace/Primus/` and `PRIMUS_ROOT=/workspace/Primus`. On **Kubernetes**, the Job’s emptyDir hides image files under `/workspace`; madengine bundles `scripts/Primus/examples/...` into the ConfigMap as `Primus/examples/...` so the init container recreates `/workspace/Primus`. `run.sh` resolves `PRIMUS_ROOT` in that order (see script comments).
+**Container image**: Prefer ROCm/MAD `docker/primus.ubuntu.amd.Dockerfile`, which copies `scripts/Primus/` to `/opt/primus` (`PRIMUS_ROOT=/opt/primus`, `/workspace/Primus` symlinked to it). On **Kubernetes**, the Job’s emptyDir hides image files under `/workspace`; madengine bundles `scripts/Primus/examples/...` into the ConfigMap as `Primus/...` and lays them over `PRIMUS_ROOT` (a subtree too large for the ConfigMap, such as `examples/megatron`, is skipped). With several pods reporting, `perf.csv` takes the pod CSV with performance values rather than summing. `run.sh` resolves `PRIMUS_ROOT` in its own order (see script comments).
+
+A card whose `args` pass `--config_path` (ROCm/MAD `primus_train/...` cards) runs that experiment on SLURM and Kubernetes; `distributed.primus.config_path` overrides it when set.
 
 **Examples**:
 - K8s (Primus vs upstream workload API, MaxText caveats, TorchTitan/Megatron/MaxText sample JSON): `examples/k8s-configs/README.md` section **Primus on Kubernetes**
