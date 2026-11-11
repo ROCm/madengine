@@ -2692,11 +2692,14 @@ export MASTER_PORT={master_port}
 
         model_keys = list(self.manifest.get("built_models") or {})
         model_key = model_keys[0] if model_keys else None
-        # Use logical model name for job_dir so it matches the task script (which uses model_info["name"]).
-        # built_models is keyed by image name; value has "name" = logical model name.
+        # job.sh.j2 writes under model_name, which the template context sets to
+        # _safe_name(). A namespaced card ("primus_train/megatron_...") is one
+        # path segment there; the raw name is a different directory, so
+        # collection reports zero perf files.
         built_models_dict = self.manifest.get("built_models") or {}
         model_info_for_path = built_models_dict.get(model_key, {}) if model_key else {}
-        model_name_for_path = model_info_for_path.get("name", model_key or "unknown")
+        raw_model_name = model_info_for_path.get("name") or model_key or "unknown"
+        model_name_for_path = self._safe_name({"name": raw_model_name})
         model_name = (
             model_key or "unknown"
         )  # image key for build_info / model_info_for_entry lookups

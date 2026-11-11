@@ -54,11 +54,12 @@ def _build_deployment(
     timeout: int = None,
     cli_timeout: int = None,
     env_vars: dict = None,
+    model_entry: dict = None,
 ) -> SlurmDeployment:
     """SlurmDeployment over a minimal torchrun manifest, output_dir under tmp_path."""
     manifest = {
         "built_images": {"dummy-image": {"docker_image": "dummy:latest"}},
-        "built_models": {"dummy-image": MODEL_ENTRY},
+        "built_models": {"dummy-image": model_entry or MODEL_ENTRY},
         "context": {
             "docker_env_vars": {},
             "docker_mounts": {},
@@ -1041,3 +1042,33 @@ class TestInsideExistingAllocation:
         assert run.call_args.args[0] == ["sbatch", str(dep.script_path)]
         assert result.status is DeploymentStatus.SUCCESS
         assert result.deployment_id == "12345"
+
+
+class TestCollectResultsUsesSafeModelName:
+    """Nodes write under _safe_name(); collection must look in that directory."""
+
+    def test_namespaced_card_csv_is_found(self, tmp_path, monkeypatch):
+        name = "primus_train/megatron_MI355X_llama3.1_70B-BF16-pretrain"
+        entry = dict(MODEL_ENTRY)
+        entry["name"] = name
+        entry["multiple_results"] = "primus_perf_output.csv"
+        dep = _build_deployment(
+            tmp_path,
+            slurm_overrides={"nodes": 2},
+            model_entry=entry,
+        )
+        job_id = "12345"
+        csv_dir = dep.output_dir / dep._safe_name({"name": name}) / job_id / "node_0"
+        csv_dir.mkdir(parents=True)
+        (csv_dir / "primus_perf_output.csv").write_text(
+            "model,performance,metric\nm,1518.6,throughput\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        results = dep.collect_results(job_id)
+
+        assert results["successful_runs"]
+        assert results["successful_runs"][0]["performance"] == "1518.6"
+        raw_dir = dep.output_dir / name / job_id
+        assert not raw_dir.exists()

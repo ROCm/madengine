@@ -496,6 +496,15 @@ class TestSanitizeK8sJobName:
         name = sanitize_k8s_job_name("z" * 200, nnodes)
         assert len(f"{name}-{nnodes - 1}") <= 63
         assert name == sanitize_k8s_container_name(name)
+        assert name.startswith("madengine-")
+
+    def test_long_multi_node_name_is_sanitized_once(self):
+        raw = "primus_train/megatron_MI300X_llama3.1_8B-BF16-pretrain"
+        name = sanitize_k8s_job_name(raw, 2)
+        assert name.startswith("madengine-")
+        assert "." not in name
+        assert len(f"{name}-1") <= 63
+        assert name == sanitize_k8s_job_name(raw, 2)
 
 
 @pytest.mark.unit
@@ -1766,8 +1775,8 @@ class TestK8sPrimusMultiNodePresetEnv:
 
 
 class TestK8sPrimusMultipleResultsSelection:
-    """Primus logs global per-GPU throughput on the last rank (TorchTitan also on
-    rank 0); summing pod CSVs would multiply it. Other launchers still merge."""
+    """Each pod CSV is the job's global per-GPU throughput, so summing pods
+    would multiply it. Other launchers still merge."""
 
     def _results(self, tmp_path):
         artifacts = []

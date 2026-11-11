@@ -1791,8 +1791,9 @@ class KubernetesResultsMixin:
         if len(csv_paths) == 1:
             return csv_paths[0]
         if self._launch_settings(model_info)["launcher"] == "primus":
-            # One training job: Primus logs its global per-GPU throughput on the last
-            # rank only, so summing pods would multiply it. Keep the reporting pod's CSV.
+            # One training job: each pod CSV is that job's global per-GPU throughput
+            # (Megatron logs the last rank, Bridge rank 0, TorchTitan every rank),
+            # so summing pods would multiply it. Keep the reporting pod's CSV.
             return self._select_best_multiple_results_csv(csv_paths)
         merged_path = results_dir / "multiple_results_merged.csv"
         if self._merge_multi_node_multiple_results_csv(csv_paths, merged_path):

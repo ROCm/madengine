@@ -180,6 +180,9 @@ class TestCardSetsConfigPath:
         assert not card_sets_config_path("")
         assert not card_sets_config_path("--config_path_extra x")
 
+    def test_equals_form(self):
+        assert card_sets_config_path("--config_path=examples/a.yaml --foo 1")
+
 
 @pytest.mark.unit
 class TestMergedPrimusConfig:

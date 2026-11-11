@@ -286,7 +286,7 @@ Optional **`primus.backend`** (e.g. `MaxText`, `megatron`) emits `export BACKEND
 **Multi-node**: madengine stays the scheduler (one task per SLURM node, one pod per K8s index); every node runs `primus-cli direct` in its own container. On Kubernetes with `nnodes > 1` the preset-only `env_vars` below are likewise not set on the pods. On SLURM with `nodes > 1`:
 - `GPUS_PER_NODE` and shell variables matching `PRIMUS_*`, `NCCL_*`, `RCCL_*`, `GLOO_*`, `IONIC_*`, `HIPBLASLT_*` are forwarded into the container, as Primus's own container launcher does; `docker_env_vars` values win.
 - Primus picks the NIC/HCA and RCCL tuning itself (`runner/helpers/envs/base_env.sh`, only for unset variables), so madengine skips its NIC auto-detect and does not export the multi-node profile's preset-only `env_vars` (e.g. `NCCL_IB_DISABLE=1`, `NCCL_SOCKET_IFNAME=eth0`, `HSA_ENABLE_SDMA=0`). Values you set in `env_vars` are still exported.
-- Only the node holding the last global rank logs throughput; `collect_results` picks the node CSV with performance values for `perf.csv`.
+- `collect_results` picks the node or pod CSV that has performance values for `perf.csv`. Which rank logs throughput depends on the backend: Megatron logs the last global rank, Megatron-Bridge logs rank 0, and TorchTitan logs every rank.
 
 Example: `examples/slurm-configs/basic/10-primus-multi-node.json`.
 

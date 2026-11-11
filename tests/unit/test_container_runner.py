@@ -1260,7 +1260,7 @@ class TestSlurmEnvPassthrough:
 
 
 class TestPrimusEnvPassthrough:
-    """Primus launcher on SLURM forwards what primus-cli-container.sh forwards."""
+    """Multi-node Primus on SLURM forwards what primus-cli-container.sh forwards."""
 
     def test_forwards_primus_prefixes_and_gpus_per_node(self):
         ctx = MagicMock()
@@ -1293,6 +1293,62 @@ class TestPrimusEnvPassthrough:
 
         assert merged == 0
         assert ctx.ctx["docker_env_vars"]["NCCL_IB_HCA"] == "from-context"
+
+    def _runner(self):
+        ctx = MagicMock()
+        ctx.ctx = {"docker_env_vars": {}}
+        return ContainerRunner(context=ctx, console=MagicMock())
+
+    def test_multi_node_slurm_forwards_shell_env(self):
+        runner = self._runner()
+        model = {"name": "primus_train/m", "distributed": {"launcher": "primus"}}
+        shell = {
+            "MAD_DEPLOYMENT_TYPE": "slurm",
+            "MAD_TOTAL_NODES": "2",
+            "NCCL_IB_HCA": "mlx5_0",
+            "UNRELATED_VAR": "x",
+        }
+
+        with patch.dict(os.environ, shell, clear=True):
+            merged = runner._merge_primus_multi_node_env(model)
+
+        assert merged == 1
+        assert runner.context.ctx["docker_env_vars"]["NCCL_IB_HCA"] == "mlx5_0"
+        assert "UNRELATED_VAR" not in runner.context.ctx["docker_env_vars"]
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {"MAD_DEPLOYMENT_TYPE": "slurm", "MAD_TOTAL_NODES": "1"},
+            {"MAD_DEPLOYMENT_TYPE": "slurm"},
+            {"MAD_TOTAL_NODES": "2"},
+        ],
+    )
+    def test_single_node_and_non_slurm_do_not_forward(self, env):
+        runner = self._runner()
+        model = {"name": "primus_train/m", "distributed": {"launcher": "primus"}}
+        shell = {**env, "NCCL_IB_HCA": "mlx5_0"}
+
+        with patch.dict(os.environ, shell, clear=True):
+            merged = runner._merge_primus_multi_node_env(model)
+
+        assert merged == 0
+        assert runner.context.ctx["docker_env_vars"] == {}
+
+    def test_other_launcher_does_not_forward(self):
+        runner = self._runner()
+        model = {"name": "m", "distributed": {"launcher": "torchrun"}}
+        shell = {
+            "MAD_DEPLOYMENT_TYPE": "slurm",
+            "MAD_TOTAL_NODES": "2",
+            "NCCL_IB_HCA": "mlx5_0",
+        }
+
+        with patch.dict(os.environ, shell, clear=True):
+            merged = runner._merge_primus_multi_node_env(model)
+
+        assert merged == 0
+        assert runner.context.ctx["docker_env_vars"] == {}
 
 
 class TestWslGpuArg:
