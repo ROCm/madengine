@@ -33,10 +33,9 @@ except ImportError:
 from .base import BaseDeployment, DeploymentConfig, DeploymentResult, DeploymentStatus, create_jinja_env
 from .config_loader import ConfigLoader, apply_deployment_config
 from .k8s_names import (
-    _MAX_JOB_NAME_LEN,
     pod_job_name_label_selector as _pod_job_name_label_selector,
     sanitize_k8s_container_name,
-    sanitize_k8s_object_name,
+    sanitize_k8s_job_name,
 )
 from .k8s_pvc import KubernetesPVCMixin
 from .k8s_results import KubernetesResultsMixin, collector_pod_name
@@ -391,9 +390,14 @@ class KubernetesDeployment(
             #   dots) from sanitize_k8s_container_name(job_name)—used for
             #   headless Service name, Pod subdomain, and Indexed Job DNS.
             raw_model_name = model_info["name"]
-            self.job_name = sanitize_k8s_object_name(
-                "madengine", raw_model_name, max_total_len=_MAX_JOB_NAME_LEN
-            )
+            nnodes = (self.config.additional_context.get("distributed") or {}).get(
+                "nnodes"
+            ) or 1
+            try:
+                nnodes = int(nnodes)
+            except (TypeError, ValueError):
+                nnodes = 1
+            self.job_name = sanitize_k8s_job_name(raw_model_name, nnodes)
             self.job_label = self.job_name
             self.main_container_name = sanitize_k8s_container_name(self.job_name)
             self.service_name = self.main_container_name

@@ -17,6 +17,7 @@ from typing import Dict, List, Optional
 from madengine.core.additional_context_defaults import DEFAULT_GUEST_OS
 from madengine.utils.path_utils import get_madengine_root
 
+from .k8s_secrets import CONFIGMAP_MAX_BYTES
 from .primus_backend import (
     infer_primus_examples_overlay_subdirs,
     merged_primus_config,
@@ -264,9 +265,10 @@ class KubernetesScriptsMixin:
         Add Primus experiment files from ``scripts/Primus`` into ``model_scripts_contents``
         using ConfigMap keys under ``Primus/...`` (not ``scripts/Primus/...``).
 
-        The init container writes paths like ``/workspace/Primus/examples/...``, matching
-        ``PRIMUS_ROOT=/workspace/Primus`` in the Primus Dockerfile. The Job volume hides
-        image layers under ``/workspace``, so this bundle is what makes K8s runs work.
+        The init container writes paths like ``/workspace/Primus/examples/...``. The Job
+        volume hides image layers under ``/workspace``; an image that keeps Primus outside
+        it (``PRIMUS_ROOT=/opt/primus``) gets these files laid over its copy, so local
+        experiment edits still apply. A subtree too large for the ConfigMap is skipped.
 
         Always includes when present:
 
@@ -309,6 +311,24 @@ class KubernetesScriptsMixin:
             model_scripts_contents[key] = content
             return True
 
+        # The image's prepare hook waits on rank 0's tokenizer file. Kubernetes
+        # pods do not share that disk, so overlay the checkout's copy, which
+        # downloads on every rank when PRIMUS_SHARED_FS=0.
+        prepare_hook = (
+            primus_repo
+            / "runner"
+            / "helpers"
+            / "hooks"
+            / "train"
+            / "pretrain"
+            / "torchtitan"
+            / "prepare.py"
+        )
+        if prepare_hook.is_file() and _add_primus_file(prepare_hook):
+            self.console.print(
+                "[dim]Primus K8s: bundled torchtitan prepare hook[/dim]"
+            )
+
         req = primus_repo / "requirements.txt"
         if req.is_file():
             if _add_primus_file(req):
@@ -339,10 +359,18 @@ class KubernetesScriptsMixin:
                     "skipping that subtree.[/yellow]"
                 )
                 continue
+            files = [f for f in base.rglob("*") if f.is_file()]
+            subtree_bytes = sum(f.stat().st_size for f in files)
+            if subtree_bytes > CONFIGMAP_MAX_BYTES // 2:
+                # examples/megatron is ~4 MB; bundling it fails the ConfigMap size check.
+                self.console.print(
+                    f"[yellow]Primus K8s: scripts/Primus/examples/{sub} is {subtree_bytes} bytes, "
+                    "too large for the ConfigMap — not bundled; the image's Primus copy "
+                    "(PRIMUS_ROOT) is used as is.[/yellow]"
+                )
+                continue
             n = 0
-            for f in base.rglob("*"):
-                if not f.is_file():
-                    continue
+            for f in files:
                 if _add_primus_file(f):
                     n += 1
             self.console.print(

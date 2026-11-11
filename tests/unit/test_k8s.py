@@ -19,6 +19,7 @@ from madengine.core.timeout import DEFAULT_RUN_TIMEOUT
 from madengine.deployment.base import DeploymentConfig, create_jinja_env
 from madengine.deployment.k8s_names import (
     sanitize_k8s_container_name,
+    sanitize_k8s_job_name,
     sanitize_k8s_label_value,
     sanitize_k8s_object_name,
 )
@@ -472,6 +473,38 @@ class TestSanitizeK8sObjectName:
         n = sanitize_k8s_object_name("madengine", "///")
         assert "madengine" in n
         assert "/" not in n
+
+
+@pytest.mark.unit
+class TestSanitizeK8sJobName:
+    """Indexed Job pods are named "{job}-{index}" and must be DNS labels."""
+
+    MODEL = "primus_train/torchtitan_MI300X_qwen3_1.7B-pretrain"
+
+    def test_single_node_keeps_existing_name(self):
+        assert sanitize_k8s_job_name(self.MODEL, 1) == sanitize_k8s_object_name(
+            "madengine", self.MODEL, max_total_len=63
+        )
+
+    def test_multi_node_removes_dot(self):
+        name = sanitize_k8s_job_name(self.MODEL, 2)
+        assert name == "madengine-primus-train-torchtitan-mi300x-qwen3-1-7b-pretrain"
+        assert "." not in name
+
+    @pytest.mark.parametrize("nnodes", [2, 10, 100])
+    def test_multi_node_leaves_room_for_pod_index(self, nnodes):
+        name = sanitize_k8s_job_name("z" * 200, nnodes)
+        assert len(f"{name}-{nnodes - 1}") <= 63
+        assert name == sanitize_k8s_container_name(name)
+        assert name.startswith("madengine-")
+
+    def test_long_multi_node_name_is_sanitized_once(self):
+        raw = "primus_train/megatron_MI300X_llama3.1_8B-BF16-pretrain"
+        name = sanitize_k8s_job_name(raw, 2)
+        assert name.startswith("madengine-")
+        assert "." not in name
+        assert len(f"{name}-1") <= 63
+        assert name == sanitize_k8s_job_name(raw, 2)
 
 
 @pytest.mark.unit
@@ -1674,3 +1707,177 @@ class TestK8sResultsKubectlKubeconfig:
             and id(n) not in inside
         ]
         assert stray == [], f"kubectl built without _kubectl_cmd at lines {stray}"
+
+
+def _k8s_deployment(tmp_path, monkeypatch, additional_context):
+    """KubernetesDeployment over a one-model manifest, presets applied, no cluster."""
+    monkeypatch.chdir(tmp_path)
+    manifest = {
+        "built_images": {"img1": {"registry_image": "myorg/ci:m"}},
+        "built_models": {"img1": {"name": "m", "tags": ["t"]}},
+        "context": {},
+    }
+    (tmp_path / "build_manifest.json").write_text(json.dumps(manifest))
+    monkeypatch.setattr(
+        "madengine.deployment.kubernetes.k8s_config.load_kube_config",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "madengine.deployment.kubernetes.k8s_config.load_incluster_config",
+        lambda *args, **kwargs: None,
+    )
+    cfg = DeploymentConfig(
+        target="k8s",
+        manifest_file="build_manifest.json",
+        additional_context=additional_context,
+    )
+    return KubernetesDeployment(cfg)
+
+
+def _multi_gpu_context(launcher, nnodes, env_vars=None):
+    ctx = {
+        "k8s": {"namespace": "default", "gpu_count": 8},
+        "distributed": {"launcher": launcher, "nnodes": nnodes, "nproc_per_node": 8},
+    }
+    if env_vars:
+        ctx["env_vars"] = env_vars
+    return ctx
+
+
+class TestK8sPrimusMultiNodePresetEnv:
+    """Multi-node Primus picks the fabric in base_env.sh; the AMD multi-GPU
+    preset's NCCL_IB_DISABLE=1 / NCCL_SOCKET_IFNAME=eth0 must not reach the pod."""
+
+    MODEL = {"name": "m", "n_gpus": "8"}
+
+    def test_preset_only_keys_dropped_for_multi_node_primus(self, tmp_path, monkeypatch):
+        dep = _k8s_deployment(tmp_path, monkeypatch, _multi_gpu_context("primus", 2))
+        env = dep._prepare_env_vars(self.MODEL)
+        for key in ("NCCL_IB_DISABLE", "NCCL_SOCKET_IFNAME", "HSA_ENABLE_SDMA"):
+            assert key not in env
+
+    def test_user_env_vars_kept(self, tmp_path, monkeypatch):
+        dep = _k8s_deployment(
+            tmp_path,
+            monkeypatch,
+            _multi_gpu_context("primus", 2, {"NCCL_SOCKET_IFNAME": "ib0"}),
+        )
+        env = dep._prepare_env_vars(self.MODEL)
+        assert env["NCCL_SOCKET_IFNAME"] == "ib0"
+        assert "NCCL_IB_DISABLE" not in env
+
+    @pytest.mark.parametrize("launcher,nnodes", [("primus", 1), ("torchrun", 2)])
+    def test_other_paths_keep_preset_env(self, tmp_path, monkeypatch, launcher, nnodes):
+        dep = _k8s_deployment(tmp_path, monkeypatch, _multi_gpu_context(launcher, nnodes))
+        env = dep._prepare_env_vars(self.MODEL)
+        assert env["NCCL_IB_DISABLE"] == "1"
+        assert env["HSA_ENABLE_SDMA"] == "0"
+
+
+class TestK8sPrimusMultipleResultsSelection:
+    """Each pod CSV is the job's global per-GPU throughput, so summing pods
+    would multiply it. Other launchers still merge."""
+
+    def _results(self, tmp_path):
+        artifacts = []
+        for i, perf in enumerate(["", "1000.0"]):
+            pod_dir = tmp_path / "results" / f"pod-{i}"
+            pod_dir.mkdir(parents=True)
+            (pod_dir / "primus_perf_output.csv").write_text(
+                f"model,performance,metric\nm,{perf},tokens_per_second\n",
+                encoding="utf-8",
+            )
+            # A pod directory holding only primus_perf_output.csv is not a perf_*.csv
+            # PVC collection, so the CSVs come from the pod logs.
+            artifacts.append({"type": "log_csv", "local_path": str(pod_dir)})
+        return {"artifacts": artifacts}
+
+    def _both_report(self, tmp_path):
+        results = self._results(tmp_path)
+        first = Path(results["artifacts"][0]["local_path"]) / "primus_perf_output.csv"
+        first.write_text(
+            "model,performance,metric\nm,1000.0,tokens_per_second\n", encoding="utf-8"
+        )
+        return results
+
+    MODEL = {"name": "m", "multiple_results": "primus_perf_output.csv"}
+
+    def test_primus_keeps_one_pod_csv(self, tmp_path, monkeypatch):
+        dep = _k8s_deployment(tmp_path, monkeypatch, _multi_gpu_context("primus", 2))
+        path = dep._resolve_multiple_results_csv(
+            tmp_path, self._both_report(tmp_path), self.MODEL
+        )
+        assert path.name == "primus_perf_output.csv"
+        assert "1000.0" in path.read_text()
+
+    def test_primus_picks_the_reporting_pod(self, tmp_path, monkeypatch):
+        dep = _k8s_deployment(tmp_path, monkeypatch, _multi_gpu_context("primus", 2))
+        path = dep._resolve_multiple_results_csv(
+            tmp_path, self._results(tmp_path), self.MODEL
+        )
+        assert path.parent.name == "pod-1"
+
+    def test_torchrun_still_merges(self, tmp_path, monkeypatch):
+        dep = _k8s_deployment(tmp_path, monkeypatch, _multi_gpu_context("torchrun", 2))
+        path = dep._resolve_multiple_results_csv(
+            tmp_path, self._both_report(tmp_path), self.MODEL
+        )
+        assert path.name == "multiple_results_merged.csv"
+        assert "2000.0" in path.read_text()
+
+
+class TestPrimusConfigMapBundleSize:
+    """A Primus examples subtree larger than the ConfigMap budget is skipped (the
+    image's copy is used) instead of failing the ConfigMap size check."""
+
+    def _bundle(self, tmp_path, monkeypatch, config_path, sizes):
+        from madengine.deployment.k8s_scripts import KubernetesScriptsMixin
+
+        for sub, size in sizes.items():
+            d = tmp_path / "scripts" / "Primus" / "examples" / sub
+            d.mkdir(parents=True)
+            (d / "a.yaml").write_text("x" * size, encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        h = KubernetesScriptsMixin()
+        h.config = DeploymentConfig(
+            target="k8s",
+            manifest_file="m.json",
+            additional_context={"distributed": {"primus": {"config_path": config_path}}},
+        )
+        h.manifest = {}
+        h.console = MagicMock()
+        contents = {}
+        h._bundle_primus_k8s_examples_overlay(contents)
+        return contents
+
+    def test_large_subtree_skipped(self, tmp_path, monkeypatch):
+        contents = self._bundle(
+            tmp_path, monkeypatch, "examples/megatron/c.yaml", {"megatron": 600 * 1024}
+        )
+        assert "Primus/examples/megatron/a.yaml" not in contents
+
+    def test_small_subtree_bundled(self, tmp_path, monkeypatch):
+        contents = self._bundle(
+            tmp_path, monkeypatch, "examples/torchtitan/c.yaml", {"torchtitan": 1024}
+        )
+        assert "Primus/examples/torchtitan/a.yaml" in contents
+
+    def test_torchtitan_prepare_hook_bundled(self, tmp_path, monkeypatch):
+        hook = (
+            tmp_path
+            / "scripts"
+            / "Primus"
+            / "runner"
+            / "helpers"
+            / "hooks"
+            / "train"
+            / "pretrain"
+            / "torchtitan"
+            / "prepare.py"
+        )
+        hook.parent.mkdir(parents=True)
+        hook.write_text("PRIMUS_SHARED_FS\n", encoding="utf-8")
+        contents = self._bundle(
+            tmp_path, monkeypatch, "examples/torchtitan/c.yaml", {"torchtitan": 1024}
+        )
+        assert contents[str(hook.relative_to(tmp_path / "scripts"))] == "PRIMUS_SHARED_FS\n"

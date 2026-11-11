@@ -53,11 +53,13 @@ def _build_deployment(
     distributed_overrides: dict = None,
     timeout: int = None,
     cli_timeout: int = None,
+    env_vars: dict = None,
+    model_entry: dict = None,
 ) -> SlurmDeployment:
     """SlurmDeployment over a minimal torchrun manifest, output_dir under tmp_path."""
     manifest = {
         "built_images": {"dummy-image": {"docker_image": "dummy:latest"}},
-        "built_models": {"dummy-image": MODEL_ENTRY},
+        "built_models": {"dummy-image": model_entry or MODEL_ENTRY},
         "context": {
             "docker_env_vars": {},
             "docker_mounts": {},
@@ -101,6 +103,7 @@ def _build_deployment(
             "guest_os": "UBUNTU",
             "slurm": slurm_config,
             "distributed": distributed_config,
+            **({"env_vars": env_vars} if env_vars else {}),
         },
         **cfg_kwargs,
     )
@@ -471,6 +474,61 @@ class TestMasterPort:
         deployment.distributed_config.pop("port", None)
         rendered = _render(deployment)
         assert "--master_port=30001" in rendered
+
+
+class TestPrimusMultiNodeLeavesFabricToPrimus:
+    """Multi-node Primus picks NIC/HCA and runtime tuning in runner/helpers/envs/
+    base_env.sh, only for unset variables. The job script must not preset them."""
+
+    AUTO_DETECT = "Try to auto-detect InfiniBand"
+
+    def test_multi_node_primus_skips_preset_env_and_nic_detection(self, tmp_path):
+        rendered = _render(
+            _build_deployment(tmp_path, distributed_overrides={"launcher": "primus"})
+        )
+        assert self.AUTO_DETECT not in rendered
+        for key in ("NCCL_IB_DISABLE", "NCCL_SOCKET_IFNAME", "HSA_ENABLE_SDMA"):
+            assert f'export {key}="' not in rendered
+
+    def test_user_env_vars_are_kept(self, tmp_path):
+        rendered = _render(
+            _build_deployment(
+                tmp_path,
+                distributed_overrides={"launcher": "primus"},
+                env_vars={"NCCL_SOCKET_IFNAME": "ib0"},
+            )
+        )
+        assert 'export NCCL_SOCKET_IFNAME="ib0"' in rendered
+        assert 'export NCCL_IB_DISABLE="' not in rendered
+
+    def test_single_node_primus_is_unchanged(self, tmp_path):
+        rendered = _render(
+            _build_deployment(
+                tmp_path,
+                slurm_overrides={"nodes": 1},
+                distributed_overrides={"launcher": "primus", "nnodes": 1},
+            )
+        )
+        assert self.AUTO_DETECT in rendered
+
+    def test_card_config_path_is_not_replaced_by_fallback(self, tmp_path):
+        deployment = _build_deployment(
+            tmp_path, distributed_overrides={"launcher": "primus"}
+        )
+        card = dict(MODEL_ENTRY, args="--config_path examples/m.yaml")
+        context = deployment._prepare_template_context(card)
+        assert "PRIMUS_CONFIG_PATH" not in context["launcher_command"]
+
+        context = deployment._prepare_template_context(MODEL_ENTRY)
+        assert (
+            'PRIMUS_CONFIG_PATH="examples/megatron/exp_pretrain.yaml"'
+            in context["launcher_command"]
+        )
+
+    def test_torchrun_multi_node_is_unchanged(self, tmp_path):
+        rendered = _render(_build_deployment(tmp_path))
+        assert self.AUTO_DETECT in rendered
+        assert 'export NCCL_IB_DISABLE="1"' in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -984,3 +1042,33 @@ class TestInsideExistingAllocation:
         assert run.call_args.args[0] == ["sbatch", str(dep.script_path)]
         assert result.status is DeploymentStatus.SUCCESS
         assert result.deployment_id == "12345"
+
+
+class TestCollectResultsUsesSafeModelName:
+    """Nodes write under _safe_name(); collection must look in that directory."""
+
+    def test_namespaced_card_csv_is_found(self, tmp_path, monkeypatch):
+        name = "primus_train/megatron_MI355X_llama3.1_70B-BF16-pretrain"
+        entry = dict(MODEL_ENTRY)
+        entry["name"] = name
+        entry["multiple_results"] = "primus_perf_output.csv"
+        dep = _build_deployment(
+            tmp_path,
+            slurm_overrides={"nodes": 2},
+            model_entry=entry,
+        )
+        job_id = "12345"
+        csv_dir = dep.output_dir / dep._safe_name({"name": name}) / job_id / "node_0"
+        csv_dir.mkdir(parents=True)
+        (csv_dir / "primus_perf_output.csv").write_text(
+            "model,performance,metric\nm,1518.6,throughput\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        results = dep.collect_results(job_id)
+
+        assert results["successful_runs"]
+        assert results["successful_runs"][0]["performance"] == "1518.6"
+        raw_dir = dep.output_dir / name / job_id
+        assert not raw_dir.exists()

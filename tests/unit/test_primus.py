@@ -14,6 +14,7 @@ from madengine.deployment.k8s_names import (
 )
 from madengine.deployment.kubernetes_launcher_mixin import KubernetesLauncherMixin
 from madengine.deployment.primus_backend import (
+    card_sets_config_path,
     infer_primus_backend_from_model_name,
     infer_primus_examples_overlay_subdirs,
     merged_primus_config,
@@ -46,6 +47,7 @@ class TestGeneratePrimusCommand:
         assert "export BACKEND=" not in cmd
         assert "MASTER_ADDR" in cmd
         assert "NNODES=1" in cmd
+        assert "PRIMUS_SHARED_FS" not in cmd
 
     def test_backend_inferred_from_model_name(self):
         h = _PrimusCommandHarness(
@@ -84,6 +86,7 @@ class TestGeneratePrimusCommand:
         assert "madengine-j-0.madengine-j.ns1.svc.cluster.local" in cmd
         assert "JOB_COMPLETION_INDEX" in cmd
         assert "NNODES=2" in cmd
+        assert "export PRIMUS_SHARED_FS=0" in cmd
 
     def test_multi_node_master_dns_uses_short_headless_subdomain(self):
         """Headless Service / Pod subdomain must be a DNS label (≤63); hostname stays Job name-index."""
@@ -96,6 +99,37 @@ class TestGeneratePrimusCommand:
         h.service_name = sub
         cmd = h._generate_primus_command(2, 8, 1234, "scripts/primus_pretrain/run.sh", "")
         assert f"{long_job}-0.{sub}.ns1.svc.cluster.local" in cmd
+
+    def test_configmap_files_overlay_primus_root_outside_workspace(self):
+        h = _PrimusCommandHarness({"distributed": {"primus": {}}})
+        cmd = h._generate_primus_command(2, 8, 1234, "scripts/primus_train/run.sh", "")
+        assert '[ "$PRIMUS_ROOT" != /workspace/Primus ]' in cmd
+        assert 'cp -r /workspace/Primus/. "$PRIMUS_ROOT/"' in cmd
+
+    def test_card_config_path_is_not_replaced_by_fallback(self):
+        h = _PrimusCommandHarness({"distributed": {"primus": {}}})
+        cmd = h._generate_primus_command(
+            2, 8, 1234, "scripts/primus_train/run.sh", "--config_path examples/m.yaml"
+        )
+        assert "PRIMUS_CONFIG_PATH" not in cmd
+        assert "bash run.sh --config_path examples/m.yaml" in cmd
+
+    def test_explicit_config_path_still_wins_over_card(self):
+        h = _PrimusCommandHarness(
+            {"distributed": {"primus": {"config_path": "examples/x.yaml"}}}
+        )
+        cmd = h._generate_primus_command(
+            1, 8, 1234, "scripts/primus_train/run.sh", "--config_path examples/m.yaml"
+        )
+        assert 'export PRIMUS_CONFIG_PATH="examples/x.yaml"' in cmd
+
+    def test_fallback_config_path_without_card_arg(self):
+        h = _PrimusCommandHarness({"distributed": {"primus": {}}})
+        cmd = h._generate_primus_command(1, 8, 1234, "scripts/primus_train/run.sh", "")
+        assert (
+            'export PRIMUS_CONFIG_PATH="examples/torchtitan/configs/MI300X/'
+            'qwen3_1.7B-pretrain.yaml"' in cmd
+        )
 
 
 # --- primus_backend helpers --------------------------------------------------
@@ -135,6 +169,19 @@ class TestInferPrimusBackendFromModelName:
             )
             is None
         )
+
+
+@pytest.mark.unit
+class TestCardSetsConfigPath:
+    def test_flag_in_args(self):
+        assert card_sets_config_path("--config_path examples/a.yaml --foo 1")
+
+    def test_absent_or_other_flag(self):
+        assert not card_sets_config_path("")
+        assert not card_sets_config_path("--config_path_extra x")
+
+    def test_equals_form(self):
+        assert card_sets_config_path("--config_path=examples/a.yaml --foo 1")
 
 
 @pytest.mark.unit

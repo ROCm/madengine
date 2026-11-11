@@ -1,0 +1,26 @@
+{
+  "_comment": "Primus Multi-Node Training Configuration",
+  "_description": "Primus experiment YAML across SLURM nodes; each node runs primus-cli direct inside the model container",
+  "_use_case": "Multi-node Primus pretrain (Megatron/TorchTitan) with madengine scheduling and perf.csv collection",
+  "_usage": "madengine run --tags primus_train/megatron_MI300X_llama3.1_8B-BF16-pretrain --additional-context-file examples/slurm-configs/basic/10-primus-multi-node.json (ROCm/MAD). The card's --config_path selects the experiment; set distributed.primus.config_path to override it.",
+  "_note": "Primus picks the NIC/HCA and RCCL tuning itself (runner/helpers/envs/base_env.sh), so the multi-node profile's NCCL_IB_DISABLE/NCCL_SOCKET_IFNAME/HSA_ENABLE_SDMA are not exported for this launcher. Set them in env_vars to force a value.",
+
+  "gpu_vendor": "AMD",
+  "guest_os": "UBUNTU",
+
+  "slurm": {
+    "partition": "amd-rccl",
+    "nodes": 2,
+    "gpus_per_node": 8,
+    "time": "04:00:00"
+  },
+
+  "distributed": {
+    "launcher": "primus",
+    "nnodes": 2,
+    "nproc_per_node": 8,
+    "port": 29500
+  },
+
+  "debug": false
+}

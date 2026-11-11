@@ -19,6 +19,7 @@ from .common import (
     configure_multi_node_profiling,
     resolve_distributed_launch,
 )
+from .config_loader import PRESET_ENV_KEYS
 from .k8s_names import sanitize_k8s_container_name, sanitize_k8s_label_value
 from .k8s_pvc import RESULTS_LAYOUT_PER_POD, SHARED_DATA_PVC_NAME
 from .k8s_secrets import (
@@ -847,7 +848,17 @@ class KubernetesTemplateContextMixin:
                 env_vars[str(key)] = "" if value is None else str(value)
 
         # 1. Base environment variables from additional_context
-        base_env = self.config.additional_context.get("env_vars", {})
+        base_env = dict(self.config.additional_context.get("env_vars") or {})
+        launch = resolve_distributed_launch(
+            self.config.additional_context, self.manifest, model_info
+        )
+        if launch["launcher"] == "primus" and (launch["nnodes"] or 1) > 1:
+            # Multi-node Primus picks the fabric and runtime tuning in
+            # runner/helpers/envs/base_env.sh, only for unset variables; the AMD
+            # preset's NCCL_IB_DISABLE=1 / NCCL_SOCKET_IFNAME=eth0 /
+            # HSA_ENABLE_SDMA=0 would preempt it. User-set env_vars are kept.
+            for key in self.config.additional_context.get(PRESET_ENV_KEYS) or []:
+                base_env.pop(key, None)
         env_vars.update(base_env)
 
         # 1b. Critical ROCm environment variable (if not already set)

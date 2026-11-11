@@ -93,6 +93,28 @@ def sanitize_k8s_object_name(prefix: str, raw_model_name: str, max_total_len: in
     return _trim_edges_alnum(out)
 
 
+def sanitize_k8s_job_name(raw_model_name: str, nnodes: int = 1) -> str:
+    """
+    Build the Batch Job ``metadata.name`` for a model.
+
+    A multi-pod Job (Indexed, ``nnodes > 1``) names each pod ``{job}-{index}``.
+    That pod name must be a DNS label, so it has no dots and must fit in 63
+    characters once the index is appended. A model id such as ``qwen3_1.7B``
+    keeps a dot in the Job name, which the API rejects for multi-pod Jobs.
+    """
+    max_len = _MAX_JOB_NAME_LEN
+    raw = raw_model_name
+    if nnodes > 1:
+        # Indexed pods are "{job}-{index}" and must be a DNS label, so the
+        # index is reserved up front and dots are removed once. Sanitizing
+        # an already truncated name hashes that truncation and drops the
+        # madengine- prefix.
+        reserve = len(str(nnodes - 1)) + 1
+        max_len -= reserve
+        raw = (raw_model_name or "").replace(".", "-")
+    return sanitize_k8s_object_name("madengine", raw, max_total_len=max_len)
+
+
 def sanitize_k8s_container_name(name_hint: str, max_len: int = _MAX_DNS_LABEL_LEN) -> str:
     """
     Sanitize for ``spec.containers[].name`` / initContainer names.
