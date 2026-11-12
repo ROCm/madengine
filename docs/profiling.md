@@ -409,6 +409,39 @@ For a short-lived workload, shorten the warmup so the request lands while the mo
 
 The trace request names processes that are still running and skips the `torchrun` launcher. The launcher never calls `optimizer.step()`, and a launcher that has registered with dynolog keeps the workers from flushing their traces, so the tool turns the daemon off in that process only. An `N`-rank job produces one trace per rank.
 
+### nan_doctor - NaN Capture for PyTorch Workloads
+
+Catch the first operator that produces a NaN in a PyTorch run and save it as a *capsule*, without editing the model script. The capture comes from nan-doctor: the pre-script installs its capture runtime into the container's site-packages with a `.pth` hook, so every Python process -- every `torchrun` rank included -- watches its ops from the first `optimizer.step()` on. When a NaN outlives its step the rank writes a capsule; in a distributed run every rank then stops together.
+
+```json
+{
+  "tools": [
+    {"name": "nan_doctor"}
+  ]
+}
+```
+
+**Output:** `nan_doctor_output/capsules/` (`rank<N>_*.pt`, plus `manifest.json` for multi-rank runs) and `nan_doctor_output/summary.txt` (capsule count, host, runtime version). On SLURM each node's `nan_doctor_output/` is copied to `node_<N>/`, **also when the node failed** -- a NaN usually ends the run. The `[op-nan]` lines are in the run log.
+
+**This is not a benchmark run.** The capture checks every op's output, so the performance number of a `nan_doctor` run is not comparable to a clean run. Capsules are replayed, packaged and analyzed by nan-doctor itself (MAD's `/mad-debug-nan` skill and `mad-nan-hunt` workflow drive it).
+
+**Requirements:**
+
+- The workload must be PyTorch, and `python3` in the image must import `torch`; the pre-script fails the run otherwise, rather than running unwatched.
+- Capture starts after the first `optimizer.step()` and counts optimizer steps. Workloads without an optimizer (inference, serving) are not watched.
+
+**Environment Variables** (any `NAN_CAPTURE_*` knob of nan-doctor's `capture_from_env()` passes through `env_vars` or `docker_env_vars`):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `NAN_CAPTURE_DIR` | `/myworkspace/nan_doctor_output/capsules` | Capsule directory |
+| `NAN_CAPTURE_AUTO` | `optimizer` | Arm from the global optimizer-step hook |
+| `NAN_CAPTURE_DATA` | `0` | `1` records operand values (larger capsules, exact replay) |
+| `NAN_CAPTURE_ARM_AFTER_STEPS` | `0` | Skip this many counted steps before arming |
+| `NAN_CAPTURE_OP_CLASSES` | unset | Watch only these op classes, e.g. `gemm` |
+
+The runtime under `scripts/common/tools/nan_doctor/` is vendored from nan-doctor; its `VERSION` names the commit. Update it only with nan-doctor's `scripts/internal/sync_to_madengine.py`, never by hand.
+
 ### tracelens - TraceLens Trace Analysis
 
 [TraceLens](https://github.com/AMD-AGI/TraceLens) turns raw traces into operator, kernel, roofline, and collective reports. It analyzes traces the other profiling tools produce, so always pair it with a profiler; on its own it has nothing to read.
