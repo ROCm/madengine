@@ -14,9 +14,9 @@
 
 ## Slide 1. Cover (0:30)
 
-Hi everyone. Today I will show you madengine. It is a command line tool that takes an AI model from a catalog entry to a benchmark number.
+Hi everyone. Today I will show you MAD and madengine. MAD is a model zoo with a set of models for training and inference, and madengine is a command line tool that takes an AI model from a catalog entry to a benchmark number.
 
-The big idea is simple. You use the same command on one GPU, on eight GPUs, or on many nodes. Only a small piece of config changes.
+The big idea is simple. You use the same command on single node with single GPU or multiple GPUs, or on many nodes with different scheduler such as SLURM or Kubernetes. Only a small piece of config changes.
 
 I will keep it high level. There is a longer deck if you want details later.
 
@@ -25,6 +25,8 @@ I will keep it high level. There is a longer deck if you want details later.
 ---
 
 ## Slide 2. The problem (1:30)
+
+MAD ecosystem is a end to end performance benchmarking platform for AMD GPUs and ROCm stack. (model adoption from single node to multi node) 
 
 Let me start with a problem you may know.
 
@@ -40,9 +42,9 @@ Same model card. Same result file, called `perf.csv`. No code changes between ta
 
 ---
 
-## Slide 3. What it is, by the numbers (1:45)
+## Slide 3. What it is MAD Ecosystem (1:45)
 
-So what is madengine? Think of three parts.
+So what is MAD Ecosystem? Think of three parts.
 
 The first part is MAD. MAD is the catalog. It tells you what to run. It has model cards, Dockerfiles and scripts.
 
