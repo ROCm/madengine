@@ -49,6 +49,7 @@ from .common import (
     launcher_for_reporting,
     resolve_launcher_from_sources,
     resolve_node_count,
+    tool_output_dirs,
     validate_launcher,
 )
 from .config_loader import PRESET_ENV_KEYS, ConfigLoader, apply_deployment_config
@@ -1390,6 +1391,8 @@ class SlurmDeployment(BaseDeployment):
             "nproc_per_node": nproc_per_node,
             # Profiling tools (processed for multi-node compatibility)
             "tools": tools,
+            # Extra per-node artifact dirs the selected tools declare
+            "tool_output_dirs": tool_output_dirs(tools),
             # Scheduler flavor: "slurm" (default) or "spur" (job-array fan-out).
             # SpurDeployment overrides this and adds "rendezvous_dir".
             "scheduler": "slurm",

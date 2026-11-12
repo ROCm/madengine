@@ -1,0 +1,5 @@
+nan-doctor b63ecab61f95ba298b47d2b66357873b6262b01f
+synced by scripts/internal/sync_to_madengine.py -- do not edit these files
+7f833465f1b69450eb59857b3a492d06cd26eed08433fc439486b2428952768d  op_nan_capture.py
+7679a70244dc8de4bc82bf4fc7be4afa6240fd1807dd04fc5b35a843ce405dec  nan_doctor_autocapture.py
+c5043e65c6392cdf39c11ba563e9d59e503c4d862c87b11a8d94ac39735cda2f  install_autocapture.py
