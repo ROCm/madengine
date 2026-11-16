@@ -43,6 +43,11 @@ import time
 import typing
 import uuid
 
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+
 # Labels stamped on every container madengine starts, so a container can be
 # traced back to the run that owns it long after that run's process is gone.
 LABEL_SESSION = "madengine.session"
@@ -850,11 +855,13 @@ class _FdWriter:
     Best effort and bounded: a console is never worth more than the teardown it
     reports on. When the reader of a pipe has stopped reading (a stalled pager or
     log collector), a plain os.write blocks for good and the teardown never runs.
-    Each chunk is written only once select() says the fd can take it, at most
-    PIPE_BUF bytes (a pipe that is writable takes that much without blocking),
-    and a stream that stays full for ``budget`` seconds is given up on: this and
-    every later write to it is dropped. The fd is not made non-blocking, as that
-    flag is shared with every other process writing to it.
+    Each chunk is written only once select() says the fd can take it, and a
+    stream that stays full for ``budget`` seconds is given up on: this and every
+    later write to it is dropped. select() reporting the fd writable means some
+    room, not room for the chunk: a blocking write of it may still wait for the
+    reader. So each write is made with O_NONBLOCK set on the fd and its flags
+    restored right after (the flag is shared with every other writer of the open
+    file); a write that would block marks the stream stalled.
     """
 
     CHUNK = 512  # POSIX PIPE_BUF minimum
@@ -879,12 +886,25 @@ class _FdWriter:
                 if not writable:
                     self._stalled = True
                     break
-                data = data[os.write(self._fd, data[: self.CHUNK]):]
+                data = data[self._write_nonblocking(data[: self.CHUNK]):]
+            except BlockingIOError:
+                self._stalled = True
+                break
             except InterruptedError:
                 continue
             except (OSError, ValueError):
                 break
         return len(text)
+
+    def _write_nonblocking(self, chunk: bytes) -> int:
+        if fcntl is None:  # Windows: no O_NONBLOCK on an fd
+            return os.write(self._fd, chunk)
+        flags = fcntl.fcntl(self._fd, fcntl.F_GETFL)
+        fcntl.fcntl(self._fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        try:
+            return os.write(self._fd, chunk)
+        finally:
+            fcntl.fcntl(self._fd, fcntl.F_SETFL, flags)
 
     def flush(self) -> None:
         pass
@@ -926,8 +946,8 @@ def install_signal_handlers() -> None:
         # any teardown ran: containers were left running and the process exited
         # 1, not 130. Everything printed from here on goes straight to the file
         # descriptors, and os._exit(130) runs whatever happens.
-        _use_unbuffered_console()
         try:
+            _use_unbuffered_console()
             name = signal.Signals(signum).name
             if _cleanup_in_progress:
                 # Exit first: the console may be what the first teardown is stuck
