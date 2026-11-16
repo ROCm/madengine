@@ -33,7 +33,7 @@ model's image through `madengine nan exec`.
 
 | Command | Step | Does |
 |---|---|---|
-| `exec` | -- | Run a command in the model's image on the GPUs (`--image` or `--manifest build_manifest.json`). The `nan_doctor_rt` runtime is mounted at `/opt/nan_doctor` and on `PYTHONPATH` |
+| `exec` | -- | Run a command in the model's image on the GPUs (`--image` or `--manifest build_manifest.json`). The `nan_doctor_rt` runtime is mounted at `/opt/nan_doctor` and this host package at `/opt/nan_doctor_host`, both on `PYTHONPATH` (`python3 -m nan_doctor gpu-check --torch` runs in the image) |
 | `group` | 5a | Group the capsules in the image; write `groups.json` and the priority-ordered `groups_priority.txt` |
 | `replay` | 5b | Replay one capsule under load on every GPU; the concurrency ladder; ends with `LADDER_RESULT=` |
 | `summary` | 5b | Summarise one replay attempt directory (`ATTEMPT_RESULT=`) |

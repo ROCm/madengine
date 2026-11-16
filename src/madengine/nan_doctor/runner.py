@@ -10,7 +10,8 @@ The container gets:
   * the working directory, bind-mounted at its own absolute path (paths printed inside
     are valid on the host), plus any --mount;
   * the nan_doctor_rt runtime, read-only at /opt/nan_doctor, with PYTHONPATH set, so
-    `python3 -m nan_doctor_rt.<module>` works in any image that has torch.
+    `python3 -m nan_doctor_rt.<module>` works in any image that has torch; and this host
+    package at /opt/nan_doctor_host, so `python3 -m nan_doctor <command>` does too.
 
 Nothing here takes the host GPU lock: callers that need one (MAD's mad-run.sh) hold it
 around the whole command.
@@ -28,6 +29,9 @@ import sys
 import time
 
 RUNTIME_MOUNT = "/opt/nan_doctor"
+# This host package too, read-only, so the standard-library tools also run in the image
+# (`python3 -m nan_doctor gpu-check --torch` asks torch about device 0).
+HOST_MOUNT = "/opt/nan_doctor_host"
 
 # Flags that shape the timing of what is replayed.  Keep in step with the flags the
 # model's own run used (madengine's container runner).
@@ -157,7 +161,7 @@ def build_command(
         argv += ["--name", name]
     argv += DOCKER_FLAGS
     envs = {
-        "PYTHONPATH": RUNTIME_MOUNT,
+        "PYTHONPATH": RUNTIME_MOUNT + ":" + HOST_MOUNT,
         "NAN_DOCTOR_RT": RUNTIME_MOUNT + "/nan_doctor_rt",
     }
     if gpus != "all":
@@ -198,6 +202,9 @@ def build_command(
     argv += [
         "-v",
         "%s:%s:ro" % (rt, RUNTIME_MOUNT),
+        "-v",
+        "%s:%s/nan_doctor:ro"
+        % (os.path.dirname(os.path.abspath(__file__)), HOST_MOUNT),
         "-w",
         workdir,
         image,

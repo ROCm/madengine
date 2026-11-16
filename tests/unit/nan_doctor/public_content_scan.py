@@ -62,7 +62,8 @@ def scan(paths, extra=(), allow=()):
     hits = []
     for fp in files(paths):
         try:
-            text = open(fp, encoding="utf-8", errors="replace").read()
+            with open(fp, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
         except OSError:
             continue
         for no, line in enumerate(text.splitlines(), 1):

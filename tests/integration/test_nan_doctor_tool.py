@@ -43,6 +43,7 @@ class TestNanDoctorToolConfig:
     def test_env_arms_the_auto_capture_under_the_workspace(self, tool):
         env = tool["env_vars"]
         assert env["NAN_CAPTURE_AUTO"] == "optimizer"
+        assert env["NAN_CAPTURE_CONTAINERS_PER_GPU"] == "1"
         assert env["NAN_CAPTURE_DIR"] == "/myworkspace/nan_doctor_output/capsules"
 
     def test_declares_its_output_dir(self, tool):

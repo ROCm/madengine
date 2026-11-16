@@ -502,7 +502,8 @@
       "cmd": "",
       "env_vars": {
         "NAN_CAPTURE_DIR": "/myworkspace/nan_doctor_output/capsules",
-        "NAN_CAPTURE_AUTO": "optimizer"
+        "NAN_CAPTURE_AUTO": "optimizer",
+        "NAN_CAPTURE_CONTAINERS_PER_GPU": "1"
       },
       "post_scripts": [
         {

@@ -45,7 +45,8 @@ def test_gpus_must_be_all_or_a_list(bad):
 def test_runtime_is_mounted_read_only_and_importable():
     argv = cmd()
     assert "/rt:/opt/nan_doctor:ro" in argv
-    assert "PYTHONPATH=/opt/nan_doctor" in argv
+    assert "PYTHONPATH=/opt/nan_doctor:/opt/nan_doctor_host" in argv
+    assert any(a.endswith(":/opt/nan_doctor_host/nan_doctor:ro") for a in argv)
     assert "NAN_DOCTOR_RT=/opt/nan_doctor/nan_doctor_rt" in argv
 
 

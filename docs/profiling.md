@@ -436,6 +436,7 @@ Catch the first operator that produces a NaN in a PyTorch run and save it as a *
 |----------|---------|---------|
 | `NAN_CAPTURE_DIR` | `/myworkspace/nan_doctor_output/capsules` | Capsule directory |
 | `NAN_CAPTURE_AUTO` | `optimizer` | Arm from the global optimizer-step hook |
+| `NAN_CAPTURE_CONTAINERS_PER_GPU` | `1` | Containers sharing each GPU, recorded in the capsule so a replay starts at least as loaded as the model was. Raise it if you run several workloads on one GPU |
 | `NAN_CAPTURE_DATA` | `0` | `1` records operand values (larger capsules, exact replay) |
 | `NAN_CAPTURE_ARM_AFTER_STEPS` | `0` | Skip this many counted steps before arming |
 | `NAN_CAPTURE_OP_CLASSES` | unset | Watch only these op classes, e.g. `gemm` |
