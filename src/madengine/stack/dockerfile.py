@@ -16,6 +16,7 @@ import os
 import shlex
 import typing
 
+from madengine.execution.image_spec import BUILD_INFO_PATH, PROBE_SCRIPT
 from madengine.stack.compose import fill
 
 BUILD_DIR = os.path.join(".madengine", "build")
@@ -25,6 +26,12 @@ BASE_PACKAGES = ["ca-certificates", "curl", "git", "jq", "wget", "libatomic1", "
 def _run(lines: typing.List[str]) -> str:
     # pipefail: a failed download piped into sh must fail the step, not run nothing.
     return "RUN set -eo pipefail; \\\n    " + "; \\\n    ".join(lines)
+
+
+def _probe_command() -> str:
+    # Inline, not COPY: the build context is ./docker, which does not hold
+    # anything madengine generates. json.dumps gives a one-line Python literal.
+    return shlex.quote(f"exec({json.dumps(PROBE_SCRIPT)})")
 
 
 def _pip(args: typing.List[str]) -> str:
@@ -155,8 +162,8 @@ def generate(
     out += [
         "",
         "# record the installed stack for madengine (build_manifest image_info)",
-        "COPY image_spec_build_info.py /opt/mad/build_info.py",
-        "RUN python3 /opt/mad/build_info.py > /opt/mad/build_info.json",
+        _run(["mkdir -p " + os.path.dirname(BUILD_INFO_PATH),
+              f"python3 -c {_probe_command()} > {BUILD_INFO_PATH}"]),
         "WORKDIR /workspace",
         'ENTRYPOINT [""]',
         "",
@@ -167,6 +174,9 @@ def generate(
 def _completion(plan: dict, pins: typing.List[str],
                 completion: typing.Optional[typing.List[str]]) -> typing.List[str]:
     """Install the remaining dependencies of the wheels, then pip check.
+
+    A failing pip check fails the layer, so an inconsistent stack is never
+    reported as a built image.
 
     Wheels went in with --no-deps so each layer is exactly one component. This
     adds what they still need from PyPI and the matrix's indexes while every
@@ -190,8 +200,7 @@ def _completion(plan: dict, pins: typing.List[str],
     out += [
         "",
         "# dependencies of the components above",
-        _run([_pip(["--pre"] + extra + pins),
-              "pip check || echo 'WARNING: pip check reported problems (see above)'"]),
+        _run([_pip(["--pre"] + extra + pins), "pip check"]),
     ]
     return out
 

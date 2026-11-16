@@ -169,6 +169,31 @@ class TestDockerfile:
         assert "# excluded: amd-quark (no 3.14 build)" in text
         assert 'ENV VLLM_ROCM_USE_AITER="1"' in text
 
+    def test_build_info_is_written_without_copy(self):
+        import json
+        import shlex
+        import subprocess
+        import sys
+
+        text = dockerfile.generate(compose.compose(VLLM_SPEC, MATRIX), "vllm",
+                                   completion=[])
+        assert "COPY" not in text
+        probe = text[text.index("# record the installed stack"):]
+        assert "> /opt/mad/build_info.json" in probe
+        # The inlined probe is one shell word that runs as written.
+        line = next(l for l in probe.splitlines() if "python3 -c" in l)
+        code = shlex.split(line.split("python3 -c ", 1)[1])[0]
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                             text=True, check=True).stdout
+        assert "packages" in json.loads(out)
+
+    def test_pip_check_is_fatal(self):
+        text = dockerfile.generate(compose.compose(VLLM_SPEC, MATRIX), "vllm",
+                                   completion=[])
+        completion = text[text.index("# dependencies"):]
+        assert "pip check" in completion
+        assert "pip check ||" not in completion
+
     def test_excludes_need_completion(self):
         with pytest.raises(ValueError, match="completion"):
             dockerfile.generate(compose.compose(VLLM_SPEC, MATRIX), "vllm")
