@@ -984,3 +984,47 @@ class TestInsideExistingAllocation:
         assert run.call_args.args[0] == ["sbatch", str(dep.script_path)]
         assert result.status is DeploymentStatus.SUCCESS
         assert result.deployment_id == "12345"
+
+
+# ---------------------------------------------------------------------------
+# Tool output directories: declared by tools.json, copied even on failure
+
+
+def _render_with_tools(tmp_path: Path, tools: list) -> str:
+    deployment = _build_deployment(tmp_path)
+    deployment.config.additional_context["tools"] = tools
+    return _render(deployment)
+
+
+def _tool_dirs_line(script: str) -> str:
+    match = re.search(r'^TOOL_OUTPUT_DIRS="([^"]*)"$', script, re.M)
+    assert match, "TOOL_OUTPUT_DIRS not found in rendered script"
+    return match.group(1)
+
+
+class TestToolOutputDirs:
+    BUILTIN = (
+        "rocprof_output rpd_output rocm_trace_lite_output "
+        "torch_profiler_output tracelens_output"
+    )
+
+    def test_builtin_dirs_without_tools(self, tmp_path):
+        assert _tool_dirs_line(_render(_build_deployment(tmp_path))) == self.BUILTIN
+
+    def test_declared_output_dir_is_appended(self, tmp_path):
+        script = _render_with_tools(tmp_path, [{"name": "nan_doctor"}])
+        assert _tool_dirs_line(script) == self.BUILTIN + " nan_doctor_output"
+
+    def test_both_branches_copy_the_tool_dirs(self, tmp_path):
+        """A failed node still hands its tool output (e.g. NaN capsules) back."""
+        script = _render_with_tools(tmp_path, [{"name": "nan_doctor"}])
+        success, failure = script.split("Task FAILED with exit code", 1)
+        assert 'for d in $TOOL_OUTPUT_DIRS; do' in success
+        assert 'for d in $TOOL_OUTPUT_DIRS; do' in failure.split("\nfi\n", 1)[0]
+
+    def test_rendered_script_is_valid_bash(self, tmp_path):
+        script = _render_with_tools(tmp_path, [{"name": "nan_doctor"}])
+        path = tmp_path / "job.sh"
+        path.write_text(script)
+        result = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr

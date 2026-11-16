@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "source": "mad",
+  "env": "madengine",
+  "model_tag": "dummy/dummy_nan",
+  "run": "madengine run --tags dummy/dummy_nan --live-output",
+  "additional_context": {"docker_env_vars": {"PLANT_STEP": "4"}},
+  "deploy_target": "local",
+  "world_size": 1,
+  "image": "ci-dummy_nan_dummy",
+  "artifact_dir": "nan_hunts/example/artifacts",
+  "preferences": {"groups": "largest", "rootcause": false}
+}

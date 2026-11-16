@@ -108,6 +108,8 @@ extend-exclude = '''
   | \.venv
   | build
   | dist
+  # moved as-is from the nan-doctor project; formatted when split into subpackages
+  | src/madengine/scripts/common/tools/nan_doctor
 )/
 '''
 
