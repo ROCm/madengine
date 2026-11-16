@@ -95,3 +95,29 @@ class TestKubernetesGetsTheSameSubmitLayer:
         assert src["MODEL_NAME"] == "card"
         assert src["DOCKER_IMAGE_NAME"] == "madengine"
         assert env["FROM_MAD_CONFIG"] == "1" and src["FROM_MAD_CONFIG"] == "mad-config"
+
+
+class TestRecipePrecheck:
+    def _checkout(self, tmp_path, rc, msg="refused"):
+        d = tmp_path / "scripts"
+        (d / "common" / "recipe").mkdir(parents=True)
+        (d / "vllm_dissag").mkdir()
+        (d / "common" / "recipe" / "precheck.py").write_text(
+            f"import sys\nprint({msg!r}, file=sys.stderr)\nsys.exit({rc})\n")
+        script = d / "vllm_dissag" / "run_xPyD_models.slurm"
+        script.write_text("#!/bin/bash\n")
+        return script
+
+    def test_refusal_text_when_the_gate_refuses(self, tmp_path):
+        from madengine.deployment.slurm_multi_env import recipe_precheck
+        assert recipe_precheck({"MODEL_NAME": "M"}, self._checkout(tmp_path, 1, "no gfx950"), "gfx950") == "no gfx950"
+
+    def test_nothing_without_a_known_gpu_or_the_tool(self, tmp_path):
+        from madengine.deployment.slurm_multi_env import recipe_precheck
+        script = self._checkout(tmp_path, 1)
+        assert recipe_precheck({"MODEL_NAME": "M"}, script, None) is None
+        bare = tmp_path / "other" / "x" / "run.slurm"
+        bare.parent.mkdir(parents=True)
+        bare.write_text("")
+        assert recipe_precheck({"MODEL_NAME": "M"}, bare, "gfx950") is None
+        assert recipe_precheck({"MODEL_NAME": "M"}, self._checkout(tmp_path / "ok", 0), "gfx950") is None

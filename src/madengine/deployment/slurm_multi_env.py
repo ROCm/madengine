@@ -130,3 +130,24 @@ def pin_set_of(model_info: Dict[str, Any], additional_context: Dict[str, Any]) -
         if (args or {}).get("PINS"):
             return str(args["PINS"])
     return None
+
+
+def recipe_precheck(env: Dict[str, str], script_path: Path, gpu_arch: Optional[str]) -> Optional[str]:
+    """MAD's recipe gate before submitting, when the target GPU is known (slurm.gpu_arch): the
+    refusal text, or None. Runs the card checkout's scripts/common/recipe/precheck.py with the
+    card's submit env; a checkout without it, or no known GPU, checks nothing. The launcher still
+    checks on the allocated nodes -- this only refuses before the job waits in a queue."""
+    import os
+    import subprocess
+    import sys
+
+    if not gpu_arch:
+        return None
+    tool = Path(script_path).resolve().parent.parent / "common" / "recipe" / "precheck.py"
+    if not tool.is_file():
+        return None
+    p = subprocess.run([sys.executable, str(tool), "--script", str(script_path), "--arch", str(gpu_arch)],
+                       env={**os.environ, **env}, capture_output=True, text=True, timeout=120)
+    if p.returncode == 0:
+        return None
+    return (p.stderr or p.stdout).strip() or f"recipe check refused (exit {p.returncode})"

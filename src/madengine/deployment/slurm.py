@@ -28,7 +28,7 @@ from madengine.core.errors import ConfigurationError
 from madengine.core.image_digest import resolve_pinned_image
 from madengine.core.timeout import resolve_run_timeout, subprocess_timeout
 from madengine.deployment.layered_config import LayeredConfigError
-from madengine.deployment.slurm_multi_env import SOURCES_VAR, submit_env, user_env_vars
+from madengine.deployment.slurm_multi_env import SOURCES_VAR, recipe_precheck, submit_env, user_env_vars
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import get_build_number, get_pipeline
@@ -654,6 +654,13 @@ class SlurmDeployment(BaseDeployment):
                 f"[green]✓ Layered config resolved {_n_layered} env var(s)[/green]"
             )
         env_vars = dict(submit.env)
+
+        # MAD's recipe gate, before the job queues, when the target GPU is known here.
+        refusal = recipe_precheck(env_vars, model_script_path, self.slurm_config.get("gpu_arch"))
+        if refusal:
+            self.console.print(f"[red]✗ {refusal}[/red]")
+            self.console.print("[dim]  (set env_vars RECIPE_CHECK=0 to submit anyway)[/dim]")
+            return False
 
         # Tools (profiling) on the self-managed path.
         #
