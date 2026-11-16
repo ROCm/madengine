@@ -71,7 +71,12 @@ def show(
     """Components of a spec in install order, and why each is there."""
     plan = _compose(ref, gpu_arch)
     if dockerfile_out:
-        completion = compose.completion_requirements(plan) if plan["exclude"] else None
+        try:
+            completion = (compose.completion_requirements(plan) if plan["exclude"]
+                          else None)
+        except compose.ComposeError as e:
+            console.print(f"[red]{escape(str(e))}[/red]")
+            raise typer.Exit(ExitCode.INVALID_ARGS)
         console.print(dockerfile.generate(plan, plan["name"], completion=completion),
                       markup=False, highlight=False)
         return

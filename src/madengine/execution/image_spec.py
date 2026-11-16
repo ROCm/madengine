@@ -241,7 +241,11 @@ def _resolve_composed(
     digest = hashlib.sha256(json.dumps(
         {"plan": [(i["name"], i["key"], i["entry"]) for i in plan["items"]],
          "spec": spec}, sort_keys=True, default=str).encode()).hexdigest()[:12]
-    completion = compose.completion_requirements(plan) if plan["exclude"] else None
+    try:
+        completion = (compose.completion_requirements(plan) if plan["exclude"]
+                      else None)
+    except compose.ComposeError as e:
+        raise ImageSpecError(f"{name}: {e}") from None
     prefix = dockerfile.write(plan, name, digest, "AMD", root, completion)
     return BuildPlan("AMD", prefix, {}, spec, resolved)
 

@@ -164,8 +164,19 @@ class _RangeFile:
         end = self.size - 1 if n is None or n < 0 else min(self.size - 1, self.pos + n - 1)
         if self.pos > end:
             return b""
+        want = end - self.pos + 1
         with _get(self.url, headers={"Range": f"bytes={self.pos}-{end}"}) as resp:
-            data = resp.read()
+            # A server that ignores Range answers 200 with the whole wheel,
+            # which can be gigabytes: refuse it instead of reading it.
+            if resp.status != 206:
+                raise OSError(
+                    f"{self.url}: range request answered with HTTP {resp.status}, "
+                    f"not 206; the server does not support range requests"
+                )
+            data = resp.read(want + 1)
+        if len(data) > want:
+            raise OSError(f"{self.url}: range response longer than the "
+                          f"{want} bytes requested")
         self.pos += len(data)
         return data
 

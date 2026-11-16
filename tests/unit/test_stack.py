@@ -179,6 +179,13 @@ class TestCompose:
         plan = compose.compose(VLLM_SPEC, MATRIX)
         assert compose.completion_requirements(plan, fetch=fake_fetch) == ["transformers>=5.10"]
 
+    def test_completion_requirements_url_not_a_wheel(self):
+        plan = compose.compose(VLLM_SPEC, MATRIX)
+        vllm = next(i for i in plan["items"] if i["name"] == "vllm")
+        vllm["entry"]["url"] = "https://x/vllm-0.29.1.tar.gz"
+        with pytest.raises(compose.ComposeError, match="vllm 0.29.1@fw: url is not a wheel"):
+            compose.completion_requirements(plan, fetch=fake_fetch)
+
     def test_diff(self):
         a = compose.compose(VLLM_SPEC, MATRIX)
         b = compose.compose({"base": "img", "components": {"nixl": "1.4.1+pr2191@kv"}}, MATRIX)
@@ -288,6 +295,57 @@ class TestWheels:
         with patch.object(wheels, "list_links", side_effect=lambda u: pages[u]):
             only = wheels.walk_index("https://fw.example/whl", projects=["AMD_Aiter"])
         assert [w.name for w in only] == ["amd-aiter"]
+
+
+class _Resp:
+    """Stand-in for an urlopen response."""
+
+    def __init__(self, status, body=b"", headers=None):
+        self.status, self.body, self.headers = status, body, headers or {}
+
+    def read(self, n=-1):
+        return self.body if n is None or n < 0 else self.body[:n]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class TestRangeFile:
+    URL = "https://fw.example/whl/x-1.0-py3-none-any.whl"
+    DATA = bytes(range(256)) * 4
+
+    def _open(self, answer):
+        def get(url, method="GET", headers=None):
+            if method == "HEAD":
+                return _Resp(200, headers={"Content-Length": str(len(self.DATA))})
+            return answer(headers["Range"])
+        with patch.object(wheels, "_get", side_effect=get):
+            remote = wheels._RangeFile(self.URL)
+            remote.seek(100)
+            return remote, remote.read(10)
+
+    @staticmethod
+    def _span(header):
+        start, end = header.split("=")[1].split("-")
+        return int(start), int(end)
+
+    def test_partial_content_is_read(self):
+        def answer(header):
+            start, end = self._span(header)
+            return _Resp(206, self.DATA[start:end + 1])
+        remote, data = self._open(answer)
+        assert data == self.DATA[100:110] and remote.tell() == 110
+
+    def test_server_ignoring_range_is_refused(self):
+        with pytest.raises(OSError, match="HTTP 200, not 206"):
+            self._open(lambda header: _Resp(200, self.DATA))
+
+    def test_body_longer_than_requested_is_refused(self):
+        with pytest.raises(OSError, match="longer than the 10 bytes"):
+            self._open(lambda header: _Resp(206, self.DATA))
 
 
 class TestOrder:

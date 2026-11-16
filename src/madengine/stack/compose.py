@@ -384,7 +384,13 @@ def completion_requirements(plan: dict, fetch=None) -> typing.List[str]:
         url = item["entry"].get("url")
         if not url:
             continue
-        wheel = fetch(wheels.parse_wheel_filename(url))
+        wheel = wheels.parse_wheel_filename(url)
+        if wheel is None:
+            raise ComposeError(
+                f"{item['name']} {item['key']}: url is not a wheel filename ({url}); "
+                f"its dependencies cannot be read"
+            )
+        wheel = fetch(wheel)
         for line in wheel.requires or []:
             try:
                 req = Requirement(line)
