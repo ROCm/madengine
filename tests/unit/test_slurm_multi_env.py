@@ -121,3 +121,16 @@ class TestRecipePrecheck:
         bare.write_text("")
         assert recipe_precheck({"MODEL_NAME": "M"}, bare, "gfx950") is None
         assert recipe_precheck({"MODEL_NAME": "M"}, self._checkout(tmp_path / "ok", 0), "gfx950") is None
+
+
+class TestPlacementDirectives:
+    def test_segment_from_the_checkouts_topology_tool(self, tmp_path):
+        from madengine.deployment.slurm_multi_env import placement_directives
+        tool = tmp_path / "scripts" / "common" / "topology" / "topology.py"
+        tool.parent.mkdir(parents=True)
+        tool.write_text("import json\nprint(json.dumps({'options': ['--segment=18'], 'notes': []}))\n")
+        script = tmp_path / "scripts" / "vllm_dissag" / "run_xPyD_models.slurm"
+        script.parent.mkdir(parents=True)
+        script.write_text("")
+        assert placement_directives({"MAD_TOPOLOGY": "x.json"}, script) == ["--segment=18"]
+        assert placement_directives({}, script) == []

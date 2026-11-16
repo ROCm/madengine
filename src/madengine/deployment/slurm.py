@@ -28,7 +28,9 @@ from madengine.core.errors import ConfigurationError
 from madengine.core.image_digest import resolve_pinned_image
 from madengine.core.timeout import resolve_run_timeout, subprocess_timeout
 from madengine.deployment.layered_config import LayeredConfigError
-from madengine.deployment.slurm_multi_env import SOURCES_VAR, recipe_precheck, submit_env, user_env_vars
+from madengine.deployment.slurm_multi_env import (
+    SOURCES_VAR, placement_directives, recipe_precheck, submit_env, user_env_vars,
+)
 from madengine.utils.gpu_config import resolve_runtime_gpus
 from madengine.utils.path_utils import scripts_base_dir_from
 from madengine.utils.run_details import get_build_number, get_pipeline
@@ -655,6 +657,13 @@ class SlurmDeployment(BaseDeployment):
             )
         env_vars = dict(submit.env)
 
+        # What the topology's placement asks of the scheduler (a scale-up domain per role).
+        try:
+            self._placement_directives = placement_directives(env_vars, model_script_path)
+        except ValueError as exc:
+            self.console.print(f"[red]✗ {exc}[/red]")
+            return False
+
         # MAD's recipe gate, before the job queues, when the target GPU is known here.
         refusal = recipe_precheck(env_vars, model_script_path, self.slurm_config.get("gpu_arch"))
         if refusal:
@@ -845,6 +854,8 @@ class SlurmDeployment(BaseDeployment):
         nodelist = self._normalize_nodelist(self.slurm_config.get("nodelist"))
         if nodelist:
             script_lines.append(f"#SBATCH --nodelist={nodelist}")
+        for opt in getattr(self, "_placement_directives", None) or []:
+            script_lines.append(f"#SBATCH {opt}")
 
         # Accounting directives, same as job.sh.j2. Sites that bill jobs reject a
         # submission without them, so a model card declaring qos/account has to be

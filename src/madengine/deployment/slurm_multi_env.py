@@ -151,3 +151,28 @@ def recipe_precheck(env: Dict[str, str], script_path: Path, gpu_arch: Optional[s
     if p.returncode == 0:
         return None
     return (p.stderr or p.stdout).strip() or f"recipe check refused (exit {p.returncode})"
+
+
+def placement_directives(env: Dict[str, str], script_path: Path) -> List[str]:
+    """sbatch options for the run's topology placement: when MAD_TOPOLOGY names a spec whose
+    placement needs the scheduler (e.g. a role held inside one multi-node scale-up domain), the card
+    checkout's scripts/common/topology/topology.py scheduler-hints says what to ask for
+    (["--segment=18"] on SLURM's block topology). Nothing without a spec or the tool. Shared by
+    madengine's SLURM path and the pipeline's STANDALONE mode, so both request the same."""
+    import json as _json
+    import os
+    import subprocess
+    import sys
+
+    if not env.get("MAD_TOPOLOGY"):
+        return []
+    script_path = Path(script_path).resolve()
+    tool = script_path.parent.parent / "common" / "topology" / "topology.py"
+    if not tool.is_file():
+        return []
+    p = subprocess.run([sys.executable, str(tool), "scheduler-hints", "--scheduler", "slurm",
+                        "--launcher", script_path.parent.name],
+                       env={**os.environ, **env}, capture_output=True, text=True, timeout=60)
+    if p.returncode != 0:
+        raise ValueError(f"MAD_TOPOLOGY: {(p.stderr or p.stdout).strip()}")
+    return [o for o in _json.loads(p.stdout).get("options") or [] if isinstance(o, str)]
