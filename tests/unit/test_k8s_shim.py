@@ -43,6 +43,7 @@ def cluster(tmp_path):
     env.update({
         "PATH": f"{bin_dir}:{os.environ['PATH']}", "MAD_K8S_AGENT_PORT": port, "MAD_K8S_STATE": str(state),
         "MAD_K8S_IMAGE": IMAGE, "SLURM_JOB_NODELIST": ",".join(NODES), "MAD_K8S_CONNECT_TIMEOUT": "20",
+        "MAD_K8S_AGENT_TOKEN": "run-token",
     })
     agents = []
     for node in NODES:
@@ -93,6 +94,25 @@ class TestSrun:
         assert r.returncode != 0 and "unsupported option" in r.stderr
         r = _run(env, ["srun", "--ntasks-per-node=2", "true"])
         assert r.returncode != 0 and "one task per node" in r.stderr
+
+
+class TestAgentToken:
+    """The agents run any command sent to them: only requests with the run's token."""
+
+    def test_a_request_without_the_runs_token_is_refused(self, cluster):
+        env, tmp = cluster
+        marker = tmp / "ran"
+        for token in ("", "another-runs-token"):
+            r = _run({**env, "MAD_K8S_AGENT_TOKEN": token},
+                     ["srun", "-N", "1", "-w", NODES[0], "touch", str(marker)])
+            assert r.returncode == 2 and "refused: not this run's token" in r.stderr
+        assert not marker.exists()
+
+    def test_the_agent_will_not_start_without_a_token(self, cluster):
+        env, _ = cluster
+        env = {k: v for k, v in env.items() if k != "MAD_K8S_AGENT_TOKEN"}
+        r = _run({**env, "MAD_K8S_AGENT_BIND": "127.0.0.9"}, [sys.executable, str(SHIM), "agent"])
+        assert r.returncode == 2 and "MAD_K8S_AGENT_TOKEN is not set" in r.stderr
 
 
 class TestScontrol:

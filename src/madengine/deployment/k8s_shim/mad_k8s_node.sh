@@ -9,6 +9,7 @@
 #   MAD_K8S_SCRIPT      the card's script, relative to /workspace
 #   MAD_K8S_ARGS        the card's args
 #   MAD_K8S_MULTIPLE_RESULTS  the card's multiple_results file name, if any
+#   MAD_K8S_AGENT_TOKEN the run's random token; the agents serve only requests with it
 #   JOB_COMPLETION_INDEX      set by Kubernetes for an Indexed Job
 set -u
 
@@ -68,9 +69,23 @@ python3 "$SHIM/mad_k8s.py" wait-peers || { echo "[mad-k8s] not every node came u
 script="${WORKSPACE}/${MAD_K8S_SCRIPT}"
 cd "$(dirname "$script")"
 echo "[mad-k8s] running $(basename "$script") ${MAD_K8S_ARGS:-} on ${SLURM_JOB_NODELIST}"
+# Kubernetes stops a pod with TERM to this process. Bash runs a trap only once a
+# foreground child has returned, so the script runs in the background and the TERM
+# is passed on to it at once. Like scancel, it goes to the launcher's whole process
+# group (monitor mode makes the launcher a group leader), so the processes the
+# script started see it too; its own teardown (stopping its containers) runs, and
+# its results and status are still published below before the peers are released.
+set -m
 # shellcheck disable=SC2086
-bash "$(basename "$script")" ${MAD_K8S_ARGS:-}
-rc=$?
+bash "$(basename "$script")" ${MAD_K8S_ARGS:-} &
+launcher=$!
+set +m
+trap 'kill -TERM -- -"$launcher" 2>/dev/null' TERM INT
+while :; do
+    wait "$launcher"; rc=$?
+    kill -0 "$launcher" 2>/dev/null || break   # a trap ended the wait, not the launcher
+done
+trap 'release; exit 143' TERM INT
 echo "[mad-k8s] $(basename "$script") exited ${rc}"
 
 # Publish the run's results where madengine's collector reads them: what the card

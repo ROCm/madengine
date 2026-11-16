@@ -81,6 +81,7 @@ class TestSlurmMultiJob:
         assert (env["MAD_K8S_NNODES"], env["MAD_K8S_NODE_PREFIX"]) == ("2", d.job_name)
         assert env["MAD_K8S_SCRIPT"] == "scripts/demo/run_xPyD_models.slurm"
         assert env["MAD_K8S_ARGS"] == "-N 2 -n 2"
+        assert len(env["MAD_K8S_AGENT_TOKEN"]) == 64   # random per run; the agents require it
 
     def test_gpus_come_from_the_card_unless_k8s_says(self, tmp_path, monkeypatch):
         _, _, pod, _ = _prepared(tmp_path, monkeypatch)
