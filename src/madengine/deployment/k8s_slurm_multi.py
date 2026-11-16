@@ -241,6 +241,13 @@ class KubernetesSlurmMultiMixin:
         )
 
         env = self._slurm_multi_env(model_info, image)
+        # MAD's recipe gate before the Job is created, when the target GPU is known here
+        # (k8s.gpu_arch, else slurm.gpu_arch): as on SLURM (slurm_multi_env.recipe_precheck).
+        from .slurm_multi_env import recipe_precheck
+        arch = k8s.get("gpu_arch") or (self.config.additional_context.get("slurm") or {}).get("gpu_arch")
+        refusal = recipe_precheck(env, Path(script), arch)
+        if refusal:
+            raise ValueError(f"{refusal} (set env_vars RECIPE_CHECK=0 to submit anyway)")
         # One id per run: SLURM_JOB_ID in the pods, and the run's own results directory.
         self._slurm_multi_run_id = str(int(time.time()) % 100000000)
         env.update({

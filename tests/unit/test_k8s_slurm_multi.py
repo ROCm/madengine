@@ -312,3 +312,18 @@ class TestPresetsDoNotSizeTheCard:
         res = self._bare(tmp_path, monkeypatch, k8s={"gpu_count": 4, "cpu": "16", "memory": "64Gi"})
         assert res["limits"]["amd.com/gpu"] == "4"
         assert (res["requests"]["cpu"], res["requests"]["memory"]) == ("16", "64Gi")
+
+
+class TestRecipePrecheckOnKubernetes:
+    def test_a_refused_recipe_creates_no_job(self, tmp_path, monkeypatch):
+        tool = tmp_path / "scripts" / "common" / "recipe" / "precheck.py"
+        tool.parent.mkdir(parents=True)
+        tool.write_text("import sys\nprint('not on gfx950', file=sys.stderr)\nsys.exit(1)\n")
+        d = _deployment(tmp_path, monkeypatch, k8s={"gpu_arch": "gfx950"})
+        assert d.prepare() is not True
+
+    def test_unknown_gpu_checks_nothing(self, tmp_path, monkeypatch):
+        tool = tmp_path / "scripts" / "common" / "recipe" / "precheck.py"
+        tool.parent.mkdir(parents=True)
+        tool.write_text("import sys\nsys.exit(1)\n")
+        _prepared(tmp_path, monkeypatch)
