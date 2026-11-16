@@ -11,6 +11,7 @@ from .build import build
 from .run import run
 from .discover import discover
 from .report import report_app
+from .nan import nan_app
 from .database import database
 from .cleanup import cleanup
 from .setup_page import setup_page
@@ -20,6 +21,7 @@ __all__ = [
     "run",
     "discover",
     "report_app",
+    "nan_app",
     "database",
     "cleanup",
     "setup_page",
