@@ -110,6 +110,23 @@ class TestCompose:
         with pytest.raises(compose.ComposeError, match="built for gfx950, not gfx942"):
             compose.compose({"components": {"fp4-kernels": "1.0@x"}}, MATRIX, "gfx942")
 
+    def test_python_given_as_a_string(self):
+        matrix = {"components": {"a": {"1@x": {"url": "u", "python": "3.14"}}}}
+        plan = compose.compose({"python": "3.14", "components": {"a": "1@x"}}, matrix)
+        assert [i["name"] for i in plan["items"]] == ["a"]
+        with pytest.raises(compose.ComposeError, match="built for python 3.14"):
+            compose.compose({"python": "3.1", "components": {"a": "1@x"}}, matrix)
+
+    def test_python_given_as_a_yaml_float_is_rejected(self):
+        matrix = {"components": {"a": {"1@x": {"url": "u", "python": 3.14}}}}
+        with pytest.raises(compose.ComposeError, match="a 1@x: python must be a string"):
+            compose.compose({"python": "3.14", "components": {"a": "1@x"}}, matrix)
+        matrix["components"]["a"]["1@x"]["python"] = [3.14]
+        with pytest.raises(compose.ComposeError, match="python must be a string"):
+            compose.compose({"python": "3.14", "components": {"a": "1@x"}}, matrix)
+        with pytest.raises(compose.ComposeError, match="spec python must be a string"):
+            compose.compose({"python": 3.14}, MATRIX)
+
     def test_rocm_release_must_be_authorized_and_therock(self):
         with pytest.raises(compose.ComposeError, match="known: 10.1, 7.2"):
             compose.compose({"rocm": "9.9"}, MATRIX)

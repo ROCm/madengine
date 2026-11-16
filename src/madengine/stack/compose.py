@@ -69,6 +69,20 @@ def _satisfies(req: Requirement, version: str) -> bool:
     return v is not None and req.specifier.contains(v, prereleases=True)
 
 
+def _python_list(value, where: str) -> typing.List[str]:
+    """``python`` of an entry as a list; a string is one version, like gpu_arch."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list) and all(isinstance(p, str) for p in value):
+        return value
+    raise ComposeError(
+        f"{where}: python must be a string or a list of strings such as "
+        f"[\"3.14\"] (quote versions in YAML), got {value!r}"
+    )
+
+
 def _check_entry(name: str, key: str, entry: dict) -> None:
     where = f"{name} {key}"
     unknown = set(entry) - _ENTRY_KEYS
@@ -125,6 +139,11 @@ def compose(
     arch = spec.get("gpu_arch") or gpu_arch or "all"
     catalog = matrix.get("components") or {}
     python = spec.get("python")
+    if python is not None and not isinstance(python, str):
+        raise ComposeError(
+            f"spec python must be a string such as \"3.14\" (quote it in YAML), "
+            f"got {type(python).__name__} {python!r}"
+        )
     chosen: typing.Dict[str, dict] = {}
     order_hint: typing.List[str] = []
 
@@ -184,11 +203,12 @@ def compose(
             pending.append(dep)
 
     for item in chosen.values():
-        allowed = item["entry"].get("python")
-        if python and allowed and str(python) not in [str(p) for p in allowed]:
+        allowed = _python_list(item["entry"].get("python"),
+                               f"{item['name']} {item['key']}")
+        if python and allowed and python not in allowed:
             raise ComposeError(
                 f"{item['name']} {item['key']} is built for python "
-                f"{', '.join(map(str, allowed))}, spec uses {python}"
+                f"{', '.join(allowed)}, spec uses {python}"
             )
         limit = item["entry"].get("gpu_arch")
         if limit and arch != "all":
