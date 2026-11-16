@@ -39,6 +39,17 @@ class TestSubmitEnv:
         final = env.final()
         assert _sources(final[SOURCES_VAR]) == {"X": "card", "Y": "additional-context"}
 
+    def test_pin_set_of_the_image(self):
+        card = {"docker_build_arg": {"PINS": "vllm-kimi-k3"}}
+        env, _, _ = submit_env(card, {}, None)
+        assert (env.env["MAD_PIN_SET"], env.sources["MAD_PIN_SET"]) == ("vllm-kimi-k3", "madengine")
+        env, _, _ = submit_env(card, {"docker_build_arg": {"PINS": "vllm-mori121"}}, None)
+        assert env.env["MAD_PIN_SET"] == "vllm-mori121"          # the run's build args win
+        env, _, _ = submit_env(card, {"env_vars": {"MAD_PIN_SET": "x"}}, None)
+        assert env.env["MAD_PIN_SET"] == "x"                     # a value the user sets is kept
+        env, _, _ = submit_env({}, {}, None)
+        assert "MAD_PIN_SET" not in env.env
+
 
 class TestSlurmWrapper:
     def test_sources_exported(self, tmp_path):
