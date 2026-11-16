@@ -114,10 +114,13 @@ def pod_hostname_base(job_name: str, nnodes: int) -> str:
 
 
 def default_include_dirs(script_path: str) -> List[str]:
-    """The sibling `common` directory of the card's script directory, if any:
-    the shared helpers MAD's launchers source as ${SCRIPT_DIR}/../common."""
-    common = Path(script_path).parent.parent / "common"
-    return [str(common)] if common.is_dir() else []
+    """What MAD's launchers read besides their own directory, where present: the sibling
+    `common` directory (the shared helpers, ${SCRIPT_DIR}/../common) and the repository's
+    `compat` directory (the capability catalog the launchers check a recipe's roles
+    against, which on SLURM they find in the MAD checkout)."""
+    scripts = Path(script_path).parent.parent
+    dirs = [scripts / "common", scripts.parent / "compat"]
+    return [str(d) for d in dirs if d.is_dir()]
 
 
 class KubernetesSlurmMultiMixin:

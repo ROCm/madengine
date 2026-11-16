@@ -41,6 +41,7 @@ def _deployment(tmp_path, monkeypatch, card=None, k8s=None, env_vars=None, image
     for f, text in {"scripts/demo/run_xPyD_models.slurm": "#!/bin/bash\n. ../common/cluster.sh\n",
                     "scripts/demo/models.yaml": "x: 1\n",
                     "scripts/common/cluster.sh": "export SITE=1\n",
+                    "compat/rocm.yaml": "formats: {}\n",
                     "scripts/other/big.sh": "unrelated\n"}.items():
         (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / f).write_text(text)
@@ -119,11 +120,12 @@ class TestSlurmMultiJob:
         assert mounts["/models"]["readOnly"] is True and "/logs" in mounts and "/results" in mounts
         assert pod["nodeSelector"] == {"node.lab/gpu": "true"}
 
-    def test_bundle_carries_the_card_dir_common_and_the_shim(self, tmp_path, monkeypatch):
+    def test_bundle_carries_the_card_dir_common_compat_and_the_shim(self, tmp_path, monkeypatch):
         d, _, _, _ = _prepared(tmp_path, monkeypatch)
         cm = yaml.safe_load(d.configmap_yaml)
         names = tarfile.open(fileobj=io.BytesIO(base64.b64decode(cm["binaryData"]["scripts.tgz"]))).getnames()
         assert "scripts/demo/run_xPyD_models.slurm" in names and "scripts/common/cluster.sh" in names
+        assert "compat/rocm.yaml" in names, "the capability catalog the launcher checks recipes against"
         assert ".mad-k8s/mad_k8s.py" in names and ".mad-k8s/mad_k8s_node.sh" in names
         assert not any(n.startswith("scripts/other") for n in names)
 
