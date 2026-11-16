@@ -1,6 +1,7 @@
 """Unit tests for madengine.execution.image_spec and its DockerBuilder hooks."""
 
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -88,6 +89,7 @@ class TestResolve:
     def root(self, tmp_path, monkeypatch):
         write_mad(tmp_path)
         monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("MODEL_DIR", raising=False)
         return tmp_path
 
     def test_generates_dockerfile_in_dependency_order(self, root):
@@ -128,11 +130,48 @@ class TestResolve:
             image_spec.load_matrix(str(tmp_path / "nowhere"))
 
 
+class TestModelDir:
+    @pytest.fixture
+    def mad(self, tmp_path, monkeypatch):
+        mad = tmp_path / "mad"
+        mad.mkdir()
+        write_mad(mad, SPEC)
+        work = tmp_path / "work"
+        work.mkdir()
+        monkeypatch.chdir(work)
+        monkeypatch.setenv("MODEL_DIR", str(mad))
+        return mad
+
+    def test_matrix_and_card_spec_come_from_model_dir(self, mad):
+        assert image_spec.load_matrix() == MATRIX
+        card = {"name": "w/m", "_fs_rel_path": "w", "image_spec": "${image_spec}"}
+        assert image_spec.effective_image_spec(card, {}) == SPEC
+        # The Dockerfile goes where docker build runs (cwd), not into MODEL_DIR.
+        plan = image_spec.resolve(SPEC, "AMD", "gfx942", name="m")
+        assert os.path.exists(f"{plan.dockerfile_prefix}.ubuntu.amd.Dockerfile")
+
+    def test_stack_cli_uses_model_dir(self, mad):
+        from typer.testing import CliRunner
+
+        from madengine.cli.commands.stack import stack_app
+
+        result = CliRunner().invoke(stack_app, ["show", str(mad / "scripts" / "w")])
+        assert result.exit_code == 0, result.output
+        assert "torch" in result.output
+
+    def test_error_names_the_directory_searched(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MODEL_DIR", str(tmp_path / "elsewhere"))
+        with pytest.raises(ImageSpecError) as err:
+            image_spec.load_matrix()
+        assert str(tmp_path / "elsewhere") in str(err.value)
+
+
 class TestDockerBuilderHooks:
     @pytest.fixture
     def mad_root(self, tmp_path, monkeypatch):
         write_mad(tmp_path)
         monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("MODEL_DIR", raising=False)
         return tmp_path
 
     def _builder(self, ctx, sh):

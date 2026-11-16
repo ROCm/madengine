@@ -1,8 +1,9 @@
 """
 `madengine stack`: inspect workload image specs against the compatibility matrix.
 
-Run from the MAD root. A SPEC argument is a workload folder (scripts/vllm) or an
-image_spec.yaml path; it is composed against compat/rocm.yaml.
+Run from the MAD root, or set MODEL_DIR to it. A SPEC argument is a workload
+folder (scripts/vllm) or an image_spec.yaml path; it is composed against
+compat/rocm.yaml of that root.
 
 Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 """

@@ -106,7 +106,12 @@ def _deep_merge(base: dict, over: dict) -> dict:
     return merged
 
 
-def matrix_node(root: str = "."):
+def mad_root(root: typing.Optional[str] = None) -> str:
+    """The MAD checkout: *root* when given, else ``MODEL_DIR``, else ``.``."""
+    return root if root is not None else (os.environ.get("MODEL_DIR") or ".")
+
+
+def matrix_node(root: typing.Optional[str] = None):
     """The compatibility matrix as an unresolved OmegaConf node.
 
     Unresolved, so it can sit next to a spec in one config and be resolved once:
@@ -115,16 +120,17 @@ def matrix_node(root: str = "."):
     """
     from omegaconf import OmegaConf
 
+    root = mad_root(root)
     path = os.path.join(root, MATRIX_FILE)
     if not os.path.exists(path):
         raise ImageSpecError(
-            f"{path} not found; image_spec needs the MAD compatibility matrix "
-            f"(run from the MAD root or set MODEL_DIR)"
+            f"{MATRIX_FILE} not found in {os.path.abspath(root)}; image_spec needs "
+            f"the MAD compatibility matrix (run from the MAD root or set MODEL_DIR)"
         )
     return OmegaConf.load(path)
 
 
-def load_matrix(root: str = ".") -> typing.Dict:
+def load_matrix(root: typing.Optional[str] = None) -> typing.Dict:
     """The compatibility matrix (``compat/rocm.yaml``) of the MAD checkout."""
     from omegaconf import OmegaConf
 
@@ -173,14 +179,14 @@ def _card_spec(model_info: typing.Dict, root: str) -> typing.Optional[dict]:
 
 
 def effective_image_spec(
-    model_info: typing.Dict, ctx: typing.Dict, root: str = "."
+    model_info: typing.Dict, ctx: typing.Dict, root: typing.Optional[str] = None
 ) -> typing.Optional[typing.Dict]:
     """Card ``image_spec`` with context ``image_spec`` deep-merged over it.
 
     Returns None when neither declares one, which keeps the card on its
-    hand-written Dockerfile.
+    hand-written Dockerfile. *root* defaults to ``MODEL_DIR`` (see mad_root).
     """
-    card = _card_spec(model_info, root) or {}
+    card = _card_spec(model_info, mad_root(root)) or {}
     override = (ctx.get(SPEC_KEY) if isinstance(ctx, dict) else None) or {}
     if not isinstance(override, dict):
         raise ImageSpecError(
@@ -202,7 +208,7 @@ def effective_image_spec(
 def dockerfile_prefix(
     spec: typing.Dict,
     gpu_arch: typing.Optional[str] = None,
-    root: str = ".",
+    root: typing.Optional[str] = None,
     name: str = SPEC_KEY,
 ) -> str:
     """Prefix of the Dockerfile generated for a spec (under .madengine/build/)."""
@@ -210,8 +216,13 @@ def dockerfile_prefix(
 
 
 def _resolve_composed(
-    spec: dict, gpu_arch: typing.Optional[str], root: str, name: str
+    spec: dict, gpu_arch: typing.Optional[str], root: typing.Optional[str], name: str
 ) -> BuildPlan:
+    """Compose against the matrix under *root* (default MODEL_DIR).
+
+    The Dockerfile is written under *root* when given, else under the current
+    directory, where docker build runs and resolves the returned prefix.
+    """
     from madengine.stack import compose, dockerfile
 
     try:
@@ -246,7 +257,8 @@ def _resolve_composed(
                       else None)
     except compose.ComposeError as e:
         raise ImageSpecError(f"{name}: {e}") from None
-    prefix = dockerfile.write(plan, name, digest, "AMD", root, completion)
+    prefix = dockerfile.write(plan, name, digest, "AMD",
+                              root if root is not None else ".", completion)
     return BuildPlan("AMD", prefix, {}, spec, resolved)
 
 
@@ -254,7 +266,7 @@ def resolve(
     spec: typing.Dict,
     vendor: str,
     gpu_arch: typing.Optional[str] = None,
-    root: str = ".",
+    root: typing.Optional[str] = None,
     name: str = SPEC_KEY,
 ) -> BuildPlan:
     """Resolve *spec* into a BuildPlan. image_spec builds AMD images."""
