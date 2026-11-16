@@ -492,6 +492,24 @@
       "cmd": "",
       "env_vars": {},
       "post_scripts": []
+    },
+    "nan_doctor": {
+      "pre_scripts": [
+        {
+          "path": "scripts/common/pre_scripts/nan_doctor_start.sh"
+        }
+      ],
+      "cmd": "",
+      "env_vars": {
+        "NAN_CAPTURE_DIR": "/myworkspace/nan_doctor_output/capsules",
+        "NAN_CAPTURE_AUTO": "optimizer"
+      },
+      "post_scripts": [
+        {
+          "path": "scripts/common/post_scripts/nan_doctor_collect.sh"
+        }
+      ],
+      "output_dir": "nan_doctor_output"
     }
   }
 }
