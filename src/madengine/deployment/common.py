@@ -10,7 +10,9 @@ Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 
 import difflib
 import functools
+import json
 import os
+import re
 import subprocess
 from typing import Any, Dict, List, Optional
 
@@ -213,6 +215,47 @@ def tools_include_rocprof_family(tools_config: List[Dict]) -> bool:
 # Its throughput is reported once, by the proxy — scaling that by nnodes would
 # multiply a whole-cluster number.
 PER_REPLICA_LAUNCHERS: frozenset = frozenset({"vllm", "sglang"})
+
+
+_OUTPUT_DIR_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def tool_output_dirs(
+    tools_config: List[Dict], tools_json_path: Optional[str] = None
+) -> List[str]:
+    """Output directories declared by the selected tools (tools.json ``output_dir``).
+
+    The job script copies these out of each node's workspace, on top of the
+    built-in profiler directories. A tool without ``output_dir`` adds nothing;
+    an unknown tool is skipped (the run itself reports it). Names are plain
+    directory names only, because they are rendered into a shell loop.
+    """
+    if tools_json_path is None:
+        tools_json_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "scripts",
+            "common",
+            "tools.json",
+        )
+    try:
+        with open(tools_json_path, encoding="utf-8") as f:
+            registry = json.load(f).get("tools", {})
+    except (OSError, ValueError):
+        return []
+    dirs: List[str] = []
+    for tool in tools_config or []:
+        name = tool.get("name") if isinstance(tool, dict) else tool
+        out = (registry.get(name) or {}).get("output_dir")
+        if not out:
+            continue
+        if not _OUTPUT_DIR_NAME.match(out):
+            raise ConfigurationError(
+                f"tools.json: output_dir of tool '{name}' must be a plain directory "
+                f"name, got {out!r}"
+            )
+        if out not in dirs:
+            dirs.append(out)
+    return dirs
 
 
 def is_per_replica_launcher(launcher_type: Optional[str]) -> bool:

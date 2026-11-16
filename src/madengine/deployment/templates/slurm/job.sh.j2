@@ -871,6 +871,10 @@ mkdir -p "$NODE_COLLECTION_DIR"
 # that is left of the run.
 COLLECTION_OK=1
 
+# Tool output directories: the built-in profilers plus whatever the selected
+# tools declare as output_dir in tools.json.
+TOOL_OUTPUT_DIRS="rocprof_output rpd_output rocm_trace_lite_output torch_profiler_output tracelens_output{% for d in tool_output_dirs | default([]) %} {{ d }}{% endfor %}"
+
 if [ $TASK_EXIT -eq 0 ]; then
     echo ""
     echo "========================================================================"
@@ -887,7 +891,7 @@ if [ $TASK_EXIT -eq 0 ]; then
     if [ -f "$WORKSPACE/run_directory/{{ multiple_results }}" ]; then cp "$WORKSPACE/run_directory/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || COLLECTION_OK=0; fi
     if [ -f "$WORKSPACE/{{ multiple_results }}" ]; then cp "$WORKSPACE/{{ multiple_results }}" "$NODE_COLLECTION_DIR/" 2>/dev/null || COLLECTION_OK=0; fi
     {% endif %}
-    for d in rocprof_output rpd_output rocm_trace_lite_output torch_profiler_output tracelens_output; do
+    for d in $TOOL_OUTPUT_DIRS; do
         if [ -d "$WORKSPACE/$d" ]; then cp -r "$WORKSPACE/$d" "$NODE_COLLECTION_DIR/" 2>/dev/null || COLLECTION_OK=0; fi
     done
     if [ $COLLECTION_OK -eq 1 ]; then
@@ -905,6 +909,12 @@ else
     # Copy node logs so collect_results can still inspect them
     if [ -f "${NODE_LOG_OUT}" ]; then cp "${NODE_LOG_OUT}" "$NODE_COLLECTION_DIR/stdout.out" 2>/dev/null || true; fi
     if [ -f "${NODE_LOG_ERR}" ]; then cp "${NODE_LOG_ERR}" "$NODE_COLLECTION_DIR/stderr.err" 2>/dev/null || true; fi
+    # Tool output too: a failed run is often the one a tool was there to explain
+    # (nan_doctor's capsules are written as the model dies). Best-effort; the
+    # workspace is kept below either way.
+    for d in $TOOL_OUTPUT_DIRS; do
+        if [ -d "$WORKSPACE/$d" ]; then cp -r "$WORKSPACE/$d" "$NODE_COLLECTION_DIR/" 2>/dev/null || true; fi
+    done
 fi
 
 # The workspace holds a full rsync of the project plus this node's outputs, and
