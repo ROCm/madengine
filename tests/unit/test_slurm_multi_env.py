@@ -146,3 +146,28 @@ class TestPlatformGpus:
         assert platform_gpus_per_node({}, script) == 8
         assert platform_gpus_per_node({"MAD_PLATFORM": "helios"}, script) == 4
         assert platform_gpus_per_node({}, tmp_path / "x" / "y" / "z" / "run.slurm") is None
+
+
+class TestK8sDomainAffinity:
+    def _tool(self, tmp_path, body):
+        tool = tmp_path / "scripts" / "common" / "topology" / "topology.py"
+        tool.parent.mkdir(parents=True)
+        tool.write_text(body)
+        script = tmp_path / "scripts" / "vllm_multinode" / "run_multinode.slurm"
+        script.parent.mkdir(parents=True)
+        script.write_text("")
+        return script
+
+    def test_the_label_when_the_topology_asks_for_one_domain(self, tmp_path):
+        from madengine.deployment.slurm_multi_env import k8s_domain_affinity
+        script = self._tool(tmp_path, "import json\nprint(json.dumps({'options': [{'pod_affinity_topology_key': 'r'}]}))\n")
+        assert k8s_domain_affinity({"MAD_TOPOLOGY": "s.json"}, script, "r") == "r"
+        assert k8s_domain_affinity({}, script, "r") is None
+        assert k8s_domain_affinity({"MAD_TOPOLOGY": "s.json"}, script, None) is None
+
+    def test_a_placement_one_job_cannot_hold_is_refused(self, tmp_path):
+        import pytest
+        from madengine.deployment.slurm_multi_env import k8s_domain_affinity
+        script = self._tool(tmp_path, "import sys\nprint('needs a Job per role', file=sys.stderr)\nsys.exit(1)\n")
+        with pytest.raises(ValueError, match="Job per role"):
+            k8s_domain_affinity({"MAD_TOPOLOGY": "s.json"}, script, "r")

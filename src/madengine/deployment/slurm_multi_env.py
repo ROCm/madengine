@@ -192,3 +192,30 @@ def platform_gpus_per_node(env: Dict[str, str], script_path: Path) -> Optional[i
     name = env.get("MAD_PLATFORM") or c.get("default_platform")
     p = (c.get("platforms") or {}).get(name) or {}
     return int(p["gpus_per_node"]) if p.get("gpus_per_node") else None
+
+
+def k8s_domain_affinity(env: Dict[str, str], script_path: Path, domain_label: Optional[str]) -> Optional[str]:
+    """The node label to hold the whole Job inside one scale-up domain on, when the run's topology
+    (MAD_TOPOLOGY) places it in one and the site names its domain label; else None. A placement one
+    Job cannot express raises ValueError. From the card checkout's topology.py scheduler-hints, as
+    MAD's own Kubernetes submit uses it."""
+    import json as _json
+    import os
+    import subprocess
+    import sys
+
+    if not env.get("MAD_TOPOLOGY") or not domain_label:
+        return None
+    script_path = Path(script_path).resolve()
+    tool = script_path.parent.parent / "common" / "topology" / "topology.py"
+    if not tool.is_file():
+        return None
+    p = subprocess.run([sys.executable, str(tool), "scheduler-hints", "--scheduler", "kubernetes",
+                        "--launcher", script_path.parent.name, "--domain-label", domain_label],
+                       env={**os.environ, **env}, capture_output=True, text=True, timeout=60)
+    if p.returncode != 0:
+        raise ValueError(f"MAD_TOPOLOGY: {(p.stderr or p.stdout).strip()}")
+    for o in _json.loads(p.stdout).get("options") or []:
+        if isinstance(o, dict) and o.get("pod_affinity_topology_key"):
+            return o["pod_affinity_topology_key"]
+    return None

@@ -319,6 +319,12 @@ class KubernetesSlurmMultiMixin:
                 {"labelSelector": {"matchLabels": {HOST_NETWORK_LABEL: "true"}},
                  "namespaceSelector": {},
                  "topologyKey": "kubernetes.io/hostname"}]}}
+        # The topology's placement: the whole Job inside one scale-up domain (the site's label).
+        from .slurm_multi_env import k8s_domain_affinity
+        key = k8s_domain_affinity(env, Path(script), k8s.get("domain_label") or env.get("MAD_K8S_DOMAIN_LABEL"))
+        if key:
+            pod_spec.setdefault("affinity", {})["podAffinity"] = {"requiredDuringSchedulingIgnoredDuringExecution": [
+                {"labelSelector": {"matchLabels": {"job-name": self.job_label}}, "topologyKey": key}]}
         if k8s.get("node_selector"):
             pod_spec["nodeSelector"] = k8s["node_selector"]
         if k8s.get("tolerations"):
