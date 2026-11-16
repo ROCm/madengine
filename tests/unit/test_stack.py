@@ -98,6 +98,30 @@ class TestCompose:
         with pytest.raises(compose.ComposeError, match="no authorized build"):
             compose.compose({"components": {"a": "1@x"}}, matrix)
 
+    AMBIGUOUS = {"components": {
+        "torch": {"2.13.0+rocm10.1.0": {"url": "t1"}, "2.13.0+rocm10.0.0": {"url": "t0"},
+                  "2.13.0@fw": {"url": "t2", "built_by": "fw"}},
+        "a": {"1@x": {"url": "u", "requires": ["torch==2.13.0"]}},
+        "b": {"1@fw": {"url": "v", "built_by": "fw", "requires": ["torch==2.13.0"]}},
+        "c": {"1@x": {"url": "w", "requires": ["torch==2.13.0+rocm10.0.0"]}},
+    }}
+
+    def test_requirement_matching_several_builds_is_rejected(self):
+        with pytest.raises(compose.ComposeError,
+                           match=r"several authorized builds.*2\.13\.0\+rocm10\.1\.0"):
+            compose.compose({"components": {"a": "1@x"}}, self.AMBIGUOUS)
+
+    def test_ambiguity_resolves_to_the_requesters_origin(self):
+        plan = compose.compose({"components": {"b": "1@fw"}}, self.AMBIGUOUS)
+        assert compose.components(plan)["torch"] == "2.13.0@fw"
+
+    def test_ambiguity_resolved_by_spec_selection_or_exact_pin(self):
+        spec = {"components": {"a": "1@x", "torch": "2.13.0+rocm10.0.0"}}
+        assert compose.components(compose.compose(spec, self.AMBIGUOUS))["torch"] == (
+            "2.13.0+rocm10.0.0")
+        plan = compose.compose({"components": {"c": "1@x"}}, self.AMBIGUOUS)
+        assert compose.components(plan)["torch"] == "2.13.0+rocm10.0.0"
+
     def test_cycle_is_rejected(self):
         matrix = {"components": {"a": {"1@x": {"url": "u", "requires": ["b"]}},
                                  "b": {"1@x": {"url": "v", "requires": ["a"]}}}}

@@ -25,7 +25,10 @@ key. Whatever a spec selects is what that workload is locked to::
 
 ``compose`` adds every authorized build that the selection requires, checks
 each requirement against what is selected, and orders the result so that every
-component installs after what it requires. A spec can also force a relative
+component installs after what it requires. A requirement that more than one
+authorized build satisfies is ambiguous: it resolves only when exactly one of
+them comes from the requester's own ``built_by``, otherwise the spec has to
+select the build. A spec can also force a relative
 install order with ``order: [a, b, c]`` (a before b before c); that adds to the
 requirement order and cannot contradict it. A requirement that no authorized
 build satisfies, or a cycle, fails before any build. A spec may also give a
@@ -198,7 +201,20 @@ def compose(
                     f"{item['name']} {item['key']} requires {line}; no authorized "
                     f"build in compat satisfies it"
                 )
-            k, e = max(candidates, key=lambda c: (_version(build_version(*c)) or Version("0"), c[0]))
+            if len(candidates) > 1:
+                # Prefer the requester's own stack; never pick across origins.
+                origin = item["entry"].get("built_by")
+                own = [c for c in candidates
+                       if origin and c[1].get("built_by") == origin]
+                if len(own) != 1:
+                    raise ComposeError(
+                        f"{item['name']} {item['key']} requires {line}; several "
+                        f"authorized builds satisfy it "
+                        f"({', '.join(k for k, _ in candidates)}); select one in "
+                        f"the spec's components or pin the requirement"
+                    )
+                candidates = own
+            k, e = candidates[0]
             add(dep, k, dict(e), True, f"required by {item['name']}")
             pending.append(dep)
 
