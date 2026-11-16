@@ -64,17 +64,14 @@ def parse_gpu_variable_value(var_name: str, raw_value: str) -> typing.List[str]:
 
 def normalize_architecture_name(arch: str) -> typing.Optional[str]:
     """Normalize architecture name to standard format."""
+    from madengine.core.gpu_products import arch_of_product, known_product
+
     arch = arch.lower().strip()
     if arch.startswith("gfx"):
         return arch
-    if arch in ["mi100", "mi-100"]:
-        return "gfx908"
-    if arch in ["mi200", "mi-200", "mi210", "mi250"]:
-        return "gfx90a"
-    if arch in ["mi300", "mi-300", "mi300a"]:
-        return "gfx940"
-    if arch in ["mi300x", "mi-300x"]:
-        return "gfx942"
+    if known_product(arch):
+        # A product whose compiler target is not yet published stays as named.
+        return arch_of_product(arch) or arch
     if arch.startswith("mi"):
         return arch
     return arch if arch else None
