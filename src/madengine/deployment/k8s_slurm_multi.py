@@ -170,16 +170,20 @@ class KubernetesSlurmMultiMixin:
         return self.k8s_config.get(key)
 
     def _slurm_multi_gpus(self, model_info: Dict) -> int:
+        from .slurm_multi_env import platform_gpus_per_node
+        env = {**(model_info.get("env_vars") or {}), **(self.config.additional_context.get("env_vars") or {})}
+        # A card without a GPU count (no GPU facts) takes its platform's, as MAD's launchers do.
+        platform = (platform_gpus_per_node(env, Path(model_info["scripts"])) if model_info.get("scripts") else None)
         for v in (self._user_k8s("gpu_count"), (model_info.get("slurm") or {}).get("gpus_per_node"),
-                  model_info.get("n_gpus")):
+                  model_info.get("n_gpus"), platform):
             try:
                 if v is not None and int(v) > 0:
                     return int(v)
             except (TypeError, ValueError):
                 pass
         raise ValueError(
-            "GPUs per pod unknown: set k8s.gpu_count (the card has no slurm.gpus_per_node "
-            "and n_gpus is not a positive number)"
+            "GPUs per pod unknown: set k8s.gpu_count (the card has no slurm.gpus_per_node, "
+            "n_gpus is not a positive number, and no platform catalog is at hand)"
         )
 
     def _slurm_multi_nnodes(self, model_info: Dict) -> int:

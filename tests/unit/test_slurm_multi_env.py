@@ -134,3 +134,15 @@ class TestPlacementDirectives:
         script.write_text("")
         assert placement_directives({"MAD_TOPOLOGY": "x.json"}, script) == ["--segment=18"]
         assert placement_directives({}, script) == []
+
+
+class TestPlatformGpus:
+    def test_from_the_checkouts_catalog(self, tmp_path):
+        from madengine.deployment.slurm_multi_env import platform_gpus_per_node
+        (tmp_path / "compat").mkdir()
+        (tmp_path / "compat" / "rocm.yaml").write_text(
+            "default_platform: a\nplatforms:\n  a: {gpus_per_node: 8}\n  helios: {gpus_per_node: 4}\n")
+        script = tmp_path / "scripts" / "vllm_dissag" / "run.slurm"
+        assert platform_gpus_per_node({}, script) == 8
+        assert platform_gpus_per_node({"MAD_PLATFORM": "helios"}, script) == 4
+        assert platform_gpus_per_node({}, tmp_path / "x" / "y" / "z" / "run.slurm") is None

@@ -176,3 +176,19 @@ def placement_directives(env: Dict[str, str], script_path: Path) -> List[str]:
     if p.returncode != 0:
         raise ValueError(f"MAD_TOPOLOGY: {(p.stderr or p.stdout).strip()}")
     return [o for o in _json.loads(p.stdout).get("options") or [] if isinstance(o, str)]
+
+
+def platform_gpus_per_node(env: Dict[str, str], script_path: Path) -> Optional[int]:
+    """GPUs per node of the run's platform (MAD_PLATFORM, else the catalog's default_platform),
+    from the card checkout's capability catalog (compat/rocm.yaml) -- what MAD's launchers use when
+    nothing passes GPUS_PER_NODE. None without the catalog."""
+    import yaml as _yaml
+
+    catalog = Path(script_path).resolve().parent.parent.parent / "compat" / "rocm.yaml"
+    if not catalog.is_file():
+        return None
+    with open(catalog) as f:
+        c = _yaml.safe_load(f) or {}
+    name = env.get("MAD_PLATFORM") or c.get("default_platform")
+    p = (c.get("platforms") or {}).get(name) or {}
+    return int(p["gpus_per_node"]) if p.get("gpus_per_node") else None
