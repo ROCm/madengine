@@ -69,17 +69,29 @@ def _source_lines(item: dict, arch: str) -> typing.List[str]:
     entry = item["entry"]
     source = entry["source"]
     path = source.get("path") or f"/opt/mad/src/{item['name']}"
-    lines = [
-        f"rm -rf {path}",
-        f"git clone {shlex.quote(source['repo'])} {path}",
-        f"git -C {path} checkout --detach {shlex.quote(str(source['commit']))}",
-    ]
+    commit = shlex.quote(str(source["commit"]))
+    if source.get("sparse"):
+        # One part of a large repository: no blobs until checkout, only these directories.
+        cones = " ".join(shlex.quote(d) for d in source["sparse"])
+        lines = [
+            f"rm -rf {path}",
+            f"git clone --no-checkout --filter=blob:none {shlex.quote(source['repo'])} {path}",
+            f"git -C {path} sparse-checkout set --cone {cones}",
+            f"git -C {path} checkout --detach {commit}",
+        ]
+    else:
+        lines = [
+            f"rm -rf {path}",
+            f"git clone {shlex.quote(source['repo'])} {path}",
+            f"git -C {path} checkout --detach {commit}",
+        ]
     for pick in source.get("cherry_pick") or []:
         lines.append(
             f"git -C {path} -c user.name=madengine -c user.email=madengine@localhost"
             f" cherry-pick {shlex.quote(pick)}"
         )
-    lines.append(f"git -C {path} submodule update --init --recursive")
+    if source.get("submodules", not source.get("sparse")):
+        lines.append(f"git -C {path} submodule update --init --recursive")
     for patch in source.get("patches") or []:
         dest = f"{PATCH_DIR}/{patch['file']}"
         lines += [
@@ -151,19 +163,22 @@ def generate(
                 "ENV " + " ".join(f"{k}={json.dumps(fill(str(v), plan['gpu_arch']))}"
                                   for k, v in plan["env"].items())]
 
-    last_wheel = max((n for n, i in enumerate(items) if not i["entry"].get("source")),
+    last_wheel = max((n for n, i in enumerate(items)
+                      if not (i["entry"].get("source") or i["entry"].get("run"))),
                      default=-1)
     pins: typing.List[str] = []
     for n, item in enumerate(items):
         entry = item["entry"]
         origin = entry.get("built_by") or entry.get("index") or (
-            "source" if entry.get("source") else "url")
+            "source" if entry.get("source") else "run" if entry.get("run") else "url")
         notes = [item["why"]] + ([] if item["authorized"] else ["NOT AUTHORIZED in compat"])
         out += ["", f"# {item['name']} {item['key']} [{origin}] ({'; '.join(notes)})"]
         if entry.get("source"):
             for patch in entry["source"].get("patches") or []:   # from the build context's patches/
                 out.append(f"COPY patches/{patch['file']} {PATCH_DIR}/{patch['file']}")
             out.append(_run(_source_lines(item, plan["gpu_arch"])))
+        elif entry.get("run"):
+            out.append(_run([fill(s, plan["gpu_arch"]) for s in entry["run"]]))
         else:
             lines, pin = _wheel_lines(item, plan)
             out.append(_run(lines))

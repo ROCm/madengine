@@ -624,7 +624,11 @@ components:
         gfx942: {weights: [bf16, fp8_e4m3fnuz, int4_g32], convert: {mxfp4: int4_g32}}
 ```
 
-The digest is checked in the image before the patch is applied. A build entry
+The digest is checked in the image before the patch is applied. A source may
+check out only part of a large repository (`sparse: [projects/rocshmem]`, which
+also skips submodules unless `submodules: true`). A build that is neither a wheel
+nor a repository (a vendor wheel with its own checks, a tarball) is a `run` entry:
+a list of shell steps, run in order like a source build's steps. A build entry
 may also carry `capabilities` (formats it runs or converts per GPU) and a
 `fork_commit` (the fork commit the patches reproduce); madengine does not read
 them, MAD's recipe check does.

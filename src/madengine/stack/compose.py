@@ -45,10 +45,10 @@ from packaging.version import InvalidVersion, Version
 from madengine.stack import wheels
 
 ROCM = "rocm"
-_ENTRY_KEYS = {"url", "requirement", "index", "source", "requires", "exclude",
+_ENTRY_KEYS = {"url", "requirement", "index", "source", "run", "requires", "exclude",
                "env", "system_packages", "gpu_arch", "python", "built_by",
                "sha256", "note", "version", "capabilities", "fork_commit"}
-_SOURCE_KEYS = {"repo", "commit", "cherry_pick", "steps", "path", "patches"}
+_SOURCE_KEYS = {"repo", "commit", "cherry_pick", "steps", "path", "patches", "sparse", "submodules"}
 _PATCH_KEYS = {"file", "sha256", "upstream"}
 
 
@@ -93,9 +93,12 @@ def _check_entry(name: str, key: str, entry: dict) -> None:
     unknown = set(entry) - _ENTRY_KEYS
     if unknown:
         raise ComposeError(f"{where}: unknown key(s) {', '.join(sorted(unknown))}")
-    kinds = [k for k in ("url", "requirement", "source") if entry.get(k)]
+    kinds = [k for k in ("url", "requirement", "source", "run") if entry.get(k)]
     if len(kinds) != 1:
-        raise ComposeError(f"{where}: needs exactly one of url, requirement, source")
+        raise ComposeError(f"{where}: needs exactly one of url, requirement, source, run")
+    if entry.get("run") is not None and not (isinstance(entry["run"], list)
+                                             and all(isinstance(s, str) for s in entry["run"])):
+        raise ComposeError(f"{where}: run is a list of shell steps")
     if entry.get("source"):
         source = entry["source"]
         if not (source.get("repo") and source.get("commit")):

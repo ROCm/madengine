@@ -448,3 +448,16 @@ class TestSourceBuildsForPinnedStacks:
         assert [i["name"] for i in p942["items"]] == ["mori"] and p942["base"] == "b942"
         assert p950["items"] == [] and p950["base"] == "b"
         assert 'ARCH="gfx950"' in dockerfile.generate(p950, "w")
+
+    def test_a_run_build_and_a_sparse_source(self):
+        m = {"components": {
+            "gtest": {"1.14@di": {"run": ["wget -q -O /tmp/g.tgz https://x/g.tgz", "make -C /tmp/g"]}},
+            "rocshmem": {"9c43b232@di": {"source": {"repo": "https://x/rocm-systems.git", "commit": "9c43b232",
+                                                     "sparse": ["projects/rocshmem"], "steps": ["build {gpu_arch}"]}}}}}
+        plan = compose.compose({"base": "b", "components": {"gtest": "1.14@di", "rocshmem": "9c43b232@di"}}, m, "gfx942")
+        text = dockerfile.generate(plan, "w")
+        assert "wget -q -O /tmp/g.tgz" in text and "dependencies of the components above" not in text
+        assert "--no-checkout --filter=blob:none" in text and "sparse-checkout set --cone projects/rocshmem" in text
+        assert "submodule update" not in text.split("# rocshmem")[1] and "build gfx942" in text
+        with pytest.raises(compose.ComposeError, match="exactly one"):
+            compose.compose({"components": {"x": "1@o"}}, {"components": {"x": {"1@o": {"run": ["a"], "url": "u"}}}})
