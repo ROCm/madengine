@@ -1,0 +1,251 @@
+"""Generate the Dockerfile for a composed image_spec.
+
+Every workload becomes the same shape of image, whichever team's builds it uses:
+
+    base image -> setup -> system packages -> python -> env
+    -> one layer per component, in dependency order
+       (after the last wheel: dependency completion + pip check)
+    -> /opt/mad/build_info.json
+
+One layer per component means changing one selection (a new vllm build)
+rebuilds from that layer on, and earlier layers (ROCm, torch) come from cache.
+"""
+
+import json
+import os
+import shlex
+import typing
+
+from madengine.execution.image_spec import BUILD_INFO_PATH, PROBE_SCRIPT
+from madengine.stack.compose import fill
+
+BUILD_DIR = os.path.join(".madengine", "build")
+PATCH_DIR = "/opt/mad/patches"
+BASE_PACKAGES = ["ca-certificates", "curl", "git", "jq", "wget", "libatomic1", "libgomp1"]
+
+
+def _run(lines: typing.List[str]) -> str:
+    # pipefail: a failed download piped into sh must fail the step, not run nothing.
+    return "RUN set -eo pipefail; \\\n    " + "; \\\n    ".join(lines)
+
+
+def _probe_command() -> str:
+    # Inline, not COPY: the build context is ./docker, which does not hold
+    # anything madengine generates. json.dumps gives a one-line Python literal.
+    return shlex.quote(f"exec({json.dumps(PROBE_SCRIPT)})")
+
+
+def _pip(args: typing.List[str]) -> str:
+    return "pip install --no-cache-dir " + " ".join(args)
+
+
+def _wheel_lines(item: dict, plan: dict) -> typing.Tuple[typing.List[str], str]:
+    """RUN lines for one wheel/requirement component and its completion pin."""
+    entry, arch = item["entry"], plan["gpu_arch"]
+    if entry.get("url"):
+        url = fill(entry["url"], arch)
+        if entry.get("sha256"):
+            fname = "/tmp/" + url.rsplit("/", 1)[-1]
+            lines = [
+                f"wget -q -O {shlex.quote(fname)} {shlex.quote(url)}",
+                f"echo {shlex.quote(entry['sha256'] + '  ' + fname)} | sha256sum -c -",
+                _pip(["--no-deps", shlex.quote(fname)]),
+                f"rm -f {shlex.quote(fname)}",
+            ]
+        else:
+            lines = [_pip(["--no-deps", shlex.quote(url)])]
+        # Pinned by name==version in the completion layer, so pip treats the
+        # installed build as satisfied instead of downloading it again.
+        return lines, shlex.quote(f"{item['name']}=={item['version']}")
+    requirement = fill(entry["requirement"], arch)
+    index = plan["indexes"][entry["index"]]
+    return (
+        [_pip(["--pre", "--index-url", shlex.quote(index), shlex.quote(requirement)])],
+        shlex.quote(requirement),
+    )
+
+
+def _source_lines(item: dict, arch: str) -> typing.List[str]:
+    entry = item["entry"]
+    source = entry["source"]
+    path = source.get("path") or f"/opt/mad/src/{item['name']}"
+    commit = shlex.quote(str(source["commit"]))
+    if source.get("sparse"):
+        # One part of a large repository: no blobs until checkout, only these directories.
+        cones = " ".join(shlex.quote(d) for d in source["sparse"])
+        lines = [
+            f"rm -rf {path}",
+            f"git clone --no-checkout --filter=blob:none {shlex.quote(source['repo'])} {path}",
+            f"git -C {path} sparse-checkout set --cone {cones}",
+            f"git -C {path} checkout --detach {commit}",
+        ]
+    else:
+        lines = [
+            f"rm -rf {path}",
+            f"git clone {shlex.quote(source['repo'])} {path}",
+            f"git -C {path} checkout --detach {commit}",
+        ]
+    for pick in source.get("cherry_pick") or []:
+        lines.append(
+            f"git -C {path} -c user.name=madengine -c user.email=madengine@localhost"
+            f" cherry-pick {shlex.quote(pick)}"
+        )
+    if source.get("submodules", not source.get("sparse")):
+        lines.append(f"git -C {path} submodule update --init --recursive")
+    for patch in source.get("patches") or []:
+        dest = f"{PATCH_DIR}/{patch['file']}"
+        lines += [
+            f"echo {shlex.quote(patch['sha256'] + '  ' + dest)} | sha256sum -c -",
+            f"git -C {path} apply --binary {shlex.quote(dest)}",
+        ]
+    lines.append(f"cd {path}")
+    lines += [fill(step, arch) for step in source.get("steps") or []]
+    return lines
+
+
+def generate(
+    plan: dict,
+    name: str,
+    vendor: str = "AMD",
+    completion: typing.Optional[typing.List[str]] = None,
+) -> str:
+    """Dockerfile text for a composed plan.
+
+    *completion* is the explicit dependency list from
+    ``compose.completion_requirements``; it is required when the plan excludes
+    a dependency and replaces letting pip resolve the wheels' own.
+    """
+    if plan.get("exclude") and completion is None:
+        raise ValueError("a plan with excludes needs its completion requirements")
+    items = plan["items"]
+    packages = BASE_PACKAGES + list(plan.get("system_packages") or [])
+    for item in items:
+        packages += item["entry"].get("system_packages") or []
+    packages = list(dict.fromkeys(packages))
+
+    out = [
+        f"# CONTEXT {{'gpu_vendor': '{vendor}', 'guest_os': 'UBUNTU'}}",
+        f"# Generated by madengine from the image_spec of {name} for"
+        f" {plan['gpu_arch']}. Do not edit; change the image_spec instead.",
+        f"ARG BASE_DOCKER={plan['base']}",
+        "FROM $BASE_DOCKER",
+        'ARG MAD_BUILD_PLAN=""',
+        'LABEL org.amd.mad.build_plan="${MAD_BUILD_PLAN}"',
+        "ENV DEBIAN_FRONTEND=noninteractive PIP_BREAK_SYSTEM_PACKAGES=1",
+        'SHELL ["/bin/bash", "-c"]',
+    ]
+    if plan.get("setup"):
+        out += ["", "# setup", _run(list(plan["setup"]))]
+    out += [
+        "",
+        "# system packages (apt lists are kept: some source builds run apt themselves)",
+        _run(["apt-get update -y",
+              "apt-get install -y --no-install-recommends " + " ".join(packages)]),
+    ]
+    if plan.get("python"):
+        # A spec that names a python gets its own venv (uv fetches any version);
+        # one without uses the base image's python.
+        py = shlex.quote(str(plan["python"]))
+        out += [
+            "",
+            f"# python {plan['python']}",
+            _run([
+                "curl -LsSf https://astral.sh/uv/install.sh"
+                " | env UV_INSTALL_DIR=/usr/local/bin sh",
+                f"UV_NATIVE_TLS=1 uv venv --seed --python {py} /opt/mad/venv",
+            ]),
+            'ENV PATH="/opt/mad/venv/bin:${PATH}" VIRTUAL_ENV=/opt/mad/venv',
+        ]
+    for c in plan.get("copy") or []:
+        out += ["", f"COPY {c['from']} {c['to']}"]
+    if plan.get("env"):
+        out += ["", "# environment",
+                "ENV " + " ".join(f"{k}={json.dumps(fill(str(v), plan['gpu_arch']))}"
+                                  for k, v in plan["env"].items())]
+
+    last_wheel = max((n for n, i in enumerate(items)
+                      if not (i["entry"].get("source") or i["entry"].get("run"))),
+                     default=-1)
+    pins: typing.List[str] = []
+    for n, item in enumerate(items):
+        entry = item["entry"]
+        origin = entry.get("built_by") or entry.get("index") or (
+            "source" if entry.get("source") else "run" if entry.get("run") else "url")
+        notes = [item["why"]] + ([] if item["authorized"] else ["NOT AUTHORIZED in compat"])
+        out += ["", f"# {item['name']} {item['key']} [{origin}] ({'; '.join(notes)})"]
+        if entry.get("source"):
+            for patch in entry["source"].get("patches") or []:   # from the build context's patches/
+                out.append(f"COPY patches/{patch['file']} {PATCH_DIR}/{patch['file']}")
+            out.append(_run(_source_lines(item, plan["gpu_arch"])))
+        elif entry.get("run"):
+            out.append(_run([fill(s, plan["gpu_arch"]) for s in entry["run"]]))
+        else:
+            lines, pin = _wheel_lines(item, plan)
+            out.append(_run(lines))
+            pins.append(pin)
+        if n == last_wheel:
+            out += _completion(plan, pins, completion)
+
+    if plan.get("finish"):
+        out += ["", "# finish", _run([fill(s, plan["gpu_arch"]) for s in plan["finish"]])]
+    out += [
+        "",
+        "# record the installed stack for madengine (build_manifest image_info)",
+        _run(["mkdir -p " + os.path.dirname(BUILD_INFO_PATH),
+              f"python3 -c {_probe_command()} > {BUILD_INFO_PATH}"]),
+        "WORKDIR /workspace",
+        'ENTRYPOINT [""]',
+        "",
+    ]
+    return "\n".join(out)
+
+
+def _completion(plan: dict, pins: typing.List[str],
+                completion: typing.Optional[typing.List[str]]) -> typing.List[str]:
+    """Install the remaining dependencies of the wheels, then pip check.
+
+    A failing pip check fails the layer, so an inconsistent stack is never
+    reported as a built image.
+
+    Wheels went in with --no-deps so each layer is exactly one component. This
+    adds what they still need from PyPI and the matrix's indexes while every
+    selected build stays pinned. With excludes, the dependency list is explicit
+    and the url wheels stay out of the resolution.
+    """
+    # Only the indexes this plan installs from: offering every index in the
+    # matrix let pip take e.g. a nightly torchvision built for another ROCm.
+    used = dict.fromkeys(i["entry"]["index"] for i in plan["items"]
+                         if i["entry"].get("index"))
+    extra = []
+    for name in used:
+        extra += ["--extra-index-url", shlex.quote(plan["indexes"][name])]
+    out = []
+    if plan.get("exclude"):
+        pinned = [shlex.quote(fill(i["entry"]["requirement"], plan["gpu_arch"]))
+                  for i in plan["items"] if i["entry"].get("requirement")]
+        pins = pinned + [shlex.quote(r) for r in completion or []]
+        reasons = "; ".join(f"{e['name']} ({e['reason']})" for e in plan["exclude"])
+        out += ["", f"# excluded: {reasons}"]
+    out += [
+        "",
+        "# dependencies of the components above",
+        _run([_pip(["--pre"] + extra + pins), "pip check"]),
+    ]
+    return out
+
+
+def write(plan: dict, name: str, digest: str, vendor: str = "AMD",
+          root: str = ".", completion: typing.Optional[typing.List[str]] = None) -> str:
+    """Write the generated Dockerfile and return its madengine prefix.
+
+    The file name carries the plan digest, and follows the
+    <prefix>.ubuntu.<vendor>.Dockerfile convention so the usual CONTEXT
+    filtering and image naming apply.
+    """
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+    prefix = os.path.join(BUILD_DIR, f"spec-{safe}-{digest}")
+    path = os.path.join(root, f"{prefix}.ubuntu.{vendor.lower()}.Dockerfile")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", newline="\n") as f:
+        f.write(generate(plan, name, vendor, completion))
+    return prefix.replace(os.sep, "/")
