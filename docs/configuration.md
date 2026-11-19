@@ -593,6 +593,38 @@ relative order, list components in `order` (for example
 | `base` | Base image (default: the matrix's `bare_os_base`) |
 | `gpu_arch` | Target, default `MAD_SYSTEM_GPU_ARCHITECTURE`; selects TheRock `device-<gfx>` extras (`device-all` when unset) |
 | `env`, `setup`, `system_packages` | Workload environment, shell run before apt, extra apt packages |
+| `copy` | Files from the build context (`docker/`) put into the image before the components: `[{from: di/check.py, to: /opt/mad/check.py}]` |
+| `finish` | Shell run after every component (checks, cleanup), before the stack is recorded |
+
+`base` may also be a map, one image per GPU architecture (for example a digest
+each): `base: {gfx942: rocm/x@sha256:..., gfx950: rocm/y@sha256:...}`.
+
+**Pinned source stacks.** A `source` build may carry `patches`: changes that
+are not upstream yet, as files under `docker/patches/` with their digest,
+applied after the checkout (and cherry-picks and submodules):
+
+```yaml
+components:
+  vllm:
+    "0.11+kimi-k3@di":
+      source:
+        repo: https://github.com/vllm-project/vllm.git
+        commit: 9a7ae4b80866a322678ece31ca2854d9a174ab8d
+        patches:
+          - {file: vllm/kimi-k3.patch, sha256: 182bb436..., upstream: not yet proposed}
+        steps: ["pip install --no-deps --no-build-isolation -v ."]
+      capabilities:          # what this build runs per GPU (read by MAD's recipe check)
+        gfx942: {weights: [bf16, fp8_e4m3fnuz, int4_g32], convert: {mxfp4: int4_g32}}
+```
+
+The digest is checked in the image before the patch is applied. A build entry
+may also carry `capabilities` (formats it runs or converts per GPU) and a
+`fork_commit` (the fork commit the patches reproduce); madengine does not read
+them, MAD's recipe check does.
+
+**Named specs.** `compat/images/<name>.yaml` holds specs shared by several
+workloads; a card reaches one with `${images.<name>}`, for example
+`"image_spec": {"extends": "${images.vllm-kimi-k3}", "gpu_arch": "gfx950"}`.
 
 **Precedence.** Generated or backend build args are the lowest layer: the
 card's `docker_build_arg`, then `--additional-context` `docker_build_arg`,

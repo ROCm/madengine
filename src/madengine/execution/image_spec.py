@@ -40,8 +40,9 @@ BUILD_INFO_PATH = "/opt/mad/build_info.json"
 
 _SPEC_KEYS = {
     "rocm", "python", "components", "order", "base", "gpu_arch", "env", "setup",
-    "system_packages",
+    "system_packages", "copy", "finish",
 }
+IMAGES_DIR = os.path.join("compat", "images")   # named specs: ${images.<name>}
 
 # Reports the software stack inside an image as JSON. The backend Dockerfiles
 # run the same logic at build time and write BUILD_INFO_PATH; this copy is the
@@ -161,6 +162,10 @@ def _card_spec(model_info: typing.Dict, root: str) -> typing.Optional[dict]:
         nodes[SPEC_KEY] = OmegaConf.to_container(OmegaConf.load(spec_path))
     if os.path.exists(os.path.join(root, MATRIX_FILE)):
         nodes["compat"] = matrix_node(root)
+    images_dir = os.path.join(root, IMAGES_DIR)
+    if os.path.isdir(images_dir):
+        nodes["images"] = {f[:-5]: OmegaConf.to_container(OmegaConf.load(os.path.join(images_dir, f)))
+                           for f in sorted(os.listdir(images_dir)) if f.endswith(".yaml")}
     try:
         resolved = OmegaConf.to_container(OmegaConf.create(nodes), resolve=True)["card"]
     except OmegaConfBaseException as e:

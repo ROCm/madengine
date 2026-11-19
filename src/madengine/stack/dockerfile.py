@@ -20,6 +20,7 @@ from madengine.execution.image_spec import BUILD_INFO_PATH, PROBE_SCRIPT
 from madengine.stack.compose import fill
 
 BUILD_DIR = os.path.join(".madengine", "build")
+PATCH_DIR = "/opt/mad/patches"
 BASE_PACKAGES = ["ca-certificates", "curl", "git", "jq", "wget", "libatomic1", "libgomp1"]
 
 
@@ -79,6 +80,12 @@ def _source_lines(item: dict, arch: str) -> typing.List[str]:
             f" cherry-pick {shlex.quote(pick)}"
         )
     lines.append(f"git -C {path} submodule update --init --recursive")
+    for patch in source.get("patches") or []:
+        dest = f"{PATCH_DIR}/{patch['file']}"
+        lines += [
+            f"echo {shlex.quote(patch['sha256'] + '  ' + dest)} | sha256sum -c -",
+            f"git -C {path} apply --binary {shlex.quote(dest)}",
+        ]
     lines.append(f"cd {path}")
     lines += [fill(step, arch) for step in source.get("steps") or []]
     return lines
@@ -137,6 +144,8 @@ def generate(
             ]),
             'ENV PATH="/opt/mad/venv/bin:${PATH}" VIRTUAL_ENV=/opt/mad/venv',
         ]
+    for c in plan.get("copy") or []:
+        out += ["", f"COPY {c['from']} {c['to']}"]
     if plan.get("env"):
         out += ["", "# environment",
                 "ENV " + " ".join(f"{k}={json.dumps(str(v))}" for k, v in plan["env"].items())]
@@ -151,6 +160,8 @@ def generate(
         notes = [item["why"]] + ([] if item["authorized"] else ["NOT AUTHORIZED in compat"])
         out += ["", f"# {item['name']} {item['key']} [{origin}] ({'; '.join(notes)})"]
         if entry.get("source"):
+            for patch in entry["source"].get("patches") or []:   # from the build context's patches/
+                out.append(f"COPY patches/{patch['file']} {PATCH_DIR}/{patch['file']}")
             out.append(_run(_source_lines(item, plan["gpu_arch"])))
         else:
             lines, pin = _wheel_lines(item, plan)
@@ -159,6 +170,8 @@ def generate(
         if n == last_wheel:
             out += _completion(plan, pins, completion)
 
+    if plan.get("finish"):
+        out += ["", "# finish", _run([fill(s, plan["gpu_arch"]) for s in plan["finish"]])]
     out += [
         "",
         "# record the installed stack for madengine (build_manifest image_info)",

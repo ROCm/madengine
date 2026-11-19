@@ -400,3 +400,42 @@ class TestInfer:
         spec, _ = infer.infer(self.IMAGE, self.BASE, "ubuntu:24.04", MATRIX)
         names = [i["name"] for i in compose.compose(spec, MATRIX)["items"]]
         assert names == ["rocm", "torch", "amd-aiter", "vllm"]
+
+
+class TestSourceBuildsForPinnedStacks:
+    """What a hand-written stack Dockerfile carried, as data: patches, a base per GPU, files, finish."""
+
+    PATCHED = {"components": {"vllm": {"0+kimi@di": {
+        "source": {"repo": "https://x/vllm.git", "commit": "9a7ae4b8",
+                   "patches": [{"file": "vllm/kimi-k3.patch", "sha256": "ab" * 32, "upstream": "n/a"}],
+                   "steps": ["pip install ."]},
+        "capabilities": {"gfx942": {"weights": ["bf16"]}}}}}}
+
+    def test_a_patch_is_copied_checked_and_applied_after_checkout(self):
+        plan = compose.compose({"base": "b", "components": {"vllm": "0+kimi@di"}}, self.PATCHED, "gfx942")
+        text = dockerfile.generate(plan, "w")
+        assert "COPY patches/vllm/kimi-k3.patch /opt/mad/patches/vllm/kimi-k3.patch" in text
+        check = text.index(f"echo '{'ab' * 32}  /opt/mad/patches/vllm/kimi-k3.patch' | sha256sum -c -")
+        assert text.index("checkout --detach 9a7ae4b8") < check < text.index("apply --binary") < text.index("pip install .")
+
+    def test_patches_must_be_under_docker_patches_with_a_digest(self):
+        for bad in ({"file": "x.patch"}, {"file": "../x.patch", "sha256": "a"}, {"file": "/x", "sha256": "a"}):
+            m = {"components": {"c": {"1@o": {"source": {"repo": "r", "commit": "c", "patches": [bad]}}}}}
+            with pytest.raises(compose.ComposeError):
+                compose.compose({"components": {"c": "1@o"}}, m)
+
+    def test_a_base_per_gpu(self):
+        spec = {"base": {"gfx942": "img@sha256:a", "gfx950": "img@sha256:b"}, "components": {}}
+        assert compose.compose(spec, MATRIX, "gfx950")["base"] == "img@sha256:b"
+        with pytest.raises(compose.ComposeError, match="not gfx90a"):
+            compose.compose(spec, MATRIX, "gfx90a")
+
+    def test_files_and_finish_steps(self):
+        spec = {"base": "b", "components": {},
+                "copy": [{"from": "di/check.py", "to": "/opt/mad/check.py"}],
+                "finish": ["python3 /opt/mad/check.py {gpu_arch}"]}
+        text = dockerfile.generate(compose.compose(spec, MATRIX, "gfx942"), "w")
+        assert "COPY di/check.py /opt/mad/check.py" in text
+        assert text.index("python3 /opt/mad/check.py gfx942") < text.index("record the installed stack")
+        with pytest.raises(compose.ComposeError):
+            compose.compose({"copy": [{"from": "../etc/passwd", "to": "/x"}]}, MATRIX)

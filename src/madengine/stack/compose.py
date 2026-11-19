@@ -35,6 +35,7 @@ build satisfies, or a cycle, fails before any build. A spec may also give a
 full entry instead of a key; that build is not authorized and is marked so.
 """
 
+import os
 import typing
 
 from packaging.requirements import InvalidRequirement, Requirement
@@ -46,8 +47,9 @@ from madengine.stack import wheels
 ROCM = "rocm"
 _ENTRY_KEYS = {"url", "requirement", "index", "source", "requires", "exclude",
                "env", "system_packages", "gpu_arch", "python", "built_by",
-               "sha256", "note", "version"}
-_SOURCE_KEYS = {"repo", "commit", "cherry_pick", "steps", "path"}
+               "sha256", "note", "version", "capabilities", "fork_commit"}
+_SOURCE_KEYS = {"repo", "commit", "cherry_pick", "steps", "path", "patches"}
+_PATCH_KEYS = {"file", "sha256", "upstream"}
 
 
 class ComposeError(ValueError):
@@ -101,6 +103,14 @@ def _check_entry(name: str, key: str, entry: dict) -> None:
         unknown = set(source) - _SOURCE_KEYS
         if unknown:
             raise ComposeError(f"{where}: unknown source key(s) {', '.join(sorted(unknown))}")
+        for patch in source.get("patches") or []:
+            if not isinstance(patch, dict) or not (patch.get("file") and patch.get("sha256")):
+                raise ComposeError(f"{where}: each patch needs a file (under docker/patches/) and its sha256")
+            unknown = set(patch) - _PATCH_KEYS
+            if unknown:
+                raise ComposeError(f"{where}: unknown patch key(s) {', '.join(sorted(unknown))}")
+            if os.path.isabs(patch["file"]) or ".." in patch["file"].split("/"):
+                raise ComposeError(f"{where}: patch file {patch['file']!r} must be a path under docker/patches/")
     for item in entry.get("exclude") or []:
         if not (item.get("name") and item.get("reason")):
             raise ComposeError(f"{where}: exclude needs a name and the reason")
@@ -248,7 +258,9 @@ def compose(
         env.update(i["entry"].get("env") or {})
     env.update(spec.get("env") or {})
     return {
-        "base": spec.get("base") or matrix.get("bare_os_base", "ubuntu:24.04"),
+        "base": _base(spec, matrix, arch),
+        "copy": _copies(spec),
+        "finish": list(spec.get("finish") or []),
         "python": python,
         "gpu_arch": arch,
         "indexes": dict(matrix.get("indexes") or {}),
@@ -258,6 +270,31 @@ def compose(
         "exclude": exclude,
         "items": items,
     }
+
+
+def _base(spec: dict, matrix: dict, arch: str) -> str:
+    """The spec's base image; a map gives one per GPU architecture (e.g. a digest each)."""
+    base = spec.get("base")
+    if isinstance(base, dict):
+        if arch not in base:
+            raise ComposeError(
+                f"the spec's base is given for {', '.join(base) or 'no'} architecture(s), "
+                f"not {arch}"
+            )
+        return str(base[arch])
+    return base or matrix.get("bare_os_base", "ubuntu:24.04")
+
+
+def _copies(spec: dict) -> typing.List[dict]:
+    """Files from the build context (./docker) put into the image before the components."""
+    out = []
+    for c in spec.get("copy") or []:
+        if not (isinstance(c, dict) and c.get("from") and c.get("to")):
+            raise ComposeError(f"copy entries need from (under docker/) and to, got {c!r}")
+        if os.path.isabs(c["from"]) or ".." in str(c["from"]).split("/"):
+            raise ComposeError(f"copy from {c['from']!r} must be a path under docker/")
+        out.append({"from": str(c["from"]), "to": str(c["to"])})
+    return out
 
 
 def _topological(

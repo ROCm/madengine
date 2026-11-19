@@ -249,3 +249,13 @@ class TestDockerBuilderHooks:
             assert bool(ran) == bool(expected)
             assert build_info.get("image_info") == expected
             assert "build_plan" not in build_info
+
+
+class TestNamedImages:
+    def test_a_card_extends_a_named_spec(self, tmp_path):
+        write_mad(tmp_path)
+        (tmp_path / "compat" / "images").mkdir()
+        (tmp_path / "compat" / "images" / "stack-a.yaml").write_text(yaml.safe_dump({"base": "b", "gpu_arch": "gfx942"}))
+        card = {"name": "w/m", "_fs_rel_path": "w",
+                "image_spec": {"extends": "${images.stack-a}", "gpu_arch": "gfx950"}}
+        assert image_spec.effective_image_spec(card, {}, str(tmp_path)) == {"base": "b", "gpu_arch": "gfx950"}
