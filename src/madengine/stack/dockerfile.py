@@ -148,7 +148,8 @@ def generate(
         out += ["", f"COPY {c['from']} {c['to']}"]
     if plan.get("env"):
         out += ["", "# environment",
-                "ENV " + " ".join(f"{k}={json.dumps(str(v))}" for k, v in plan["env"].items())]
+                "ENV " + " ".join(f"{k}={json.dumps(fill(str(v), plan['gpu_arch']))}"
+                                  for k, v in plan["env"].items())]
 
     last_wheel = max((n for n, i in enumerate(items) if not i["entry"].get("source")),
                      default=-1)

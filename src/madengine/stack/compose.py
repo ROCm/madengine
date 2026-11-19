@@ -150,6 +150,7 @@ def compose(
     ``rocm`` or ``required by <name>``).
     """
     arch = spec.get("gpu_arch") or gpu_arch or "all"
+    spec = _for_arch(spec, arch)
     catalog = matrix.get("components") or {}
     python = spec.get("python")
     if python is not None and not isinstance(python, str):
@@ -270,6 +271,25 @@ def compose(
         "exclude": exclude,
         "items": items,
     }
+
+
+def _for_arch(spec: dict, arch: str) -> dict:
+    """The spec with its ``variants.<arch>`` laid over it (mappings merged, a null removing a key)."""
+    variants = spec.get("variants") or {}
+    out = {k: v for k, v in spec.items() if k != "variants"}
+
+    def merge(base, over):
+        res = dict(base)
+        for k, v in over.items():
+            if v is None:
+                res.pop(k, None)
+            elif isinstance(v, dict) and isinstance(res.get(k), dict):
+                res[k] = merge(res[k], v)
+            else:
+                res[k] = v
+        return res
+
+    return merge(out, variants.get(arch) or {})
 
 
 def _base(spec: dict, matrix: dict, arch: str) -> str:

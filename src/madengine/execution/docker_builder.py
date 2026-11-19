@@ -98,6 +98,9 @@ class DockerBuilder:
         Returns:
             str: The context path.
         """
+        if image_spec.effective_image_spec(info, self.context.ctx):
+            # A generated Dockerfile copies from docker/ (patches, files): its context.
+            return "./docker"
         if "dockercontext" in info and info["dockercontext"] != "":
             return info["dockercontext"]
         dockerfile_hint = (info.get("dockerfile") or "").lower()

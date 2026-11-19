@@ -597,7 +597,14 @@ relative order, list components in `order` (for example
 | `finish` | Shell run after every component (checks, cleanup), before the stack is recorded |
 
 `base` may also be a map, one image per GPU architecture (for example a digest
-each): `base: {gfx942: rocm/x@sha256:..., gfx950: rocm/y@sha256:...}`.
+each): `base: {gfx942: rocm/x@sha256:..., gfx950: rocm/y@sha256:...}`. Anything
+else that differs per GPU goes under `variants.<gfx>`, laid over the spec for that
+architecture (mappings merged, `null` removing a key), e.g. a component only one
+GPU needs: `variants: {gfx942: {components: {mori: "158c7e83@sglang"}}}`.
+
+A card with an `image_spec` is built with the `./docker` context (what the
+generated Dockerfile copies from: `patches/`, `copy` files), whatever its
+`dockercontext` says for its hand-written Dockerfile.
 
 **Pinned source stacks.** A `source` build may carry `patches`: changes that
 are not upstream yet, as files under `docker/patches/` with their digest,

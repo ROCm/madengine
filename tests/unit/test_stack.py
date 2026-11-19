@@ -439,3 +439,12 @@ class TestSourceBuildsForPinnedStacks:
         assert text.index("python3 /opt/mad/check.py gfx942") < text.index("record the installed stack")
         with pytest.raises(compose.ComposeError):
             compose.compose({"copy": [{"from": "../etc/passwd", "to": "/x"}]}, MATRIX)
+
+    def test_a_spec_varies_by_gpu(self):
+        m = {"components": {"mori": {"1@o": {"source": {"repo": "r", "commit": "c"}}}}}
+        spec = {"base": "b", "components": {}, "env": {"ARCH": "{gpu_arch}"},
+                "variants": {"gfx942": {"components": {"mori": "1@o"}, "base": "b942"}}}
+        p942, p950 = compose.compose(spec, m, "gfx942"), compose.compose(spec, m, "gfx950")
+        assert [i["name"] for i in p942["items"]] == ["mori"] and p942["base"] == "b942"
+        assert p950["items"] == [] and p950["base"] == "b"
+        assert 'ARCH="gfx950"' in dockerfile.generate(p950, "w")

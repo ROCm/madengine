@@ -40,7 +40,7 @@ BUILD_INFO_PATH = "/opt/mad/build_info.json"
 
 _SPEC_KEYS = {
     "rocm", "python", "components", "order", "base", "gpu_arch", "env", "setup",
-    "system_packages", "copy", "finish",
+    "system_packages", "copy", "finish", "variants",
 }
 IMAGES_DIR = os.path.join("compat", "images")   # named specs: ${images.<name>}
 
