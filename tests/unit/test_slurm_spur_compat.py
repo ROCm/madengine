@@ -282,6 +282,12 @@ class TestBuildOnComputeBuildArgs:
         with pytest.raises(ConfigurationError, match="needs MAD_SYSTEM_GPU_ARCHITECTURE"):
             self._build_line(tmp_path, None, {"PINS": "vllm-kimi-k3"}, pins_tool=self.PINS_TOOL)
 
+    def test_a_build_arg_disagreeing_with_the_pin_set_is_refused_before_submitting(self, tmp_path):
+        from madengine.core.errors import ConfigurationError
+        with pytest.raises(ConfigurationError, match="BASE_IMAGE=other disagrees with pin set"):
+            self._build_line(tmp_path, {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx950", "BASE_IMAGE": "other"},
+                             {"PINS": "vllm-kimi-k3"}, pins_tool=self.PINS_TOOL)
+
 
 class TestBuildOnComputeImageNames:
     """A namespaced card ("dir/card") must give valid Docker references: tags allow no "/".
