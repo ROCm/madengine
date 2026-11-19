@@ -28,6 +28,7 @@ from .layered_config import resolve_for_model
 
 SOURCES_VAR = "MAD_ENV_SOURCES"
 PIN_SET_VAR = "MAD_PIN_SET"
+COMPONENTS_VAR = "MAD_IMAGE_COMPONENTS"
 
 
 class SubmitEnv:
@@ -97,6 +98,7 @@ def submit_env(
     additional_context: Dict[str, Any],
     scripts_dir: Optional[Path],
     distributed_config: Optional[Dict[str, Any]] = None,
+    image_build: Optional[Dict[str, Any]] = None,
 ) -> Tuple[SubmitEnv, List[str], List[str]]:
     """The card's submit layer: (env with sources, layered-config warnings, preset keys dropped).
 
@@ -117,7 +119,19 @@ def submit_env(
     pin_set = pin_set_of(model_info, additional_context)
     if pin_set:
         out.setdefault(PIN_SET_VAR, pin_set, "madengine")
+    components = image_components(image_build)
+    if components:
+        out.setdefault(COMPONENTS_VAR, components, "madengine")
     return out, warnings, dropped
+
+
+def image_components(image_build: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The builds an image_spec image holds, as MAD's recipe check reads them
+    (MAD_IMAGE_COMPONENTS: name=key,...), from its manifest entry (built_images.<image>.build_plan);
+    None for an image from a hand-written Dockerfile."""
+    resolved = ((image_build or {}).get("build_plan") or {}).get("resolved") or {}
+    comps = resolved.get("components") or {}
+    return ",".join(f"{n}={k}" for n, k in comps.items()) or None
 
 
 def pin_set_of(model_info: Dict[str, Any], additional_context: Dict[str, Any]) -> Optional[str]:
@@ -151,6 +165,54 @@ def recipe_precheck(env: Dict[str, str], script_path: Path, gpu_arch: Optional[s
     if p.returncode == 0:
         return None
     return (p.stderr or p.stdout).strip() or f"recipe check refused (exit {p.returncode})"
+
+
+MULTINODE_CATALOGS = ("vllm_dissag", "vllm_multinode", "sglang_disagg")
+EMIT_CARD_KEYS = ("name", "scripts", "tags", "dockerfile", "docker_build_arg", "image_spec")
+
+
+def emit_config(model_info: Dict[str, Any], out_dir: Path) -> Optional[Dict[str, str]]:
+    """The card's complete configuration as one workload file, written by the card checkout's
+    scripts/common/config/emit.py (MAD's own composer, which the launchers read back): its recipe,
+    connector env, topology, image and env, the run's context merged as madengine has it. Returns
+    {"path", "sha256"}, or None for a card that is not a multinode launcher's, or a checkout
+    without the tool. Shared by `madengine build --emit-config` and the pipeline's STANDALONE mode,
+    so both write the same file."""
+    import hashlib
+    import json as _json
+    import os
+    import subprocess
+    import sys
+    import tempfile
+
+    script = Path(model_info.get("scripts") or "")
+    catalog = script.parent.name
+    if catalog not in MULTINODE_CATALOGS:
+        return None
+    tool = script.resolve().parent.parent / "common" / "config" / "emit.py"
+    if not tool.is_file():
+        return None
+    # madengine names a directory's cards <dir>/<card>: the file is named for the card.
+    out = Path(out_dir) / catalog / f"{str(model_info['name']).rsplit('/', 1)[-1]}.yaml"
+    # The card's own fields and the run's image, however this build path recorded them, so
+    # every path (built, prebuilt, STANDALONE) writes the same file for the same card and image.
+    card = {k: model_info[k] for k in EMIT_CARD_KEYS if model_info.get(k) not in (None, "", {}, [])}
+    env = dict(model_info.get("env_vars") or {})
+    image = model_info.get("docker_image") or env.pop("DOCKER_IMAGE_NAME", None)
+    env.pop("DOCKER_IMAGE_NAME", None)
+    if image:
+        env["DOCKER_IMAGE_NAME"] = image          # last, wherever a path put it
+    card["env_vars"] = env
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        _json.dump(card, f, default=str)
+    try:
+        p = subprocess.run([sys.executable, str(tool), "--card-json", f.name, "--catalog", catalog,
+                            "-o", str(out)], capture_output=True, text=True, timeout=120)
+    finally:
+        os.unlink(f.name)
+    if p.returncode != 0:
+        raise RuntimeError(f"{model_info['name']}: emit.py failed: {(p.stderr or p.stdout).strip()}")
+    return {"path": str(out), "sha256": hashlib.sha256(out.read_bytes()).hexdigest()}
 
 
 def placement_directives(env: Dict[str, str], script_path: Path) -> List[str]:

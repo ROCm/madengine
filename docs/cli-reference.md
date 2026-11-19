@@ -107,6 +107,7 @@ madengine build [OPTIONS]
 | `--config` | | TEXT | `None` | YAML config file and/or Hydra overrides (repeatable). Mutually exclusive with `--additional-context` / `--additional-context-file`. See [Configuration — YAML config](configuration.md#yaml-configuration-config). |
 | `--clean-docker-cache` | | FLAG | `False` | Rebuild images without using cache |
 | `--manifest-output` | `-m` | TEXT | `build_manifest.json` | Output file for build manifest |
+| `--emit-config` | | TEXT | | Also write each multinode card's complete configuration as one workload file under this directory (`<catalog>/<card>.yaml`, by the MAD checkout's `scripts/common/config/emit.py`) and record it in the manifest (`built_models.<card>.emitted_config`: path, sha256). With `--use-image` nothing is built |
 | `--summary-output` | `-s` | TEXT | `None` | Output file for build summary JSON |
 | `--live-output` | `-l` | FLAG | `False` | Print output in real-time |
 | `--verbose` | `-v` | FLAG | `False` | Enable verbose logging |

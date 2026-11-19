@@ -142,6 +142,7 @@ class KubernetesSlurmMultiMixin:
             model_info, self.config.additional_context,
             Path(script).parent if script else None,
             self.config.additional_context.get("distributed") or {},
+            image_build=((getattr(self, "manifest", None) or {}).get("built_images") or {}).get(image),
         )
         for warning in warnings:
             self.console.print(f"[yellow]⚠ {warning}[/yellow]")

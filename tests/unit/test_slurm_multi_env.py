@@ -171,3 +171,68 @@ class TestK8sDomainAffinity:
         script = self._tool(tmp_path, "import sys\nprint('needs a Job per role', file=sys.stderr)\nsys.exit(1)\n")
         with pytest.raises(ValueError, match="Job per role"):
             k8s_domain_affinity({"MAD_TOPOLOGY": "s.json"}, script, "r")
+
+
+class TestEmitConfig:
+    """`madengine build --emit-config`: the card checkout's emit.py writes each card's file."""
+
+    def _checkout(self, tmp_path):
+        d = tmp_path / "scripts"
+        (d / "common" / "config").mkdir(parents=True)
+        (d / "vllm_dissag").mkdir()
+        # A stand-in for MAD's emit.py: writes the card it was given, as YAML-ish text.
+        (d / "common" / "config" / "emit.py").write_text(
+            "import json, sys\n"
+            "a = sys.argv\n"
+            "card = json.load(open(a[a.index('--card-json') + 1]))\n"
+            "out = a[a.index('-o') + 1]\n"
+            "import os; os.makedirs(os.path.dirname(out), exist_ok=True)\n"
+            "open(out, 'w').write('card: %s\\ncatalog: %s\\n' % (card['name'], a[a.index('--catalog') + 1]))\n")
+        (d / "vllm_dissag" / "run_xPyD_models.slurm").write_text("#!/bin/bash\n")
+        return d
+
+    def test_writes_the_file_and_its_digest(self, tmp_path):
+        from madengine.deployment.slurm_multi_env import emit_config
+        d = self._checkout(tmp_path)
+        got = emit_config({"name": "vllm_dissag/c1", "scripts": str(d / "vllm_dissag" / "run_xPyD_models.slurm")}, tmp_path / "out")
+        assert got["path"].endswith("out/vllm_dissag/c1.yaml")
+        assert open(got["path"]).read() == "card: vllm_dissag/c1\ncatalog: vllm_dissag\n"
+        assert len(got["sha256"]) == 64
+
+    def test_nothing_for_other_cards_or_without_the_tool(self, tmp_path):
+        from madengine.deployment.slurm_multi_env import emit_config
+        assert emit_config({"name": "x", "scripts": "scripts/dummy/run.sh"}, tmp_path) is None
+        bare = tmp_path / "bare" / "scripts" / "vllm_dissag" / "run.slurm"
+        bare.parent.mkdir(parents=True)
+        bare.write_text("")
+        assert emit_config({"name": "x", "scripts": str(bare)}, tmp_path) is None
+
+    def test_the_manifest_records_each_file(self, tmp_path):
+        import json
+        from madengine.cli.commands.build import write_emitted_configs
+        d = self._checkout(tmp_path)
+        m = tmp_path / "build_manifest.json"
+        m.write_text(json.dumps({"built_models": {
+            "c1": {"name": "c1", "scripts": str(d / "vllm_dissag" / "run_xPyD_models.slurm")},
+            "other": {"name": "other", "scripts": "scripts/dummy/run.sh"}}}))
+        assert write_emitted_configs(str(m), str(tmp_path / "cfg")) == 1
+        got = json.loads(m.read_text())["built_models"]
+        assert got["c1"]["emitted_config"]["path"].endswith("cfg/vllm_dissag/c1.yaml")
+        assert "emitted_config" not in got["other"]
+
+
+class TestImageComponents:
+    def test_an_image_spec_images_builds_reach_the_run(self):
+        from madengine.deployment.slurm_multi_env import submit_env
+        build = {"build_plan": {"resolved": {"components": {"mori": "fe12a11a@di", "vllm": "9a7ae4b8+cd0d2656@vllm-kimi-k3"}}}}
+        sub, _, _ = submit_env({"name": "c", "env_vars": {}}, {}, None, {}, image_build=build)
+        assert sub.env["MAD_IMAGE_COMPONENTS"] == "mori=fe12a11a@di,vllm=9a7ae4b8+cd0d2656@vllm-kimi-k3"
+        assert sub.sources["MAD_IMAGE_COMPONENTS"] == "madengine"
+
+    def test_none_for_a_hand_written_dockerfile_and_the_run_wins(self):
+        from madengine.deployment.slurm_multi_env import image_components, submit_env
+        assert image_components({"docker_image": "x"}) is None and image_components(None) is None
+        build = {"build_plan": {"resolved": {"components": {"vllm": "a@b"}}}}
+        sub, _, _ = submit_env({"name": "c", "env_vars": {}}, {"env_vars": {"MAD_IMAGE_COMPONENTS": "vllm=mine"}},
+                               None, {}, image_build=build)
+        assert sub.env["MAD_IMAGE_COMPONENTS"] == "vllm=mine"

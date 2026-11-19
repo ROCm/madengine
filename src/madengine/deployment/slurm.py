@@ -639,6 +639,7 @@ class SlurmDeployment(BaseDeployment):
             submit, layered_warnings, dropped = submit_env(
                 model_info, self.config.additional_context,
                 model_script_path.parent, self.distributed_config,
+                image_build=((self.manifest or {}).get("built_images") or {}).get(docker_image_name or ""),
             )
         except LayeredConfigError as exc:
             self.console.print(f"[red]✗ {exc}[/red]")

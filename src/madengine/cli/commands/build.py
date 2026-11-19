@@ -36,6 +36,26 @@ from ..validators import (
 )
 
 
+def write_emitted_configs(manifest_file: str, out_dir: str) -> int:
+    """Each built multinode card's configuration file (slurm_multi_env.emit_config), recorded in
+    the manifest. Returns how many were written."""
+    from pathlib import Path
+
+    from madengine.deployment.slurm_multi_env import emit_config
+
+    with open(manifest_file) as f:
+        manifest = json.load(f)
+    n = 0
+    for model in (manifest.get("built_models") or {}).values():
+        got = emit_config(model, Path(out_dir))
+        if got:
+            model["emitted_config"] = got
+            n += 1
+    with open(manifest_file, "w") as f:
+        json.dump(manifest, f, indent=2)
+    return n
+
+
 def build(
     tags: Annotated[
         List[str],
@@ -112,6 +132,15 @@ def build(
         Optional[str],
         typer.Option(
             "--summary-output", "-s", help="Output file for build summary JSON"
+        ),
+    ] = None,
+    emit_config: Annotated[
+        Optional[str],
+        typer.Option(
+            "--emit-config",
+            help="Also write each multinode card's complete configuration as one workload file "
+                 "(MAD's scripts/common/config/emit.py) under this directory, and record it in the "
+                 "manifest (built_models.<card>.emitted_config). With --use-image nothing is built.",
         ),
     ] = None,
     live_output: Annotated[
@@ -313,6 +342,10 @@ def build(
             with open(manifest_output, "r") as f:
                 manifest = json.load(f)
                 build_summary = manifest.get("summary", {})
+
+            if emit_config:
+                emitted = write_emitted_configs(manifest_output, emit_config)
+                console.print(f"[cyan]Configurations written for {emitted} card(s) under {emit_config}[/cyan]")
 
             progress.update(task, description="Build completed!")
 
