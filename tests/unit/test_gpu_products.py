@@ -9,7 +9,7 @@ def test_current_and_next_generation_products():
     assert arch_of_product("MI350X") == "gfx950"
     assert arch_of_product("MI325X") == "gfx942"
     assert arch_of_product("mi-300x") == "gfx942"
-    assert arch_of_product("MI455X") is None          # target not yet published: no guess
+    assert arch_of_product("MI455X") is None          # no target in the table: no guess
     assert arch_of_product("Radeon") is None
 
 

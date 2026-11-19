@@ -8,7 +8,7 @@ from typing import Optional
 
 # Longest prefix first: "MI300X" before "MI300".
 PRODUCT_ARCH = (
-    ("MI455", None),        # CDNA 5: compiler target not yet published
+    ("MI455", None),        # CDNA 5: no compiler target in this table yet
     ("MI355", "gfx950"),
     ("MI350", "gfx950"),
     ("MI325", "gfx942"),

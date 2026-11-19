@@ -70,7 +70,7 @@ def normalize_architecture_name(arch: str) -> typing.Optional[str]:
     if arch.startswith("gfx"):
         return arch
     if known_product(arch):
-        # A product whose compiler target is not yet published stays as named.
+        # A product with no compiler target in the table stays as named.
         return arch_of_product(arch) or arch
     if arch.startswith("mi"):
         return arch
