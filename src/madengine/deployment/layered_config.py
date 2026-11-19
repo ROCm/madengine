@@ -46,7 +46,7 @@ from madengine.deployment.config_loader import ConfigLoader
 # acc.yaml next to --config.
 DEFAULT_FILENAME = "mad-config.yaml"
 
-SUPPORTED_VERSIONS = (1,)
+SUPPORTED_VERSIONS = (1, 2)
 
 
 class LayeredConfigError(ValueError):
@@ -139,7 +139,30 @@ def find_config(
 
 
 def load_config(path: Path) -> Dict[str, Any]:
-    """Parse and version-check a way-4 file."""
+    """Parse and version-check a way-4 file.
+
+    Version 2 adds inheritance, so a fleet of workloads is maintained as a few shared layers:
+
+        version: 2
+        defaults:                       # base files (relative to this one), merged in order,
+          - ../../common/workloads/serve/vllm-disagg-wide-ep.yaml   # then this file on top
+          - ../../common/workloads/bench/niah.yaml
+        model:
+          env: {MODEL_NAME: Kimi-K3, xP: ${...}}    # OmegaConf interpolation, ${oc.env:NAME,default}
+        benchmark:                      # a map by kind ("default": every kind), so a child
+          niah: {env: {NIAH_WORDS: ...}} # file overrides one benchmark, not the whole list
+
+    Bases may have defaults of their own; a cycle is refused. Mappings merge (OmegaConf), lists
+    and scalars are replaced. Interpolations resolve after the whole chain is merged.
+    """
+    data = _load_raw(path)
+    if data.get("version") == 2:
+        data = _compose_v2(path, data, ())
+    return data
+
+
+def _load_raw(path: Path) -> Dict[str, Any]:
+    """Parse and version-check one file, without its bases."""
     try:
         with open(path, "r") as handle:
             data = yaml.safe_load(handle)
@@ -162,6 +185,44 @@ def load_config(path: Path) -> Dict[str, Any]:
             f"(this madengine understands {list(SUPPORTED_VERSIONS)})"
         )
     return data
+
+
+def _compose_v2(path: Path, data: Dict[str, Any], seen: Tuple[Path, ...]) -> Dict[str, Any]:
+    """The file merged over its `defaults` chain, interpolations resolved (OmegaConf)."""
+    from omegaconf import OmegaConf
+    from omegaconf.errors import OmegaConfBaseException
+
+    merged = _merge_chain(Path(path).resolve(), data, seen)
+    try:
+        resolved = OmegaConf.to_container(OmegaConf.create(merged), resolve=True)
+    except OmegaConfBaseException as exc:
+        raise LayeredConfigError(f"{path}: {exc}") from exc
+    resolved.pop("defaults", None)
+    bench = resolved.get("benchmark")
+    if isinstance(bench, dict):     # a map by kind -> the list the resolver reads
+        resolved["benchmark"] = [dict(v or {}, **({} if k == "default" else {"kind": k}))
+                                 for k, v in bench.items()]
+    return resolved
+
+
+def _merge_chain(path: Path, data: Dict[str, Any], seen: Tuple[Path, ...]) -> Dict[str, Any]:
+    from omegaconf import OmegaConf
+
+    if path in seen:
+        raise LayeredConfigError(f"defaults cycle: {' -> '.join(str(p) for p in seen + (path,))}")
+    base = OmegaConf.create({})
+    for ref in data.get("defaults") or []:
+        if not isinstance(ref, str):
+            raise LayeredConfigError(f"{path}: defaults entries are file paths, got {ref!r}")
+        bpath = (path.parent / ref).resolve()
+        if not bpath.exists():
+            raise LayeredConfigError(f"{path}: default {ref!r} not found ({bpath})")
+        bdata = _load_raw(bpath)
+        if bdata.get("version") != 2:
+            raise LayeredConfigError(f"{bpath}: a base file must be version 2")
+        base = OmegaConf.merge(base, OmegaConf.create(_merge_chain(bpath, bdata, seen + (path,))))
+    own = {k: v for k, v in data.items() if k != "defaults"}
+    return OmegaConf.to_container(OmegaConf.merge(base, OmegaConf.create(own)), resolve=False)
 
 
 def resolve_serve_args(

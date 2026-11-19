@@ -156,6 +156,31 @@ benchmark:                  # decided by: whoever defines the measurement
       NIAH_WORDS: '10000,50000,100000,200000'
 ```
 
+### Version 2: inheritance (OmegaConf)
+
+A fleet of workloads is maintained as a few shared layers. A version 2 file lists base files in
+`defaults:` (paths relative to the file; bases may have defaults of their own; a cycle is refused).
+They merge in order with OmegaConf -- mappings merge, lists and scalars are replaced -- and the file
+itself goes on top; then `${...}` interpolations resolve over the whole result
+(`${model.env.TP_SIZE}`, `${oc.env:NAME,default}`). `benchmark:` may be a map by kind (`default`
+for every kind), so a child overrides one benchmark rather than the whole list.
+
+```yaml
+version: 2
+defaults:
+  - ../../../common/workloads/family/kimi-k3.yaml   # MoRI wide EP, local weights only
+  - ../../../common/workloads/bench/niah.yaml       # BENCHMARK_SCRIPT=niah, NIAH_WORDS
+model:
+  env: {MODEL_NAME: Kimi-K3-MXFP4, xP: "2", yD: "2"}
+benchmark:
+  niah: {env: {NIAH_WORDS: "10000,50000"}}          # overrides that one key of the base's niah
+```
+
+The precedence below is unchanged: the resolved file is the `model` / `benchmark` layers, and the
+card's env_vars and submit-time values still win over them. Version 1 files load exactly as before
+(no inheritance, no interpolation). MAD's workload library and its end-to-end examples use this:
+MAD `docs/e2e-examples.md`.
+
 ### What is no longer in this file
 
 Earlier versions carried a `site:` section. Hydra's `+profile` and `+env` groups
