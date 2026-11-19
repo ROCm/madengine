@@ -242,12 +242,14 @@ def placement_directives(env: Dict[str, str], script_path: Path) -> List[str]:
 
 def platform_gpus_per_node(env: Dict[str, str], script_path: Path) -> Optional[int]:
     """GPUs per node of the run's platform (MAD_PLATFORM, else the catalog's default_platform),
-    from the card checkout's capability catalog (compat/rocm.yaml) -- what MAD's launchers use when
-    nothing passes GPUS_PER_NODE. None without the catalog."""
+    from the card checkout's capability catalog -- compat/hardware.yaml (compat/rocm.yaml in a
+    checkout from before MAD split it) -- what MAD's launchers use when nothing passes
+    GPUS_PER_NODE. None without the catalog."""
     import yaml as _yaml
 
-    catalog = Path(script_path).resolve().parent.parent.parent / "compat" / "rocm.yaml"
-    if not catalog.is_file():
+    compat = Path(script_path).resolve().parent.parent.parent / "compat"
+    catalog = next((compat / f for f in ("hardware.yaml", "rocm.yaml") if (compat / f).is_file()), None)
+    if catalog is None:
         return None
     with open(catalog) as f:
         c = _yaml.safe_load(f) or {}

@@ -145,6 +145,10 @@ class TestPlatformGpus:
         script = tmp_path / "scripts" / "vllm_dissag" / "run.slurm"
         assert platform_gpus_per_node({}, script) == 8
         assert platform_gpus_per_node({"MAD_PLATFORM": "helios"}, script) == 4
+        # A checkout with the hardware split out of the matrix (compat/hardware.yaml) is read the same.
+        (script.parent.parent.parent / "compat" / "hardware.yaml").write_text(
+            "default_platform: h\nplatforms:\n  h: {gpus_per_node: 2}\n")
+        assert platform_gpus_per_node({}, script) == 2
         assert platform_gpus_per_node({}, tmp_path / "x" / "y" / "z" / "run.slurm") is None
 
 
