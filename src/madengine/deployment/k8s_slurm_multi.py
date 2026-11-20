@@ -126,7 +126,7 @@ def default_include_dirs(script_path: str) -> List[str]:
 class KubernetesSlurmMultiMixin:
     """Prepare and collect a slurm_multi card on Kubernetes (see module docstring)."""
 
-    def _slurm_multi_env(self, model_info: Dict, image: str) -> Dict[str, str]:
+    def _slurm_multi_env(self, model_info: Dict, image: str, image_info: Optional[Dict] = None) -> Dict[str, str]:
         """The card's submit layer, as on SLURM and Spur (slurm_multi_env.submit_env).
 
         Before, this path took only the card's env_vars and the run's, so the card's
@@ -142,7 +142,7 @@ class KubernetesSlurmMultiMixin:
             model_info, self.config.additional_context,
             Path(script).parent if script else None,
             self.config.additional_context.get("distributed") or {},
-            image_build=((getattr(self, "manifest", None) or {}).get("built_images") or {}).get(image),
+            image_build=image_info,          # the image's manifest entry: its build plan, if any
         )
         for warning in warnings:
             self.console.print(f"[yellow]⚠ {warning}[/yellow]")
@@ -245,7 +245,7 @@ class KubernetesSlurmMultiMixin:
             f"({Path(script).parent}{', ' + ', '.join(include) if include else ''})[/dim]"
         )
 
-        env = self._slurm_multi_env(model_info, image)
+        env = self._slurm_multi_env(model_info, image, image_info)
         # MAD's recipe gate before the Job is created, when the target GPU is known here
         # (k8s.gpu_arch, else slurm.gpu_arch): as on SLURM (slurm_multi_env.recipe_precheck).
         from .slurm_multi_env import recipe_precheck

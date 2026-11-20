@@ -127,7 +127,7 @@ def image_components(image_build: Optional[Dict[str, Any]]) -> Optional[str]:
     None for an image from a hand-written Dockerfile."""
     resolved = ((image_build or {}).get("build_plan") or {}).get("resolved") or {}
     comps = resolved.get("components") or {}
-    return ",".join(f"{n}={k}" for n, k in comps.items()) or None
+    return ",".join(f"{n}={k}" for n, k in sorted(comps.items())) or None   # by name: one form everywhere
 
 
 def recipe_precheck(env: Dict[str, str], script_path: Path, gpu_arch: Optional[str]) -> Optional[str]:

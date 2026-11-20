@@ -257,7 +257,7 @@ class TestImageComponents:
         from madengine.deployment.slurm_multi_env import submit_env
         build = {"build_plan": {"resolved": {"components": {"mori": "fe12a11a@di", "vllm": "9a7ae4b8+cd0d2656@vllm-kimi-k3"}}}}
         sub, _, _ = submit_env({"name": "c", "env_vars": {}}, {}, None, {}, image_build=build)
-        assert sub.env["MAD_IMAGE_COMPONENTS"] == "mori=fe12a11a@di,vllm=9a7ae4b8+cd0d2656@vllm-kimi-k3"
+        assert sub.env["MAD_IMAGE_COMPONENTS"] == "mori=fe12a11a@di,vllm=9a7ae4b8+cd0d2656@vllm-kimi-k3"   # by name
         assert sub.sources["MAD_IMAGE_COMPONENTS"] == "madengine"
 
     def test_none_for_a_hand_written_dockerfile_and_the_run_wins(self):
