@@ -146,61 +146,6 @@ class DockerBuilder:
 
         return build_args
 
-    def pin_set_build_args(
-        self, model_info: typing.Dict, dockerfile: str, run_build_arg: typing.Dict
-    ) -> typing.Dict[str, str]:
-        """The build args a pin set adds (BASE_IMAGE, MAX_JOBS, ...) for this build's arch.
-
-        Applies when the build args name a pin set (PINS). The pin set and its tool
-        live next to the Dockerfile (``<dockerfile dir>/pins/pins.py``), so the
-        repository being built decides what its pins mean. Args already given keep
-        their value if it agrees; one that disagrees with the pin set is an error,
-        as the Dockerfile would refuse it after a long build anyway.
-        """
-        given = {**run_build_arg, **self.context.ctx.get("docker_build_arg", {})}
-        pins_name = given.get("PINS")
-        if not pins_name:
-            return {}
-        tool = Path(dockerfile).resolve().parent / "pins" / "pins.py"
-        if not tool.is_file():
-            raise RuntimeError(
-                f"{model_info['name']}: PINS={pins_name} but {tool} does not exist"
-            )
-        arch = given.get("MAD_SYSTEM_GPU_ARCHITECTURE") or self._get_effective_gpu_architecture(
-            model_info, dockerfile
-        )
-        if not arch:
-            raise RuntimeError(
-                f"{model_info['name']}: pin set {pins_name} needs MAD_SYSTEM_GPU_ARCHITECTURE "
-                f"(--additional-context '{{\"docker_build_arg\": {{\"MAD_SYSTEM_GPU_ARCHITECTURE\": \"gfx942\"}}}}')"
-            )
-        proc = subprocess.run(
-            [sys.executable, str(tool), "build-args", str(pins_name), "--arch", str(arch), "--json"],
-            capture_output=True, text=True,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"{model_info['name']}: pin set {pins_name} for {arch}: "
-                f"{(proc.stderr or proc.stdout).strip()}"
-            )
-        wanted = json.loads(proc.stdout)
-        added = {}
-        for key, value in wanted.items():
-            if key in given and str(given[key]) != str(value):
-                raise RuntimeError(
-                    f"{model_info['name']}: {key}={given[key]} disagrees with pin set "
-                    f"{pins_name} for {arch} ({key}={value}); drop it or change the pin set"
-                )
-            if key not in given:
-                added[key] = value
-        if added:
-            self.rich_console.print(
-                f"[dim]Pin set {pins_name} ({arch}): "
-                + ", ".join(f"{k}={v}" for k, v in added.items())
-                + "[/dim]"
-            )
-        return added
-
     def _local_image_size_bytes(self, image: str) -> typing.Optional[int]:
         """Size of a local image in bytes, or None when docker cannot say."""
         try:
@@ -215,7 +160,7 @@ class DockerBuilder:
         """Resolve the base image the Dockerfile builds ``FROM``.
 
         Prefers a ``BASE_DOCKER`` override from ``docker_build_arg`` context, then a
-        ``BASE_IMAGE`` build arg (a pin set's base, see pin_set_build_args),
+        ``BASE_IMAGE`` build arg,
         otherwise reads ``ARG BASE_DOCKER=`` from the Dockerfile.
 
         Args:
@@ -373,10 +318,6 @@ class DockerBuilder:
             if card_arg in run_build_arg:
                 continue
             run_build_arg[card_arg] = card_value
-
-        # A pin set (MAD docker/pins/) names what the image is built from; its base image
-        # depends on the GPU architecture, so it is resolved here, per build.
-        run_build_arg.update(self.pin_set_build_args(model_info, dockerfile, run_build_arg))
 
         # image_spec args are the lowest layer: card and context docker_build_arg
         # (and multi-arch/cred args) still win, so existing overrides keep working.

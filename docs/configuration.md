@@ -634,7 +634,8 @@ may also carry `capabilities` (formats it runs or converts per GPU) and a
 them, MAD's recipe check does.
 
 **Named specs.** `compat/images/<name>.yaml` holds specs shared by several
-workloads; a card reaches one with `${images.<name>}`, for example
+workloads; a named spec may itself `extends: ${images.<other>}` (what several
+stacks share, once); a card reaches one with `${images.<name>}`, for example
 `"image_spec": {"extends": "${images.vllm-kimi-k3}", "gpu_arch": "gfx950"}`.
 
 **Precedence.** Generated or backend build args are the lowest layer: the
