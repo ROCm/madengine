@@ -2,7 +2,6 @@
 
 import textwrap
 
-import pytest
 import yaml
 
 from madengine.stack import generalize as gen
