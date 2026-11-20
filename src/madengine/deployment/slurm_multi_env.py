@@ -171,13 +171,17 @@ MULTINODE_CATALOGS = ("vllm_dissag", "vllm_multinode", "sglang_disagg")
 EMIT_CARD_KEYS = ("name", "scripts", "tags", "dockerfile", "docker_build_arg", "image_spec")
 
 
-def emit_config(model_info: Dict[str, Any], out_dir: Path) -> Optional[Dict[str, str]]:
-    """The card's complete configuration as one workload file, written by the card checkout's
-    scripts/common/config/emit.py (MAD's own composer, which the launchers read back): its recipe,
-    connector env, topology, image and env, the run's context merged as madengine has it. Returns
-    {"path", "sha256"}, or None for a card that is not a multinode launcher's, or a checkout
+def emit_config(model_info: Dict[str, Any], out_dir: Path, image_build: Optional[Dict[str, Any]] = None,
+                find=None) -> Optional[Dict[str, str]]:
+    """The card's configuration in its generalized form, written by the card checkout's
+    scripts/common/config/emit.py (the card on MAD's shared layers) -- with its image generalized
+    against the checkout's compat matrix from its manifest entry (*image_build*:
+    built_images.<image>): `image.spec` the image as a spec over compat builds, `image.unresolved`
+    what compat cannot express yet; the general facts compat lacks are merged into
+    <out_dir>/compat/rocm.yaml, a copy of the checkout's matrix for the PR. Returns {"path",
+    "sha256"[, "compat"]}, or None for a card that is not a multinode launcher's, or a checkout
     without the tool. Shared by `madengine build --emit-config` and the pipeline's STANDALONE mode,
-    so both write the same file."""
+    so both write the same files."""
     import hashlib
     import json as _json
     import os
@@ -203,6 +207,19 @@ def emit_config(model_info: Dict[str, Any], out_dir: Path) -> Optional[Dict[str,
     if image:
         env["DOCKER_IMAGE_NAME"] = image          # last, wherever a path put it
     card["env_vars"] = env
+    root = script.resolve().parent.parent.parent
+    delta = None
+    if image_build and (root / "compat" / "rocm.yaml").is_file():
+        from madengine.execution import image_spec as _image_spec
+        from madengine.stack import generalize as _gen
+
+        spec, delta = _gen.image_of(image_build, _image_spec.load_matrix(str(root)), card["name"], find)
+        if spec:
+            card["_image_spec"] = spec
+        unresolved = [{k: v for k, v in u.items() if k != "seen_in"}
+                      for u in delta["unresolved"] + delta["contradicts"]]
+        if unresolved:
+            card["_image_unresolved"] = unresolved
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         _json.dump(card, f, default=str)
     try:
@@ -212,7 +229,16 @@ def emit_config(model_info: Dict[str, Any], out_dir: Path) -> Optional[Dict[str,
         os.unlink(f.name)
     if p.returncode != 0:
         raise RuntimeError(f"{model_info['name']}: emit.py failed: {(p.stderr or p.stdout).strip()}")
-    return {"path": str(out), "sha256": hashlib.sha256(out.read_bytes()).hexdigest()}
+    got = {"path": str(out), "sha256": hashlib.sha256(out.read_bytes()).hexdigest()}
+    if delta and delta["add"]:
+        from madengine.stack import generalize as _gen
+
+        matrix = Path(out_dir) / "compat" / "rocm.yaml"
+        text = matrix.read_text() if matrix.is_file() else (root / "compat" / "rocm.yaml").read_text()
+        matrix.parent.mkdir(parents=True, exist_ok=True)
+        matrix.write_text(_gen.insert_builds(text, delta["add"]))
+        got["compat"] = str(matrix)
+    return got
 
 
 def placement_directives(env: Dict[str, str], script_path: Path) -> List[str]:

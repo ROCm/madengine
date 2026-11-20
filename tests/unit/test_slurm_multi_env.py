@@ -211,6 +211,43 @@ class TestEmitConfig:
         bare.write_text("")
         assert emit_config({"name": "x", "scripts": str(bare)}, tmp_path) is None
 
+    def test_the_image_is_generalized_with_the_config(self, tmp_path):
+        from madengine.deployment.slurm_multi_env import emit_config
+        from madengine.stack.wheels import Wheel
+        d = self._checkout(tmp_path)
+        # The stand-in emit.py writes the generalized image it was given.
+        (d / "common" / "config" / "emit.py").write_text(
+            "import json, sys, os\n"
+            "a = sys.argv\n"
+            "card = json.load(open(a[a.index('--card-json') + 1]))\n"
+            "out = a[a.index('-o') + 1]\n"
+            "os.makedirs(os.path.dirname(out), exist_ok=True)\n"
+            "json.dump({'spec': card.get('_image_spec'), 'unresolved': card.get('_image_unresolved')}, open(out, 'w'))\n")
+        (tmp_path / "compat").mkdir()
+        (tmp_path / "compat" / "rocm.yaml").write_text(
+            "# the checkout's matrix\nindexes: {fw: 'https://fw/'}\ncomponents:\n  torch:\n"
+            "    '2.13.0': {index: fw, requirement: torch==2.13.0}\n"
+            "  vllm:\n    '0.29.1@fw': {url: 'https://fw/old.whl'}\n")
+
+        def find(name, version):
+            if (name, version) == ("vllm", "0.30.0"):
+                return "fw", Wheel(name=name, version=version, python="cp312", platform="x", url="https://fw/v.whl",
+                                   requires=["torch==2.13.0"])
+            return None
+
+        build = {"base_docker": "rocm/base:1",
+                 "image_info": {"python": "3.12.1", "packages": {"vllm": "0.30.0", "torch": "2.13.0", "mylib": "1+g1234567"}}}
+        got = emit_config({"name": "c1", "scripts": str(d / "vllm_dissag" / "run_xPyD_models.slurm")},
+                          tmp_path / "out", build, find)
+        import json as _json, yaml as _yaml
+        written = _json.load(open(got["path"]))
+        assert written["spec"] == {"base": "rocm/base:1", "python": "3.12", "components": {"torch": "2.13.0"}}
+        assert [u["component"] for u in written["unresolved"]] == ["mylib"]
+        matrix = _yaml.safe_load(open(got["compat"]))
+        assert matrix["components"]["vllm"]["0.30.0@fw"]["requires"] == ["torch==2.13.0"]
+        assert open(got["compat"]).read().startswith("# the checkout's matrix")
+        assert "0.30.0" not in (tmp_path / "compat" / "rocm.yaml").read_text()   # the checkout is untouched
+
     def test_the_manifest_records_each_file(self, tmp_path):
         import json
         from madengine.cli.commands.build import write_emitted_configs

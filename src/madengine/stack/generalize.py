@@ -1,23 +1,21 @@
-"""Generalize working stacks from build manifests into the compatibility matrix.
+"""The generalized form of a built image: an image spec over the compatibility matrix.
 
 compat/rocm.yaml is the generalized dependency state: which component versions work together and
-how each installs. A build manifest records, per card, the image's stack (built_images.<image>:
-image_info for any image when image_probe is on, build_plan for an image_spec image); a run's
-results say whether the card worked. A stack that worked is evidence; this turns it into the
-general facts compat lacks, and nothing else:
+how each installs. A build manifest is the specific instance: per image, its stack (image_info, or
+build_plan for an image_spec image) and its base. When a card's configuration is generated
+(`madengine build --emit-config`, the pipeline's STANDALONE record), its image is generalized here:
 
-* a component compat knows, at a version it does not list, or a custom build of one: a new build
-  entry when the version's wheel is in one of the matrix's indexes (its url, and its requirements
-  on components compat knows, from the wheel's metadata);
-* a version no index serves (a source build, a local wheel): listed, not invented -- someone writes
-  its build entry;
-* a requirement of an authorized build that a working stack contradicts: listed for review.
+* the image as a spec: the base it was built on and the compat builds of what it added;
+* what compat lacks for that spec, as general facts: a build for a component version an
+  authorized index serves (its url, and its requirements on components compat knows, from the
+  wheel's metadata) -- merged into a copy of the matrix beside the generated configs, for the PR
+  of whoever made the run;
+* what cannot be generalized (a version no index serves: a source build or a local wheel; a
+  requirement the stack contradicts): listed with the card's image, not invented.
 
-Plain index packages (dependencies pip resolves) are not listed; compat does not hold them. A stack
-compat already covers changes nothing, so the result is the same however often it runs.
+A stack the matrix covers adds nothing, so the copy changes only when a run brings something new.
 """
 
-import csv
 import typing
 
 from packaging.requirements import InvalidRequirement, Requirement
@@ -28,34 +26,6 @@ from madengine.stack.compose import build_version
 from madengine.stack.infer import infer
 
 NOTE = "generalized from a working build manifest"
-
-
-def passed_models(result_files: typing.Iterable[str]) -> typing.Set[str]:
-    """Model names whose rows in madengine's perf CSVs all have status SUCCESS."""
-    status: typing.Dict[str, bool] = {}
-    for path in result_files:
-        with open(path, newline="") as f:
-            for row in csv.DictReader(f):
-                name = (row.get("model") or "").strip()
-                if name:
-                    ok = (row.get("status") or "").strip().upper() == "SUCCESS"
-                    status[name] = status.get(name, True) and ok
-    return {n for n, ok in status.items() if ok}
-
-
-def proven_stacks(manifest: dict, passed: typing.Set[str]) -> typing.List[typing.Tuple[str, dict]]:
-    """(card, image_info) for each built card that passed and whose image's stack was recorded."""
-    out = []
-    images = manifest.get("built_images") or {}
-    for key, model in (manifest.get("built_models") or {}).items():
-        name = model.get("name") or key
-        if not ({name, name.rsplit("/", 1)[-1]} & passed):
-            continue
-        image = model.get("docker_image") or model.get("image") or key
-        info = (images.get(image) or {}).get("image_info")
-        if info:
-            out.append((name, info))
-    return out
 
 
 def _version(text: str) -> typing.Optional[Version]:
@@ -154,6 +124,23 @@ def generalize(stacks: typing.Iterable[typing.Tuple[str, dict]], matrix: dict,
                         "component": name, "build": key, "requires": line, "ran_with": f"{dep}=={have}",
                         "seen_in": []})["seen_in"].append(card)
     return {"add": add, "unresolved": list(unresolved.values()), "contradicts": list(contradicts.values())}
+
+
+def image_of(image_build: dict, matrix: dict, card: str = "", find=None) -> typing.Tuple[dict, dict]:
+    """(the image as a spec, the compat delta it establishes) from its manifest entry
+    (built_images.<image>). An image_spec image is its own spec; an image with a recorded stack
+    (image_info) is matched against the matrix; otherwise ({}, empty delta)."""
+    empty = {"add": {}, "unresolved": [], "contradicts": []}
+    plan = (image_build or {}).get("build_plan") or {}
+    if plan.get("spec"):
+        return dict(plan["spec"]), empty
+    info = (image_build or {}).get("image_info")
+    if not info:
+        return {}, empty
+    spec, _ = infer(info, None, (image_build or {}).get("base_docker") or "", matrix)
+    if not spec.get("base"):
+        spec.pop("base", None)
+    return spec, generalize([(card, info)], matrix, find)
 
 
 def insert_builds(text: str, builds: typing.Dict[str, dict]) -> str:

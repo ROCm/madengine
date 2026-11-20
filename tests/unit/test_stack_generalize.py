@@ -72,17 +72,21 @@ def test_a_requirement_a_working_stack_contradicts_is_listed():
                                  "ran_with": "torch==2.14.0", "seen_in": ["c"]}]
 
 
-def test_only_cards_that_passed_and_have_a_stack(tmp_path):
-    csv = tmp_path / "perf.csv"
-    csv.write_text("model,status\nd/a,SUCCESS\nd/b,FAILURE\nd/c,SUCCESS\nd/c,FAILURE\n")
-    manifest = {"built_models": {"d/a": {"name": "d/a", "docker_image": "i1"},
-                                 "d/b": {"name": "d/b", "docker_image": "i1"},
-                                 "d/c": {"name": "d/c", "docker_image": "i1"},
-                                 "d/e": {"name": "d/e", "docker_image": "i2"}},
-                "built_images": {"i1": {"image_info": stack(vllm="0.29.1")}, "i2": {}}}
-    passed = gen.passed_models([str(csv)])
-    assert passed == {"d/a"}
-    assert [c for c, _ in gen.proven_stacks(manifest, passed | {"d/e"})] == ["d/a"]
+def test_an_image_spec_image_is_its_own_spec_and_adds_nothing():
+    spec, delta = gen.image_of({"build_plan": {"spec": {"rocm": "10.1", "components": {"vllm": "0.29.1@fw"}}}}, MATRIX)
+    assert spec == {"rocm": "10.1", "components": {"vllm": "0.29.1@fw"}}
+    assert delta == {"add": {}, "unresolved": [], "contradicts": []}
+
+
+def test_a_recorded_stack_becomes_a_spec_and_the_facts_compat_lacks():
+    build = {"base_docker": "rocm/base:1", "image_info": stack(vllm="0.30.0", torch="2.13.0")}
+    spec, delta = gen.image_of(build, MATRIX, "c", finder({("vllm", "0.30.0"): ["torch==2.13.0"]}))
+    assert spec["base"] == "rocm/base:1" and spec["components"] == {"torch": "2.13.0"}
+    assert list(delta["add"]["vllm"]) == ["0.30.0@fw"]
+
+
+def test_an_image_without_a_recorded_stack_says_nothing():
+    assert gen.image_of({"docker_image": "x"}, MATRIX) == ({}, {"add": {}, "unresolved": [], "contradicts": []})
 
 
 def test_builds_are_merged_into_the_matrix_text_keeping_it():

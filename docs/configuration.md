@@ -648,14 +648,15 @@ from `/opt/mad/build_info.json`). Set `"image_probe": true` to record
 `image_info` for images from hand-written Dockerfiles too; it runs `python3`
 once in each built image and is off by default.
 
-**From working runs to the matrix.** The build manifest records every image's stack
-(`image_info`, with `"image_probe": true` for hand-written Dockerfiles). `madengine stack
-generalize build_manifest.json -r perf.csv` takes the cards that passed and adds to the matrix only
-what their stacks establish and it lacks: a build for each new component version an authorized
-index serves, with its requirements on components the matrix knows. A version no index serves
-(a source build) and a requirement a working stack contradicts are listed for the PR author. A
-stack the matrix already covers changes nothing, so engineers' runs keep the matrix the general,
-true dependency state without anyone transcribing hashes.
+**From builds to the matrix.** The build manifest is the specific instance: every image's stack
+(`image_info`; `"image_probe": true` for hand-written Dockerfiles) and its base. `madengine build
+--emit-config DIR` writes each card's configuration in its generalized form, and generalizing the
+image is part of it: the card's file carries `image.spec`, the image as a spec over the matrix's
+builds, and `image.unresolved`, what the matrix cannot express yet (a version no index serves, a
+requirement the stack contradicts). The general facts the matrix lacks -- a build for each new
+version an authorized index serves, with its requirements -- are merged into `DIR/compat/rocm.yaml`,
+a copy of the matrix with its comments, for the PR of whoever made the run. A stack the matrix
+already covers adds nothing.
 
 **From an existing image to a spec.** `madengine stack infer IMAGE --base
 BASE -o scripts/<dir>/image_spec.yaml` reads what the image added on top of its

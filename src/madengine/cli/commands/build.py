@@ -46,8 +46,10 @@ def write_emitted_configs(manifest_file: str, out_dir: str) -> int:
     with open(manifest_file) as f:
         manifest = json.load(f)
     n = 0
+    images = manifest.get("built_images") or {}
     for model in (manifest.get("built_models") or {}).values():
-        got = emit_config(model, Path(out_dir))
+        image = model.get("docker_image") or model.get("image")
+        got = emit_config(model, Path(out_dir), images.get(image))
         if got:
             model["emitted_config"] = got
             n += 1
@@ -145,8 +147,9 @@ def build(
         Optional[str],
         typer.Option(
             "--emit-config",
-            help="Also write each multinode card's complete configuration as one workload file "
-                 "(MAD's scripts/common/config/emit.py) under this directory, and record it in the "
+            help="Also write each multinode card's configuration in its generalized form under this "
+                 "directory (MAD's emit.py: the card on the shared layers, its image as a spec over "
+                 "compat; what compat lacks merged into DIR/compat/rocm.yaml) and record it in the "
                  "manifest (built_models.<card>.emitted_config). With --use-image nothing is built.",
         ),
     ] = None,
