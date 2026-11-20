@@ -55,12 +55,20 @@ try:
     info["rocm_version"] = open("/opt/rocm/.info/version").read().strip()
 except OSError:
     pass
-pkgs = {}
+pkgs, sources = {}, {}
 for dist in metadata.distributions():
     name = dist.metadata.get("Name")
     if name:
         pkgs[name.lower()] = dist.version
+        try:  # a VCS install records its commit (PEP 610 direct_url.json)
+            commit = json.loads(dist.read_text("direct_url.json") or "{}").get("vcs_info", {}).get("commit_id")
+        except ValueError:
+            commit = None
+        if commit:
+            sources[name.lower()] = commit
 info["packages"] = dict(sorted(pkgs.items()))
+if sources:
+    info["sources"] = dict(sorted(sources.items()))
 if "rocm_version" not in info and "rocm" in pkgs:
     info["rocm_version"] = pkgs["rocm"]
 print(json.dumps(info))
@@ -177,6 +185,17 @@ def _card_spec(model_info: typing.Dict, root: str) -> typing.Optional[dict]:
     if not isinstance(resolved, dict):
         raise ImageSpecError(f"{model_info.get('name')}: {SPEC_KEY} must resolve to an object")
     return resolved
+
+
+def named_specs(root: typing.Optional[str] = None) -> typing.Dict[str, dict]:
+    """{name: spec} of the checkout's named specs (compat/images), each resolved as a card naming
+    it (``${images.<name>}``) gets it: references resolved, its ``extends`` chain merged in."""
+    root = mad_root(root)
+    folder = os.path.join(root, IMAGES_DIR)
+    if not os.path.isdir(folder):
+        return {}
+    return {f[:-5]: _card_spec({"name": f[:-5], SPEC_KEY: "${images.%s}" % f[:-5]}, root)
+            for f in sorted(os.listdir(folder)) if f.endswith(".yaml")}
 
 
 def _flatten(spec, name):

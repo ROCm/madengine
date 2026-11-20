@@ -11,11 +11,20 @@ build_plan for an image_spec image) and its base. When a card's configuration is
   wheel's metadata) -- merged into a copy of the matrix beside the generated configs, for the PR
   of whoever made the run;
 * what cannot be generalized (a version no index serves: a source build or a local wheel; a
-  requirement the stack contradicts): listed with the card's image, not invented.
+  requirement the stack contradicts): listed with the card's image, not invented. A source build at
+  a commit the matrix lacks comes with a draft entry: the matrix's build of that repository at the
+  new commit, for whoever made the run to confirm.
+
+A hand-written Dockerfile's image is generalized as what it added to its base (the build probes
+both: the Python packages each holds); an image_spec image is its own spec. Either is then placed
+under the named stack (compat/images) it is closest to: `extends: ${images.<stack>}` and only what
+differs -- so it inherits what that stack holds and the probe cannot read (native libraries), and
+a stack the image is exactly is just its reference.
 
 A stack the matrix covers adds nothing, so the copy changes only when a run brings something new.
 """
 
+import copy
 import typing
 
 from packaging.requirements import InvalidRequirement, Requirement
@@ -23,7 +32,7 @@ from packaging.version import InvalidVersion, Version
 
 from madengine.stack import wheels
 from madengine.stack.compose import build_version
-from madengine.stack.infer import infer
+from madengine.stack.infer import build_commit, infer
 
 NOTE = "generalized from a working build manifest"
 
@@ -70,17 +79,34 @@ def _requires(wheel: "wheels.Wheel", matrix: dict) -> typing.List[str]:
     return out
 
 
-def generalize(stacks: typing.Iterable[typing.Tuple[str, dict]], matrix: dict,
-               find=None) -> dict:
+def _draft(name: str, commit: str, catalog: dict) -> typing.Optional[typing.Dict[str, dict]]:
+    """{key: entry}: the matrix's source build of *name* at *commit* (its last build of that
+    repository, an unpatched one first; patches left out: the image's are unknown), or None without
+    one to start from."""
+    sources = [(k, e) for k, e in (catalog.get(name) or {}).items()
+               if isinstance(e, dict) and build_commit(k, e) and (e.get("source") or {}).get("repo")]
+    if not sources or len({e["source"]["repo"] for _, e in sources}) != 1:
+        return None
+    key, entry = ([s for s in sources if not s[1]["source"].get("patches")] or sources)[-1]
+    entry = copy.deepcopy(entry)
+    entry["source"]["commit"] = commit
+    entry["source"].pop("patches", None)
+    entry.pop("version", None)
+    entry["note"] = f"drafted from {name} {key} at the commit a working build used; confirm the steps"
+    return {f"{commit[:8]}@{key.split('@', 1)[-1]}": entry}
+
+
+def generalize(stacks: typing.Iterable[tuple], matrix: dict, find=None) -> dict:
     """The compat delta that working *stacks* establish: {"add": {component: {key: entry}},
-    "unresolved": [...], "contradicts": [...]}. *find* looks a version up in the indexes."""
+    "unresolved": [...], "contradicts": [...]}. Each stack is (card, image_info[, base_info]);
+    *find* looks a version up in the indexes."""
     find = find or index_finder(matrix)
     catalog = matrix.get("components") or {}
     add: typing.Dict[str, dict] = {}
     unresolved: typing.Dict[typing.Tuple[str, str], dict] = {}
     contradicts: typing.Dict[typing.Tuple[str, str, str], dict] = {}
-    for card, info in stacks:
-        spec, findings = infer(info, None, "", matrix)
+    for card, info, *base in stacks:
+        spec, findings = infer(info, base[0] if base else None, "", matrix)
         packages = {wheels.normalize(n): v for n, v in (info.get("packages") or {}).items()}
         for f in findings:
             if f["status"] not in ("unauthorized", "new"):
@@ -95,14 +121,29 @@ def generalize(stacks: typing.Iterable[typing.Tuple[str, dict]], matrix: dict,
                 continue
             got = find(name, version)
             if got is None:
-                unresolved.setdefault((name, version), {
-                    "component": name, "version": version, "seen_in": [],
-                    "why": "no wheel in the matrix's indexes: a source build or a local wheel needs "
-                           "its build entry"})["seen_in"].append(card)
+                item = {"component": name, "version": version, "seen_in": [],
+                        "why": "no wheel in the matrix's indexes: a source build or a local wheel needs "
+                               "its build entry"}
+                draft = _draft(name, f["commit"], catalog) if f.get("commit") else None
+                if draft:
+                    item.update(commit=f["commit"], draft=draft,
+                                why="built from source at a commit the matrix has no build for")
+                unresolved.setdefault((name, version), item)["seen_in"].append(card)
                 continue
             index, wheel = got
             entry = {"url": wheel.url}
-            reqs = _requires(wheel, matrix)
+            reqs = []
+            for line in _requires(wheel, matrix):
+                req = Requirement(line)
+                have = packages.get(wheels.normalize(req.name))
+                v = _version(have) if have else None
+                if v is not None and req.specifier and not req.specifier.contains(v, prereleases=True):
+                    # The working stack shows the wheel runs without it: reported, not recorded.
+                    contradicts.setdefault((name, f"{version}@{index}", line), {
+                        "component": name, "build": f"{version}@{index}", "requires": line,
+                        "ran_with": f"{wheels.normalize(req.name)}=={have}", "seen_in": []})["seen_in"].append(card)
+                    continue
+                reqs.append(line)
             if reqs:
                 entry["requires"] = reqs
             if wheel.python and wheel.python.startswith("cp3"):
@@ -126,26 +167,78 @@ def generalize(stacks: typing.Iterable[typing.Tuple[str, dict]], matrix: dict,
     return {"add": add, "unresolved": list(unresolved.values()), "contradicts": list(contradicts.values())}
 
 
-def image_of(image_build: dict, matrix: dict, card: str = "", find=None) -> typing.Tuple[dict, dict]:
+def _selections(spec: dict):
+    """(arch, {component: key}) of a named spec: its default selection, then each GPU's variant."""
+    from madengine.stack.compose import _for_arch
+
+    yield None, dict(spec.get("components") or {})
+    for arch in sorted(spec.get("variants") or {}):
+        yield arch, dict(_for_arch(spec, arch).get("components") or {})
+
+
+def _strip_digest(image: str) -> str:
+    return str(image or "").split("@", 1)[0]
+
+
+def place(spec: dict, images: typing.Dict[str, dict]) -> dict:
+    """*spec* under the named stack it is closest to (the most builds in common):
+    {"extends": "${images.<stack>}", and only what differs}; *spec* itself when no stack shares a
+    build with it. A spec equal to a named stack is that stack."""
+    for name, named in images.items():
+        if spec == named:
+            return {"extends": "${images.%s}" % name}
+    have = spec.get("components") or {}
+    best = None
+    for name, named in images.items():
+        for arch, sel in _selections(named):
+            common = sum(1 for k, v in have.items() if sel.get(k) == v)
+            if common and (best is None or common > best[0]):
+                best = (common, name, arch, sel)
+    if best is None:
+        return spec
+    _, name, arch, sel = best
+    out: dict = {"extends": "${images.%s}" % name}
+    base, named_base = spec.get("base"), images[name].get("base")
+    if isinstance(named_base, dict):
+        named_base = named_base.get(arch) if arch else next(iter(named_base.values()), None)
+    if base and _strip_digest(base) != _strip_digest(named_base):
+        out["base"] = {arch: base} if arch and isinstance(images[name].get("base"), dict) else base
+    for key in ("python", "rocm"):
+        if spec.get(key) and spec[key] != images[name].get(key):
+            out[key] = spec[key]
+    differs = {k: v for k, v in have.items() if sel.get(k) != v}
+    if differs:
+        out["components"] = differs
+    return out
+
+
+def image_of(image_build: dict, matrix: dict, card: str = "", find=None,
+             images: typing.Optional[typing.Dict[str, dict]] = None) -> typing.Tuple[dict, dict]:
     """(the image as a spec, the compat delta it establishes) from its manifest entry
     (built_images.<image>). An image_spec image is its own spec; an image with a recorded stack
-    (image_info) is matched against the matrix; otherwise ({}, empty delta)."""
+    (image_info) is matched against the matrix; otherwise ({}, empty delta). With *images* (the
+    named stacks), the spec is placed under the closest one (place)."""
     empty = {"add": {}, "unresolved": [], "contradicts": []}
     plan = (image_build or {}).get("build_plan") or {}
     if plan.get("spec"):
-        return dict(plan["spec"]), empty
+        spec = dict(plan["spec"])
+        return (place(spec, images) if images else spec), empty
     info = (image_build or {}).get("image_info")
     if not info:
         return {}, empty
-    spec, _ = infer(info, None, (image_build or {}).get("base_docker") or "", matrix)
+    base = (image_build or {}).get("base_info")
+    spec, _ = infer(info, base, (image_build or {}).get("base_docker") or "", matrix)
     if not spec.get("base"):
         spec.pop("base", None)
-    delta = generalize([(card, info)], matrix, find)
+    delta = generalize([(card, info, base)], matrix, find)
     # The builds this stack establishes are its own: the spec selects them, against the matrix
-    # they are merged into.
+    # they are merged into; a drafted build too, which it selects once someone confirms it.
     for name, entries in delta["add"].items():
         spec.setdefault("components", {})[name] = next(iter(entries))
-    return spec, delta
+    for item in delta["unresolved"]:
+        if item.get("draft"):
+            spec.setdefault("components", {})[item["component"]] = next(iter(item["draft"]))
+    return (place(spec, images) if images else spec), delta
 
 
 def insert_builds(text: str, builds: typing.Dict[str, dict]) -> str:

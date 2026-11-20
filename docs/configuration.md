@@ -646,18 +646,26 @@ still win. A context `image_spec` is deep-merged over the card's for one run.
 `build_plan` (spec, resolved components and order, what was pulled in and why,
 excludes, digest, `overridden_args`) and `image_info` (installed versions, read
 from `/opt/mad/build_info.json`). Set `"image_probe": true` to record
-`image_info` for images from hand-written Dockerfiles too; it runs `python3`
-once in each built image and is off by default.
+`image_info` for images from hand-written Dockerfiles too, and `base_info` for
+their base image; it runs `python3` once in each and is off by default.
+`image_info` holds the Python packages and, for a package installed from a VCS
+URL, the commit it was built from (`sources`).
 
 **From builds to the matrix.** The build manifest is the specific instance: every image's stack
-(`image_info`; `"image_probe": true` for hand-written Dockerfiles) and its base. `madengine build
---emit-config DIR` writes each card's configuration in its generalized form, and generalizing the
-image is part of it: the card's file carries `image.spec`, the image as a spec over the matrix's
-builds, and `image.unresolved`, what the matrix cannot express yet (a version no index serves, a
-requirement the stack contradicts). The general facts the matrix lacks -- a build for each new
-version an authorized index serves, with its requirements -- are merged into `DIR/compat/rocm.yaml`,
-a copy of the matrix with its comments, for the PR of whoever made the run. A stack the matrix
-already covers adds nothing.
+(`image_info`; `"image_probe": true` for hand-written Dockerfiles, with their base's `base_info`)
+and its base. `madengine build --emit-config DIR` writes each card's configuration in its
+generalized form, and generalizing the image is part of it. The card's file carries `image.spec`:
+the image placed under the named stack (`compat/images/`) it is closest to, as
+`extends: ${images.<stack>}` and only what differs -- so it inherits what that stack holds and a
+probe cannot read (native libraries); an image that is a stack is just its reference. What the
+image added to its base is matched to the matrix's builds by version, or for a source build by its
+commit (recorded, or in a `+g<sha>` version). `image.unresolved` lists what needs a person: a
+source build at a commit the matrix lacks (with a draft entry, from the matrix's build of that
+repository), a version no index serves, a requirement a working stack contradicts. The general
+facts the matrix lacks -- a build for each new version an authorized index serves, with its
+requirements on components the matrix knows less those the working run contradicts -- are merged
+into `DIR/compat/rocm.yaml`, a copy of the matrix with its comments, for the PR of whoever made the
+run. A stack the matrix already covers adds nothing.
 
 **From an existing image to a spec.** `madengine stack infer IMAGE --base
 BASE -o scripts/<dir>/image_spec.yaml` reads what the image added on top of its

@@ -450,6 +450,11 @@ class DockerBuilder:
             info = image_spec.read_image_info(self.console, docker_image, probe)
             if info:
                 build_info["image_info"] = info
+                # A hand-written Dockerfile's additions are the image less its base.
+                base_info = (image_spec.read_image_info(self.console, base_docker, probe)
+                             if not build_plan and base_docker else None)
+                if base_info:
+                    build_info["base_info"] = base_info
 
         # Store built image info
         self.built_images[docker_image] = build_info

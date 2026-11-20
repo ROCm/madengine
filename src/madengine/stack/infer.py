@@ -12,10 +12,33 @@ image; the unmatched packages are what the matrix needs before the draft can
 be built (add them to compat/rocm.yaml, e.g. from ``madengine stack harvest``).
 """
 
+import re
 import typing
 
 from madengine.stack import wheels
 from madengine.stack.compose import build_version
+
+# A source build's commit in its version's local part (setuptools-scm: 1.2.dev3+g<sha>[.d<date>]).
+_SCM = re.compile(r"(?:^|[.+])g([0-9a-f]{7,40})(?=$|[.+])")
+
+
+def commit_of(name: str, version: str, image: dict) -> typing.Optional[str]:
+    """The commit a package was built from: recorded by the probe (a VCS install), else in its version."""
+    recorded = ((image.get("sources") or {}).get(name) or (image.get("sources") or {}).get(wheels.normalize(name)))
+    if recorded:
+        return recorded
+    m = _SCM.search(version.split("+", 1)[1] if "+" in version else "")
+    return m.group(1) if m else None
+
+
+def build_commit(key: str, entry: dict) -> typing.Optional[str]:
+    """The commit a source build is at (its source.commit)."""
+    return str(((entry or {}).get("source") or {}).get("commit") or "") or None
+
+
+def _same_commit(a: str, b: str) -> bool:
+    n = min(len(a), len(b))
+    return n >= 7 and a[:n].lower() == b[:n].lower()
 
 
 def added_packages(image: dict, base: typing.Optional[dict]) -> typing.Dict[str, str]:
@@ -63,6 +86,8 @@ def infer(
       ``+g<sha>``) that compat does not list; a candidate for a new entry;
     * ``ambiguous``: several compat builds share the version; the first was
       chosen and the alternatives are listed;
+    * ``patched``: matched a source build by its commit; that build also applies
+      patches, which the version cannot show;
     * ``dependencies``: one summary of the plain package-index versions added,
       which pip installs as dependencies and compat does not need to list.
     """
@@ -89,11 +114,21 @@ def infer(
             continue  # part of the rocm release above
         builds = catalog.get(name) or {}
         matches = [k for k, e in builds.items() if build_version(k, e) == version]
+        commit = commit_of(name, version, image)
+        if not matches and commit:
+            # A source build: the build at the commit it was built from.
+            matches = [k for k, e in builds.items()
+                       if build_commit(k, e) and _same_commit(build_commit(k, e), commit)]
+            for k in matches[:1]:
+                if (builds[k].get("source") or {}).get("patches"):
+                    findings.append({"package": name, "version": version, "status": "patched",
+                                     "build": k, "commit": commit})
         if not matches:
             if builds:
                 findings.append({
                     "package": name, "version": version, "status": "unauthorized",
-                    "authorized": [build_version(k, e) for k, e in builds.items()]})
+                    "authorized": [build_version(k, e) for k, e in builds.items()],
+                    **({"commit": commit} if commit else {})})
             elif "+" in version:
                 findings.append({"package": name, "version": version, "status": "new"})
             else:

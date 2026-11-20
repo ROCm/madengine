@@ -96,3 +96,71 @@ def test_builds_are_merged_into_the_matrix_text_keeping_it():
     assert data["components"]["flash-attn"]["2.8.3@fw"] == {"url": "f"}
     assert data["engines"] == {} and "# The matrix (comments are kept)." in out and "# after components" in out
     assert gen.insert_builds(out, add) == out          # idempotent
+
+
+# A matrix with source builds, as the DI stacks have them.
+SOURCE_MATRIX = {
+    "indexes": {"fw": "https://fw.example/whl/"},
+    "components": {
+        "mori": {"fe12a11a@di": {"source": {"repo": "https://example.com/mori.git", "commit": "fe12a11a" + "0" * 32,
+                                            "steps": ["pip install ."]}}},
+        "vllm": {"9a7ae4b8+cd0d2656@di": {"source": {"repo": "https://example.com/vllm.git", "commit": "9a7ae4b8" + "1" * 32,
+                                                     "patches": [{"file": "p.patch", "sha256": "x"}], "steps": ["pip install ."]}}},
+    },
+}
+BASE = {"python": "3.12.3", "packages": {"torch": "2.9.0+rocm7.1.0", "triton": "3.5.0"}}
+
+
+def test_a_source_build_is_matched_by_the_commit_in_its_version():
+    image = {"python": "3.12.3", "packages": dict(BASE["packages"], mori="1.2.3.dev4+gfe12a11a")}
+    spec, delta = gen.image_of({"base_docker": "b", "image_info": image, "base_info": BASE}, SOURCE_MATRIX, "c",
+                               finder({}))
+    assert spec["components"] == {"mori": "fe12a11a@di"}           # the base's own packages are not the image's
+    assert delta == {"add": {}, "unresolved": [], "contradicts": []}
+
+
+def test_a_vcs_install_is_matched_by_its_recorded_commit_and_its_patches_are_flagged():
+    from madengine.stack.infer import infer
+    image = {"packages": {"vllm": "0.11.1"}, "sources": {"vllm": "9a7ae4b8" + "1" * 32}}
+    spec, findings = infer(image, None, "b", SOURCE_MATRIX)
+    assert spec["components"] == {"vllm": "9a7ae4b8+cd0d2656@di"}
+    assert [f["status"] for f in findings] == ["patched"]
+
+
+def test_a_source_build_at_a_new_commit_is_drafted_from_the_matrixs_build_of_that_repo():
+    image = {"python": "3.12.3", "packages": dict(BASE["packages"], mori="1.2.4.dev1+g0123abcd")}
+    _, delta = gen.image_of({"base_docker": "b", "image_info": image, "base_info": BASE}, SOURCE_MATRIX, "c",
+                            finder({}))
+    assert delta["add"] == {}                                        # not merged: someone confirms it
+    [item] = delta["unresolved"]
+    assert (item["component"], item["commit"]) == ("mori", "0123abcd")
+    [(key, entry)] = item["draft"].items()
+    assert key == "0123abcd@di"
+    assert entry["source"] == {"repo": "https://example.com/mori.git", "commit": "0123abcd", "steps": ["pip install ."]}
+
+
+def test_a_new_wheels_requirement_the_working_stack_contradicts_is_reported_not_recorded():
+    image = {"python": "3.14.1", "packages": {"torch": "2.13.0", "vllm": "0.30.0", "mori": "1.0"}}
+    MATRIX_M = dict(MATRIX, components=dict(MATRIX["components"], mori={"1.0": {}}))
+    _, delta = gen.image_of({"base_docker": "b", "image_info": image}, MATRIX_M, "c",
+                            finder({("vllm", "0.30.0"): ["torch==2.13.0", "mori>=1.1"]}))
+    assert delta["add"]["vllm"]["0.30.0@fw"]["requires"] == ["torch==2.13.0"]
+    assert [(c["requires"], c["ran_with"]) for c in delta["contradicts"]] == [("mori>=1.1", "mori==1.0")]
+
+
+IMAGES = {"stack": {"base": {"gfx942": "b:1@sha256:x"}, "components": {"mori": "fe12a11a@di", "ucx": "u@di"},
+                    "variants": {"gfx950": {"components": {"mori": "m950@di"}}}}}
+
+
+def test_a_spec_equal_to_a_named_stack_is_that_stack():
+    assert gen.place(dict(IMAGES["stack"]), IMAGES) == {"extends": "${images.stack}"}
+
+
+def test_an_image_is_placed_under_its_closest_stack_with_only_what_differs():
+    spec = {"base": "b:1", "components": {"mori": "fe12a11a@di", "vllm": "0.30.0@fw"}}
+    assert gen.place(spec, IMAGES) == {"extends": "${images.stack}", "components": {"vllm": "0.30.0@fw"}}
+
+
+def test_an_image_sharing_no_build_keeps_its_own_spec():
+    spec = {"base": "z", "components": {"vllm": "0.30.0@fw"}}
+    assert gen.place(spec, IMAGES) is spec

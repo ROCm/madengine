@@ -197,7 +197,8 @@ def emit_config(model_info: Dict[str, Any], out_dir: Path, image_build: Optional
         from madengine.execution import image_spec as _image_spec
         from madengine.stack import generalize as _gen
 
-        spec, delta = _gen.image_of(image_build, _image_spec.load_matrix(str(root)), card["name"], find)
+        spec, delta = _gen.image_of(image_build, _image_spec.load_matrix(str(root)), card["name"], find,
+                                    _image_spec.named_specs(str(root)))
         if spec:
             card["_image_spec"] = spec
         unresolved = [{k: v for k, v in u.items() if k != "seen_in"}

@@ -240,7 +240,8 @@ class TestDockerBuilderHooks:
 
         card = {"name": "m", "dockerfile": "docker/m"}
         probed = {"python": "3.12.3"}
-        for ctx, expected in (({}, None), ({"image_probe": True}, probed)):
+        base = {"docker_build_arg": {"BASE_DOCKER": "rocm/base:1"}}
+        for ctx, expected in ((base, None), (dict(base, image_probe=True), probed)):
             builder, console = self._builder(ctx, sh)
             with patch.object(builder, "_local_image_size_bytes", return_value=None):
                 build_info = builder.build_image(card, "docker/m.ubuntu.amd.Dockerfile")
@@ -249,6 +250,10 @@ class TestDockerBuilderHooks:
             assert bool(ran) == bool(expected)
             assert build_info.get("image_info") == expected
             assert "build_plan" not in build_info
+            # its additions are the image less its base: the base is probed too
+            assert build_info.get("base_info") == expected
+            if expected:
+                assert any("rocm/base:1" in c for c in ran)
 
 
 class TestNamedImages:
