@@ -33,6 +33,7 @@ from madengine.execution.dockerfile_utils import (
     is_target_arch_compatible_with_variable,
     parse_dockerfile_gpu_variables,
 )
+from madengine.execution import image_spec
 from madengine.utils.ops import PythonicTee
 
 
@@ -98,6 +99,9 @@ class DockerBuilder:
         Returns:
             str: The context path.
         """
+        if image_spec.effective_image_spec(info, self.context.ctx):
+            # A generated Dockerfile copies from docker/ (patches, files): its context.
+            return "./docker"
         if "dockercontext" in info and info["dockercontext"] != "":
             return info["dockercontext"]
         dockerfile_hint = (info.get("dockerfile") or "").lower()
@@ -142,61 +146,6 @@ class DockerBuilder:
 
         return build_args
 
-    def pin_set_build_args(
-        self, model_info: typing.Dict, dockerfile: str, run_build_arg: typing.Dict
-    ) -> typing.Dict[str, str]:
-        """The build args a pin set adds (BASE_IMAGE, MAX_JOBS, ...) for this build's arch.
-
-        Applies when the build args name a pin set (PINS). The pin set and its tool
-        live next to the Dockerfile (``<dockerfile dir>/pins/pins.py``), so the
-        repository being built decides what its pins mean. Args already given keep
-        their value if it agrees; one that disagrees with the pin set is an error,
-        as the Dockerfile would refuse it after a long build anyway.
-        """
-        given = {**run_build_arg, **self.context.ctx.get("docker_build_arg", {})}
-        pins_name = given.get("PINS")
-        if not pins_name:
-            return {}
-        tool = Path(dockerfile).resolve().parent / "pins" / "pins.py"
-        if not tool.is_file():
-            raise RuntimeError(
-                f"{model_info['name']}: PINS={pins_name} but {tool} does not exist"
-            )
-        arch = given.get("MAD_SYSTEM_GPU_ARCHITECTURE") or self._get_effective_gpu_architecture(
-            model_info, dockerfile
-        )
-        if not arch:
-            raise RuntimeError(
-                f"{model_info['name']}: pin set {pins_name} needs MAD_SYSTEM_GPU_ARCHITECTURE "
-                f"(--additional-context '{{\"docker_build_arg\": {{\"MAD_SYSTEM_GPU_ARCHITECTURE\": \"gfx942\"}}}}')"
-            )
-        proc = subprocess.run(
-            [sys.executable, str(tool), "build-args", str(pins_name), "--arch", str(arch), "--json"],
-            capture_output=True, text=True,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"{model_info['name']}: pin set {pins_name} for {arch}: "
-                f"{(proc.stderr or proc.stdout).strip()}"
-            )
-        wanted = json.loads(proc.stdout)
-        added = {}
-        for key, value in wanted.items():
-            if key in given and str(given[key]) != str(value):
-                raise RuntimeError(
-                    f"{model_info['name']}: {key}={given[key]} disagrees with pin set "
-                    f"{pins_name} for {arch} ({key}={value}); drop it or change the pin set"
-                )
-            if key not in given:
-                added[key] = value
-        if added:
-            self.rich_console.print(
-                f"[dim]Pin set {pins_name} ({arch}): "
-                + ", ".join(f"{k}={v}" for k, v in added.items())
-                + "[/dim]"
-            )
-        return added
-
     def _local_image_size_bytes(self, image: str) -> typing.Optional[int]:
         """Size of a local image in bytes, or None when docker cannot say."""
         try:
@@ -211,7 +160,7 @@ class DockerBuilder:
         """Resolve the base image the Dockerfile builds ``FROM``.
 
         Prefers a ``BASE_DOCKER`` override from ``docker_build_arg`` context, then a
-        ``BASE_IMAGE`` build arg (a pin set's base, see pin_set_build_args),
+        ``BASE_IMAGE`` build arg,
         otherwise reads ``ARG BASE_DOCKER=`` from the Dockerfile.
 
         Args:
@@ -370,9 +319,31 @@ class DockerBuilder:
                 continue
             run_build_arg[card_arg] = card_value
 
-        # A pin set (MAD docker/pins/) names what the image is built from; its base image
-        # depends on the GPU architecture, so it is resolved here, per build.
-        run_build_arg.update(self.pin_set_build_args(model_info, dockerfile, run_build_arg))
+        # image_spec args are the lowest layer: card and context docker_build_arg
+        # (and multi-arch/cred args) still win, so existing overrides keep working.
+        build_plan = None
+        overridden_args = []
+        spec = image_spec.effective_image_spec(model_info, self.context.ctx)
+        if spec:
+            gpu_arch = run_build_arg.get(
+                "MAD_SYSTEM_GPU_ARCHITECTURE"
+            ) or self.context.ctx.get("docker_build_arg", {}).get(
+                "MAD_SYSTEM_GPU_ARCHITECTURE"
+            )
+            build_plan = image_spec.resolve(
+                spec,
+                self._infer_gpu_vendor_from_dockerfile(dockerfile),
+                gpu_arch,
+                name=model_info["name"],
+            )
+            for plan_arg, plan_value in build_plan.build_args.items():
+                if (
+                    plan_arg in self.context.ctx.get("docker_build_arg", {})
+                    or plan_arg in run_build_arg
+                ):
+                    overridden_args.append(plan_arg)
+                    continue
+                run_build_arg[plan_arg] = plan_value
 
         build_args = self.get_build_arg(run_build_arg)
 
@@ -468,6 +439,18 @@ class DockerBuilder:
         image_size = self._local_image_size_bytes(docker_image)
         if image_size:
             build_info["image_size_bytes"] = image_size
+
+        if build_plan:
+            build_info["build_plan"] = build_plan.to_dict()
+            if overridden_args:
+                build_info["build_plan"]["overridden_args"] = sorted(overridden_args)
+        # Spec-built images record their stack at build time, so reading it is
+        # cheap. Hand-written Dockerfiles need a probe run, which is opt-in.
+        probe = bool(self.context.ctx.get("image_probe"))
+        if build_plan or probe:
+            info = image_spec.read_image_info(self.console, docker_image, probe)
+            if info:
+                build_info["image_info"] = info
 
         # Store built image info
         self.built_images[docker_image] = build_info
@@ -689,6 +672,12 @@ class DockerBuilder:
             "credentials_required": credentials_required,
         }
 
+        # Keep a context-level image_spec so the manifest can rebuild the same stack.
+        if image_spec.SPEC_KEY in self.context.ctx:
+            manifest["context"][image_spec.SPEC_KEY] = self.context.ctx[
+                image_spec.SPEC_KEY
+            ]
+
         # Preserve tools configuration if present in context
         if "tools" in self.context.ctx:
             manifest["context"]["tools"] = self.context.ctx["tools"]
@@ -901,9 +890,23 @@ class DockerBuilder:
 
     def _get_dockerfiles_for_model(self, model_info: typing.Dict) -> typing.List[str]:
         """Get dockerfiles for a model."""
+        # A card with an image_spec builds the shared backend Dockerfile. Resolve
+        # it outside the try below so a bad spec fails the build, not just warns.
+        spec = image_spec.effective_image_spec(model_info, self.context.ctx)
+        prefix = (
+            image_spec.dockerfile_prefix(
+                spec,
+                self.context.ctx.get("docker_build_arg", {}).get(
+                    "MAD_SYSTEM_GPU_ARCHITECTURE"
+                ),
+                name=model_info["name"],
+            )
+            if spec
+            else model_info["dockerfile"]
+        )
         try:
             # Quote the dockerfile path to prevent shell injection
-            dockerfile_quoted = shlex.quote(model_info["dockerfile"])
+            dockerfile_quoted = shlex.quote(prefix)
             all_dockerfiles = self.console.sh(f"ls {dockerfile_quoted}.*").split("\n")
             # A card's dockerfile is a prefix for its own variants:
             # <prefix>.Dockerfile, <prefix>.<os>.<vendor>.Dockerfile, or a same-card
@@ -915,7 +918,7 @@ class DockerBuilder:
             # variants are kept.
             all_dockerfiles = [
                 f for f in all_dockerfiles
-                if _is_prefix_variant(model_info["dockerfile"], f.strip())
+                if _is_prefix_variant(prefix, f.strip())
             ]
 
             dockerfiles = {}
