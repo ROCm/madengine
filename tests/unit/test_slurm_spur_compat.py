@@ -10,7 +10,6 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from madengine.deployment.base import DeploymentStatus
 from madengine.deployment.slurm import SlurmDeployment
@@ -223,13 +222,15 @@ class TestBuildOnComputeBuildArgs:
             model["docker_build_arg"] = card_args
         df = tmp_path / "docker" / "card.ubuntu.amd.Dockerfile"
         df.parent.mkdir(parents=True, exist_ok=True); df.write_text("FROM scratch\n")
+
+        def fake_run(cmd, *a, **kw):  # sbatch does not run
+            return MagicMock(returncode=0)
         cwd = os.getcwd()
         try:
             os.chdir(tmp_path)
             with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as dm:
                 dm.return_value.run.return_value = [model]
-                with patch("subprocess.run") as run:
-                    run.return_value = MagicMock(returncode=0)
+                with patch("subprocess.run", side_effect=fake_run):
                     orch._execute_build_on_compute(registry="localhost:5000/repo",
                                                    manifest_output=str(tmp_path / "m.json"))
             script = (tmp_path / "madengine_build_job.sh").read_text()

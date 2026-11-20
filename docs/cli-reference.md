@@ -101,6 +101,7 @@ madengine build [OPTIONS]
 | `--registry` | `-r` | TEXT | `None` | Docker registry to push images to |
 | `--use-image` | | TEXT | `None` | Skip Docker build and use a pre-built image. Pass an image name, or `auto` to resolve from model card's `DOCKER_IMAGE_NAME`. Mutually exclusive with `--registry` and `--build-on-compute` |
 | `--build-on-compute` | | FLAG | `False` | Build Docker images on a SLURM compute node and push to registry. Requires `--registry` |
+| `--explain` | | FLAG | `False` | Print the Dockerfile and resolved `image_spec` build plan for each selected model, then exit without building |
 | `--batch-manifest` | | TEXT | `None` | Input batch.json file for batch build mode |
 | `--additional-context` | `-c` | TEXT | `"{}"` | Additional context as JSON string |
 | `--additional-context-file` | `-f` | TEXT | `None` | File containing additional context JSON; `--additional-context` is merged over it key by key |
@@ -212,6 +213,22 @@ When using `--batch-manifest`, provide a JSON file with selective build configur
 ```
 
 See [Batch Build Guide](batch-build.md) for details.
+
+---
+
+### `madengine stack`
+
+Inspect workload image specs against the compatibility matrix; run from the
+MAD root or set `MODEL_DIR` to it. `SPEC` is a workload folder (`scripts/vllm`)
+or an `image_spec.yaml`.
+
+| Command | Description |
+|---------|-------------|
+| `stack show SPEC [-a GFX] [--dockerfile]` | Components in install order and why each is there, or the generated Dockerfile |
+| `stack check SPEC... [-a GFX]` | Compare each wheel's declared dependencies (METADATA) with the composed plan; exit 1 on a mismatch |
+| `stack diff SPEC_A SPEC_B [-a GFX]` | Components on which two workloads differ |
+| `stack infer IMAGE --base BASE [-o image_spec.yaml]` | Draft a spec from what an image added on top of its base, and list what compat has no build for (`--image-info`/`--base-info` take saved image_info JSON) |
+| `stack harvest INDEX [-p PROJECT] [--python cp312] [--metadata] [-o catalog.json]` | Every wheel in a PEP 503 index, following nested per-stack indexes, with ROCm/git/date provenance |
 
 ---
 
