@@ -755,6 +755,104 @@ class TestK8sJobScriptModelArgs:
         ]
 
 
+class TestK8sLauncherModelArgs:
+    """Distributed launchers pass the model card's ``args`` to the script, quoted."""
+
+    ARGS = "--name 'two words' --x $(id)"
+    QUOTED = "--name 'two words' --x '$(id)'"
+
+    @staticmethod
+    def _harness():
+        from types import SimpleNamespace
+
+        from madengine.deployment.kubernetes_launcher_mixin import (
+            KubernetesLauncherMixin,
+        )
+
+        h = KubernetesLauncherMixin()
+        h.config = SimpleNamespace(additional_context={})
+        h.job_name = "j"
+        h.namespace = "ns"
+        return h
+
+    @pytest.mark.parametrize("nnodes", [1, 2])
+    @pytest.mark.parametrize(
+        "method, model_script",
+        [
+            ("_generate_torchrun_command", "scripts/dummy/run.sh"),
+            ("_generate_torchrun_command", "scripts/dummy/train.py"),
+            ("_generate_deepspeed_command", "scripts/dummy/train.py"),
+            ("_generate_bash_script_command", "scripts/dummy/run.sh"),
+            ("_generate_torchtitan_command", "scripts/dummy/train.py"),
+            ("_generate_megatron_command", "scripts/dummy/train.py"),
+            ("_generate_vllm_command", "scripts/dummy/run.sh"),
+            ("_generate_sglang_command", "scripts/dummy/run.sh"),
+            ("_generate_primus_command", "scripts/dummy/run.sh"),
+        ],
+    )
+    def test_args_follow_the_script_quoted(self, method, model_script, nnodes):
+        cmd = getattr(self._harness(), method)(
+            nnodes=nnodes,
+            nproc_per_node=8,
+            master_port=29500,
+            model_script=model_script,
+            model_args=self.ARGS,
+        )
+        script_name = Path(model_script).name
+        launch_line = next(
+            l
+            for l in cmd.splitlines()
+            if script_name in l and not l.lstrip().startswith(("#", "echo"))
+        )
+        assert launch_line.rstrip().endswith(f"{script_name} {self.QUOTED}")
+
+    @pytest.mark.parametrize("model_args", ["", "   "])
+    @pytest.mark.parametrize(
+        "method",
+        [
+            "_generate_torchrun_command",
+            "_generate_vllm_command",
+            "_generate_primus_command",
+        ],
+    )
+    def test_empty_args_leave_the_script_bare(self, method, model_args):
+        cmd = getattr(self._harness(), method)(
+            nnodes=1,
+            nproc_per_node=8,
+            master_port=29500,
+            model_script="scripts/dummy/run.sh",
+            model_args=model_args,
+        )
+        assert cmd.splitlines()[-1].endswith("bash run.sh")
+
+    @pytest.mark.parametrize(
+        "launcher_type",
+        ["torchrun", "deepspeed", "torchtitan", "vllm", "sglang", "megatron-lm", "primus"],
+    )
+    def test_template_context_passes_card_args(self, launcher_type, tmp_path):
+        ctx = _k8s_template_context(
+            launcher_type=launcher_type, model_args=self.ARGS, tmp_path=tmp_path
+        )
+        assert f"run.sh {self.QUOTED}" in ctx["launcher_command"]
+
+    def test_quoted_args_reach_the_script_intact(self, tmp_path):
+        """Run the generated torchrun command and check the script's argv."""
+        cmd = self._harness()._generate_torchrun_command(
+            nnodes=1,
+            nproc_per_node=1,
+            master_port=29500,
+            model_script="scripts/dummy/run.sh",
+            model_args=self.ARGS,
+        )
+        target = tmp_path / "scripts" / "dummy"
+        target.mkdir(parents=True)
+        (target / "run.sh").write_text('printf "<%s>" "$@"\n')
+        result = subprocess.run(
+            ["bash", "-c", cmd], cwd=tmp_path, capture_output=True, text=True
+        )
+        assert result.stdout == "<--name><two words><--x><$(id)>", result.stderr
+
+
 class TestK8sRunTimeoutResolution:
     """The model card's timeout must reach the K8s job, following v1 precedence.
 
