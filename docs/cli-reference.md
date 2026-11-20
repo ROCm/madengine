@@ -229,6 +229,7 @@ or an `image_spec.yaml`.
 | `stack check SPEC... [-a GFX]` | Compare each wheel's declared dependencies (METADATA) with the composed plan; exit 1 on a mismatch |
 | `stack diff SPEC_A SPEC_B [-a GFX]` | Components on which two workloads differ |
 | `stack infer IMAGE --base BASE [-o image_spec.yaml]` | Draft a spec from what an image added on top of its base, and list what compat has no build for (`--image-info`/`--base-info` take saved image_info JSON) |
+| `stack generalize MANIFEST -r perf.csv [--write] [-o delta.yaml]` | From a build manifest and the run's results: the general facts the stacks that worked establish and compat lacks (a build per new version an authorized index serves; versions no index serves and contradicted requirements are listed); `--write` adds the builds to `compat/rocm.yaml`, comments kept |
 | `stack harvest INDEX [-p PROJECT] [--python cp312] [--metadata] [-o catalog.json]` | Every wheel in a PEP 503 index, following nested per-stack indexes, with ROCm/git/date provenance |
 
 ---

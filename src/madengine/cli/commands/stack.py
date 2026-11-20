@@ -253,3 +253,53 @@ def _version_key(version: str):
         return (0, Version(version))
     except InvalidVersion:
         return (-1, version)
+
+
+@stack_app.command("generalize")
+def generalize_cmd(
+    manifest: Annotated[str, typer.Argument(help="Build manifest (madengine build, or the pipeline's)")],
+    results: Annotated[
+        List[str], typer.Option("--results", "-r", help="perf CSV(s) of the run: which cards passed")
+    ],
+    write: Annotated[
+        bool, typer.Option("--write", help="Add the new builds to compat/rocm.yaml of the MAD root")
+    ] = False,
+    output: Annotated[str, typer.Option("--output", "-o", help="Write the delta (YAML) here")] = "",
+) -> None:
+    """Generalize the stacks a run proved into the compatibility matrix.
+
+    For every card of MANIFEST that passed in RESULTS and whose image's stack was recorded
+    (image_probe), adds to compat only the general facts it lacks: a build for a component version
+    whose wheel is in the matrix's indexes. Versions no index serves, and requirements a working
+    stack contradicts, are listed for whoever opens the PR. A stack compat already covers changes
+    nothing.
+    """
+    import yaml
+
+    from madengine.stack import generalize as gen
+
+    with open(manifest) as f:
+        data = json.load(f)
+    try:
+        matrix = image_spec.load_matrix()
+    except image_spec.ImageSpecError as e:
+        console.print(f"[red]{escape(str(e))}[/red]")
+        raise typer.Exit(ExitCode.INVALID_ARGS)
+    stacks = gen.proven_stacks(data, gen.passed_models(results))
+    delta = gen.generalize(stacks, matrix)
+    text = yaml.safe_dump(delta, sort_keys=False, width=1 << 16)
+    if output:
+        with open(output, "w") as f:
+            f.write(f"# madengine stack generalize {manifest}: {len(stacks)} working stack(s)\n" + text)
+    added = sum(len(v) for v in delta["add"].values())
+    if write and added:
+        path = os.path.join(image_spec.mad_root(), image_spec.MATRIX_FILE)
+        with open(path) as f:
+            before = f.read()
+        with open(path, "w") as f:
+            f.write(gen.insert_builds(before, delta["add"]))
+    console.print(f"{len(stacks)} working stack(s): {added} build(s) to add"
+                  f"{' (written)' if write and added else ''}, {len(delta['unresolved'])} to write by hand, "
+                  f"{len(delta['contradicts'])} requirement(s) contradicted")
+    if not output:
+        console.print(text, markup=False, highlight=False)

@@ -648,6 +648,15 @@ from `/opt/mad/build_info.json`). Set `"image_probe": true` to record
 `image_info` for images from hand-written Dockerfiles too; it runs `python3`
 once in each built image and is off by default.
 
+**From working runs to the matrix.** The build manifest records every image's stack
+(`image_info`, with `"image_probe": true` for hand-written Dockerfiles). `madengine stack
+generalize build_manifest.json -r perf.csv` takes the cards that passed and adds to the matrix only
+what their stacks establish and it lacks: a build for each new component version an authorized
+index serves, with its requirements on components the matrix knows. A version no index serves
+(a source build) and a requirement a working stack contradicts are listed for the PR author. A
+stack the matrix already covers changes nothing, so engineers' runs keep the matrix the general,
+true dependency state without anyone transcribing hashes.
+
 **From an existing image to a spec.** `madengine stack infer IMAGE --base
 BASE -o scripts/<dir>/image_spec.yaml` reads what the image added on top of its
 base, selects the authorized builds that match, and lists what compat has no
