@@ -664,6 +664,13 @@ madengine run --manifest-file build_manifest.json
 
 **Model-card contract (shared with the templated path)**:
 
+**The environment a slurm_multi script receives** is the same on SLURM, Spur and Kubernetes
+(`deployment/slurm_multi_env.py`), weakest first: the card's layered config (`mad-config.yaml`),
+`docker_env_vars`, the card's `env_vars`, the run's `env_vars` without keys only a preset set,
+`xP`/`yD` from the card's `sglang_disagg` block when nothing above set them, then what madengine
+decides (the image, `MAD_TOOLS`). `MAD_ENV_SOURCES` names the source of each, as
+`NAME=source,...`; MAD's launchers fold it into the per-job `config.resolved.json`.
+
 slurm_multi hands the *topology* to the workload, not the *contract*. These model-card
 fields are honoured identically on both paths:
 

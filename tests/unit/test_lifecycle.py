@@ -543,6 +543,197 @@ time.sleep(60)
         assert code == 130, out
         assert "stopping containers" in out
 
+    @pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+    def test_a_signal_during_a_console_write_still_tears_down(self, tmp_path, signum):
+        """The signal lands while the main thread is inside a write to stdout.
+
+        The child blocks writing 1 MB to a pipe nobody reads yet, so it sits in
+        the buffered writer when the signal arrives. The handler's own print to
+        that stream used to raise "reentrant call inside <_io.BufferedWriter>"
+        before any teardown: no cancel hook, exit status 1.
+        """
+        marker = tmp_path / "cancelled"
+        child = f"""
+import sys
+from madengine.core import lifecycle
+
+lifecycle.register_cancel_hook(lambda: open({str(marker)!r}, "w").write("ran"))
+lifecycle.install_signal_handlers()
+print("ready", file=sys.stderr, flush=True)
+sys.stdout.write("x" * (1 << 20))
+sys.stdout.flush()
+"""
+        env = dict(os.environ, MADENGINE_STATE_DIR=str(tmp_path / "state"))
+        proc = subprocess.Popen(
+            [sys.executable, "-c", child],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            env=env,
+        )
+        try:
+            assert proc.stderr.readline().strip() == "ready"
+            time.sleep(0.5)                     # into the blocked write
+            proc.send_signal(signum)
+            out, err = proc.communicate(timeout=60)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+        assert proc.returncode == 130, err
+        assert "stopping containers" in out + err
+        assert marker.read_text() == "ran"
+
+    def test_a_console_nobody_reads_does_not_block_the_teardown(self, tmp_path):
+        """The signal lands while stdout is a full pipe whose reader has stopped.
+
+        The handler's own messages then cannot be written; it used to block in
+        os.write for good, and the teardown never ran. Nothing reads the pipe here
+        until the child has exited.
+        """
+        marker = tmp_path / "cancelled"
+        child = f"""
+import sys
+from madengine.core import lifecycle
+
+lifecycle.register_cancel_hook(lambda: open({str(marker)!r}, "w").write("ran"))
+lifecycle.install_signal_handlers()
+print("ready", file=sys.stderr, flush=True)
+sys.stdout.write("x" * (1 << 20))
+sys.stdout.flush()
+"""
+        env = dict(os.environ, MADENGINE_STATE_DIR=str(tmp_path / "state"))
+        err_path = tmp_path / "stderr"
+        with open(err_path, "w") as err_file:
+            proc = subprocess.Popen(
+                [sys.executable, "-c", child],
+                stdout=subprocess.PIPE, stderr=err_file, env=env,
+            )
+            try:
+                for _ in range(100):
+                    if "ready" in err_path.read_text():
+                        break
+                    time.sleep(0.1)
+                time.sleep(0.5)                     # into the blocked write
+                proc.send_signal(signal.SIGTERM)
+                code = proc.wait(timeout=30)        # stdout still unread
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=10)
+                proc.stdout.close()
+        assert code == 130, err_path.read_text()
+        assert marker.read_text() == "ran"
+
+    def test_fd_writer_gives_up_on_a_full_pipe(self):
+        r, w = os.pipe()
+        try:
+            os.set_blocking(w, False)
+            try:
+                while True:
+                    os.write(w, b"x" * 65536)
+            except BlockingIOError:
+                pass
+            os.set_blocking(w, True)
+            writer = lifecycle._FdWriter(w, budget=0.2)
+            t0 = time.monotonic()
+            writer.write("does not fit\n")
+            writer.write("nor does this\n")
+            assert time.monotonic() - t0 < 1.0     # one budget, then dropped at once
+        finally:
+            os.close(r)
+            os.close(w)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX pipes and fcntl")
+    def test_a_partly_full_console_does_not_block_the_teardown(self, tmp_path):
+        """The signal lands while stdout is a pipe with only 100 bytes free.
+
+        select() may report such a pipe writable ("a large write may still
+        block", select(2)); a blocking write of a 512-byte chunk then waits for
+        a reader that never comes, and the teardown never ran. Linux reports a
+        pipe writable only with a whole page free, so the child's select() is
+        made to answer as POSIX allows. Nothing reads the pipe until the child
+        has exited.
+        """
+        marker = tmp_path / "cancelled"
+        child = f"""
+import os, select, sys, time
+from madengine.core import lifecycle
+
+select.select = lambda r, w, x, t=None: ([], list(w), [])
+lifecycle.register_cancel_hook(lambda: open({str(marker)!r}, "w").write("ran"))
+lifecycle.install_signal_handlers()
+os.set_blocking(1, False)
+try:
+    while True:
+        os.write(1, b"x" * 4096)
+except BlockingIOError:
+    pass
+try:
+    while True:
+        os.write(1, b"x")
+except BlockingIOError:
+    pass
+os.set_blocking(1, True)
+print("ready", file=sys.stderr, flush=True)
+time.sleep(60)
+"""
+        env = dict(os.environ, MADENGINE_STATE_DIR=str(tmp_path / "state"))
+        err_path = tmp_path / "stderr"
+        with open(err_path, "w") as err_file:
+            proc = subprocess.Popen(
+                [sys.executable, "-c", child],
+                stdout=subprocess.PIPE, stderr=err_file, env=env,
+            )
+            try:
+                for _ in range(100):
+                    if "ready" in err_path.read_text():
+                        break
+                    time.sleep(0.1)
+                os.read(proc.stdout.fileno(), 100)  # 100 bytes free, then no reader
+                proc.send_signal(signal.SIGTERM)
+                code = proc.wait(timeout=30)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=10)
+                proc.stdout.close()
+        assert code == 130, err_path.read_text()
+        assert marker.read_text() == "ran"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX pipes and fcntl")
+    def test_fd_writer_does_not_block_when_select_overstates_room(self):
+        r, w = os.pipe()
+        try:
+            os.set_blocking(w, False)
+            try:
+                while True:
+                    os.write(w, b"x" * 65536)
+            except BlockingIOError:
+                pass
+            os.set_blocking(w, True)
+            os.read(r, 100)
+            writer = lifecycle._FdWriter(w, budget=5)
+            t0 = time.monotonic()
+            always_writable = lambda r_, w_, x_, t=None: ([], list(w_), [])  # noqa: E731
+            with patch("select.select", always_writable):
+                writer.write("y" * 512)
+                writer.write("dropped\n")
+            assert time.monotonic() - t0 < 1.0
+            assert os.get_blocking(w)           # flags restored
+        finally:
+            os.close(r)
+            os.close(w)
+
+    def test_fd_writer_writes_what_fits(self):
+        r, w = os.pipe()
+        try:
+            lifecycle._FdWriter(w).write("hello " * 200)
+            assert os.read(r, 4096) == ("hello " * 200).encode()
+        finally:
+            os.close(r)
+            os.close(w)
+
     def test_signal_runs_the_cancel_hook(self, tmp_path):
         marker = tmp_path / "cancelled"
         child = f"""

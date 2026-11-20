@@ -36,11 +36,17 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import typing
 import uuid
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
 
 # Labels stamped on every container madengine starts, so a container can be
 # traced back to the run that owns it long after that run's process is gone.
@@ -840,6 +846,87 @@ def container_watchdog_command(filename: typing.Optional[str] = None) -> str:
     return "sh -c '" + watchdog_script(filename) + "' "
 
 
+class _FdWriter:
+    """A text stream that writes straight to a file descriptor, unbuffered.
+
+    For the signal handler: it may interrupt a write to the buffered
+    sys.stdout / sys.stderr, which cannot be re-entered.
+
+    Best effort and bounded: a console is never worth more than the teardown it
+    reports on. When the reader of a pipe has stopped reading (a stalled pager or
+    log collector), a plain os.write blocks for good and the teardown never runs.
+    Each chunk is written only once select() says the fd can take it, and a
+    stream that stays full for ``budget`` seconds is given up on: this and every
+    later write to it is dropped. select() reporting the fd writable means some
+    room, not room for the chunk: a blocking write of it may still wait for the
+    reader. So each write is made with O_NONBLOCK set on the fd and its flags
+    restored right after (the flag is shared with every other writer of the open
+    file); a write that would block marks the stream stalled.
+    """
+
+    CHUNK = 512  # POSIX PIPE_BUF minimum
+
+    def __init__(self, fd: int, encoding: str = "utf-8", budget: float = 2.0):
+        self._fd = fd
+        self.encoding = encoding
+        self._budget = budget
+        self._stalled = False
+
+    def write(self, text: str) -> int:
+        if self._stalled:
+            return len(text)
+        import select
+
+        data = text.encode(self.encoding, "replace")
+        deadline = time.monotonic() + self._budget
+        while data:
+            try:
+                remaining = max(0.0, deadline - time.monotonic())
+                _, writable, _ = select.select([], [self._fd], [], remaining)
+                if not writable:
+                    self._stalled = True
+                    break
+                data = data[self._write_nonblocking(data[: self.CHUNK]):]
+            except BlockingIOError:
+                self._stalled = True
+                break
+            except InterruptedError:
+                continue
+            except (OSError, ValueError):
+                break
+        return len(text)
+
+    def _write_nonblocking(self, chunk: bytes) -> int:
+        if fcntl is None:  # Windows: no O_NONBLOCK on an fd
+            return os.write(self._fd, chunk)
+        flags = fcntl.fcntl(self._fd, fcntl.F_GETFL)
+        fcntl.fcntl(self._fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        try:
+            return os.write(self._fd, chunk)
+        finally:
+            fcntl.fcntl(self._fd, fcntl.F_SETFL, flags)
+
+    def flush(self) -> None:
+        pass
+
+    def isatty(self) -> bool:
+        try:
+            return os.isatty(self._fd)
+        except OSError:
+            return False
+
+
+def _use_unbuffered_console() -> None:
+    """Point sys.stdout / sys.stderr at their file descriptors, unbuffered."""
+    for attr, default_fd in (("stdout", 1), ("stderr", 2)):
+        stream = getattr(sys, attr, None)
+        try:
+            fd = stream.fileno() if stream is not None else default_fd
+        except (AttributeError, OSError, ValueError):
+            fd = default_fd
+        setattr(sys, attr, _FdWriter(fd, getattr(stream, "encoding", None) or "utf-8"))
+
+
 def install_signal_handlers() -> None:
     """Tear containers down when this process is signalled.
 
@@ -852,31 +939,41 @@ def install_signal_handlers() -> None:
 
     def handle(signum, frame):  # noqa: ANN001 - signal handler signature
         global _cleanup_in_progress
-        name = signal.Signals(signum).name
-        if _cleanup_in_progress:
-            print(f"\nReceived {name} again; exiting now.", flush=True)
-            os._exit(130)
-        _cleanup_in_progress = True
-        print(f"\nReceived {name}; stopping containers...", flush=True)
-        # Drop the heartbeats before anything else. Even if every docker call
-        # below times out, the containers now stop by themselves. Snapshot
-        # under the lock; the handler may be interrupting a holder of it.
-        with _heartbeat_lock:
-            paths = list(_heartbeat_paths)
-        for path in paths:
-            stop_heartbeat(path)
+        # The signal may land while the main thread is inside a write to
+        # sys.stdout / sys.stderr (madengine prints a lot). Writing to the same
+        # buffered stream from here then raises "RuntimeError: reentrant call
+        # inside <_io.BufferedWriter>", which used to escape this handler before
+        # any teardown ran: containers were left running and the process exited
+        # 1, not 130. Everything printed from here on goes straight to the file
+        # descriptors, and os._exit(130) runs whatever happens.
         try:
-            reap_registered(verbose=True, budget=SIGNAL_CLEANUP_BUDGET)
-        finally:
-            # os._exit skips finally blocks in the rest of the process, so
-            # cluster teardown has to run here, before that exit.
-            try:
-                run_cancel_hooks()
-            finally:
-                # os._exit skips interpreter shutdown deliberately: atexit hooks
-                # and destructors here would re-enter the teardown we just did,
-                # and any one of them could block past the grace period.
+            _use_unbuffered_console()
+            name = signal.Signals(signum).name
+            if _cleanup_in_progress:
+                # Exit first: the console may be what the first teardown is stuck
+                # on. The note is written only if stderr can take it right now.
+                _FdWriter(2, budget=0).write(f"\nReceived {name} again; exiting now.\n")
                 os._exit(130)
+            _cleanup_in_progress = True
+            print(f"\nReceived {name}; stopping containers...", flush=True)
+            # Drop the heartbeats before anything else. Even if every docker call
+            # below times out, the containers now stop by themselves. Snapshot
+            # under the lock; the handler may be interrupting a holder of it.
+            with _heartbeat_lock:
+                paths = list(_heartbeat_paths)
+            for path in paths:
+                stop_heartbeat(path)
+            try:
+                reap_registered(verbose=True, budget=SIGNAL_CLEANUP_BUDGET)
+            finally:
+                # os._exit skips finally blocks in the rest of the process, so
+                # cluster teardown has to run here, before that exit.
+                run_cancel_hooks()
+        finally:
+            # os._exit skips interpreter shutdown deliberately: atexit hooks
+            # and destructors here would re-enter the teardown we just did,
+            # and any one of them could block past the grace period.
+            os._exit(130)
 
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         try:

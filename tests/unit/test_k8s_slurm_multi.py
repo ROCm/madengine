@@ -41,6 +41,7 @@ def _deployment(tmp_path, monkeypatch, card=None, k8s=None, env_vars=None, image
     for f, text in {"scripts/demo/run_xPyD_models.slurm": "#!/bin/bash\n. ../common/cluster.sh\n",
                     "scripts/demo/models.yaml": "x: 1\n",
                     "scripts/common/cluster.sh": "export SITE=1\n",
+                    "compat/rocm.yaml": "formats: {}\n",
                     "scripts/other/big.sh": "unrelated\n"}.items():
         (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / f).write_text(text)
@@ -119,11 +120,12 @@ class TestSlurmMultiJob:
         assert mounts["/models"]["readOnly"] is True and "/logs" in mounts and "/results" in mounts
         assert pod["nodeSelector"] == {"node.lab/gpu": "true"}
 
-    def test_bundle_carries_the_card_dir_common_and_the_shim(self, tmp_path, monkeypatch):
+    def test_bundle_carries_the_card_dir_common_compat_and_the_shim(self, tmp_path, monkeypatch):
         d, _, _, _ = _prepared(tmp_path, monkeypatch)
         cm = yaml.safe_load(d.configmap_yaml)
         names = tarfile.open(fileobj=io.BytesIO(base64.b64decode(cm["binaryData"]["scripts.tgz"]))).getnames()
         assert "scripts/demo/run_xPyD_models.slurm" in names and "scripts/common/cluster.sh" in names
+        assert "compat/rocm.yaml" in names, "the capability catalog the launcher checks recipes against"
         assert ".mad-k8s/mad_k8s.py" in names and ".mad-k8s/mad_k8s_node.sh" in names
         assert not any(n.startswith("scripts/other") for n in names)
 
@@ -194,8 +196,7 @@ class TestPodHostnames:
 
 class TestRdmaNetworking:
     def test_host_network_puts_one_pod_per_node_across_runs(self, tmp_path, monkeypatch):
-        # Host-network pods share the node's ports (the shim agent's and the card's
-        # own), so no two -- of this run or another run, in any namespace -- may
+        # Host-network pods share the node's ports (the card's own), so no two -- of this run or another run, in any namespace -- may
         # land on one node.
         from madengine.deployment.k8s_slurm_multi import HOST_NETWORK_LABEL
         _, job, pod, _ = _prepared(tmp_path, monkeypatch, k8s={"host_network": True})
@@ -311,3 +312,18 @@ class TestPresetsDoNotSizeTheCard:
         res = self._bare(tmp_path, monkeypatch, k8s={"gpu_count": 4, "cpu": "16", "memory": "64Gi"})
         assert res["limits"]["amd.com/gpu"] == "4"
         assert (res["requests"]["cpu"], res["requests"]["memory"]) == ("16", "64Gi")
+
+
+class TestRecipePrecheckOnKubernetes:
+    def test_a_refused_recipe_creates_no_job(self, tmp_path, monkeypatch):
+        tool = tmp_path / "scripts" / "common" / "recipe" / "precheck.py"
+        tool.parent.mkdir(parents=True)
+        tool.write_text("import sys\nprint('not on gfx950', file=sys.stderr)\nsys.exit(1)\n")
+        d = _deployment(tmp_path, monkeypatch, k8s={"gpu_arch": "gfx950"})
+        assert d.prepare() is not True
+
+    def test_unknown_gpu_checks_nothing(self, tmp_path, monkeypatch):
+        tool = tmp_path / "scripts" / "common" / "recipe" / "precheck.py"
+        tool.parent.mkdir(parents=True)
+        tool.write_text("import sys\nsys.exit(1)\n")
+        _prepared(tmp_path, monkeypatch)

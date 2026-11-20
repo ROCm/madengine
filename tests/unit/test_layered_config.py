@@ -1328,3 +1328,63 @@ class TestTheTemplatedPathAlsoNeedsOnePathSegment:
             pathlib.Path(mod.__file__).parent / "templates" / "slurm" / "job.sh.j2"
         ).read_text()
         assert "#SBATCH --output={{ output_dir }}/madengine-{{ model_name }}" in tpl
+
+
+class TestVersion2Inheritance:
+    """Workload files that inherit (OmegaConf): base layers shared by many workloads."""
+
+    def _write(self, d, name, text):
+        p = d / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+        return p
+
+    def test_defaults_chain_merge_and_interpolation(self, tmp_path, monkeypatch):
+        from madengine.deployment.layered_config import load_config, resolve_env
+        self._write(tmp_path, "base/serve.yaml", "version: 2\nmodel:\n  env: {WIDE_EP: '1', TP: '8', GPUS: '${model.env.TP}'}\n")
+        self._write(tmp_path, "base/bench.yaml",
+                    "version: 2\ndefaults: [serve.yaml]\nbenchmark:\n  default: {env: {DURATION: '600'}}\n"
+                    "  niah: {env: {BENCHMARK_SCRIPT: niah, NIAH_WORDS: '1000'}}\n")
+        monkeypatch.setenv("SITE_TAG", "lab")
+        w = self._write(tmp_path, "w/kimi.yaml",
+                        "version: 2\ndefaults: [../base/bench.yaml]\nmodel:\n  env: {MODEL_NAME: Kimi-K3, TP: '2', "
+                        "TAG: '${oc.env:SITE_TAG,none}'}\nbenchmark:\n  niah: {env: {NIAH_WORDS: '50000'}}\n")
+        cfg = load_config(w)
+        env = resolve_env(cfg, benchmark="niah")
+        assert env["WIDE_EP"] == "1" and env["MODEL_NAME"] == "Kimi-K3"
+        assert env["TP"] == "2" and env["GPUS"] == "2"            # interpolation after the merge
+        assert env["NIAH_WORDS"] == "50000" and env["BENCHMARK_SCRIPT"] == "niah"   # one kind overridden
+        assert env["DURATION"] == "600" and env["TAG"] == "lab"
+
+    def test_a_cycle_and_a_missing_base_are_refused(self, tmp_path):
+        import pytest
+        from madengine.deployment.layered_config import LayeredConfigError, load_config
+        a = self._write(tmp_path, "a.yaml", "version: 2\ndefaults: [b.yaml]\n")
+        self._write(tmp_path, "b.yaml", "version: 2\ndefaults: [a.yaml]\n")
+        with pytest.raises(LayeredConfigError, match="cycle"):
+            load_config(a)
+        m = self._write(tmp_path, "m.yaml", "version: 2\ndefaults: [nope.yaml]\n")
+        with pytest.raises(LayeredConfigError, match="not found"):
+            load_config(m)
+
+    def test_version_1_is_unchanged(self, tmp_path):
+        from madengine.deployment.layered_config import load_config
+        p = self._write(tmp_path, "v1.yaml", "version: 1\nmodel:\n  env: {A: '${x}'}\n")
+        assert load_config(p)["model"]["env"]["A"] == "${x}"       # no interpolation in v1
+
+
+def test_a_submitted_value_reaches_every_value_built_from_it(tmp_path):
+    from madengine.deployment.layered_config import resolve_for_model
+    (tmp_path / "w.yaml").write_text(textwrap.dedent("""\
+        version: 2
+        model:
+          env:
+            POOL: "2"
+            xP: ${model.env.POOL}
+            TAGS: run-${model.env.xP}p
+        """))
+    card = {"name": "m", "env_vars": {"MAD_CONFIG": "w.yaml"}}
+    env, _ = resolve_for_model(card, tmp_path, runtime_env={"POOL": "1"})
+    assert (env["POOL"], env["xP"], env["TAGS"]) == ("1", "1", "run-1p")
+    env, _ = resolve_for_model(card, tmp_path, runtime_env={"POOL": "${literal}"})
+    assert env["xP"] == "${literal}"                      # a submitted value is taken literally

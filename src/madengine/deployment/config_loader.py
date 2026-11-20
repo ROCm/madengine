@@ -261,7 +261,7 @@ class ConfigLoader:
         # user supplied, and a self-managed launcher (slurm_multi) must not be
         # handed them: it runs the card's own script, which owns its environment.
         # Record which keys ONLY a preset set, so that path can leave them out.
-        # See SlurmDeployment._user_env_vars for the incident.
+        # See slurm_multi_env.user_env_vars for the incident.
         #
         # Keys already marked stay marked, so loading an already-loaded config
         # (whose env_vars now hold the preset values) does not launder them into

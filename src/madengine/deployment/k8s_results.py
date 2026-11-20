@@ -132,14 +132,9 @@ def gpu_arch_from_product_name(product: str) -> Optional[str]:
     ``Name : gfx...``. The serving node's product label is the architecture
     those GPUs actually are.
     """
-    name = (product or "").upper().replace("-", "").replace("_", "")
-    if "MI300" in name or "MI325" in name or "MI308" in name:
-        return "gfx942"
-    if "MI250" in name or "MI210" in name or "MI200" in name:
-        return "gfx90a"
-    if "MI100" in name:
-        return "gfx908"
-    return None
+    from madengine.core.gpu_products import arch_of_product
+
+    return arch_of_product(product)
 
 
 def _shape_from_node_gpus(per_node: Dict[str, int]) -> Optional[Dict[str, int]]:
