@@ -12,7 +12,7 @@ part is the top layer, "submit time", which it builds from, weakest first:
     distributed   xP / yD from the card's sglang_disagg block, when not set above
 
 and then the values madengine itself decides (the image the nodes pull, MAD_TOOLS,
-the Kubernetes LOG_PATH, MAD_PIN_SET -- the pin set the image is built from), labelled
+the Kubernetes LOG_PATH, MAD_IMAGE_COMPONENTS -- the builds an image_spec image holds), labelled
 "madengine".
 
 Every path that runs a slurm_multi card -- SLURM, Spur (a SlurmDeployment), and
@@ -27,7 +27,6 @@ from .config_loader import PRESET_ENV_KEYS
 from .layered_config import resolve_for_model
 
 SOURCES_VAR = "MAD_ENV_SOURCES"
-PIN_SET_VAR = "MAD_PIN_SET"
 COMPONENTS_VAR = "MAD_IMAGE_COMPONENTS"
 
 
@@ -116,9 +115,6 @@ def submit_env(
     if sglang:
         out.setdefault("xP", sglang.get("prefill_nodes", 1), "distributed")
         out.setdefault("yD", sglang.get("decode_nodes", 1), "distributed")
-    pin_set = pin_set_of(model_info, additional_context)
-    if pin_set:
-        out.setdefault(PIN_SET_VAR, pin_set, "madengine")
     components = image_components(image_build)
     if components:
         out.setdefault(COMPONENTS_VAR, components, "madengine")
@@ -132,18 +128,6 @@ def image_components(image_build: Optional[Dict[str, Any]]) -> Optional[str]:
     resolved = ((image_build or {}).get("build_plan") or {}).get("resolved") or {}
     comps = resolved.get("components") or {}
     return ",".join(f"{n}={k}" for n, k in comps.items()) or None
-
-
-def pin_set_of(model_info: Dict[str, Any], additional_context: Dict[str, Any]) -> Optional[str]:
-    """The pin set the card's image is built from (build arg PINS; the run's wins), if any.
-
-    The launcher checks the recipe's roles against that build's entry in MAD's capability
-    catalog (compat/rocm.yaml kernels, keyed <engine>@<pin set>), so the check is about the
-    image the nodes run rather than any build that would fit."""
-    for args in ((additional_context or {}).get("docker_build_arg"), model_info.get("docker_build_arg")):
-        if (args or {}).get("PINS"):
-            return str(args["PINS"])
-    return None
 
 
 def recipe_precheck(env: Dict[str, str], script_path: Path, gpu_arch: Optional[str]) -> Optional[str]:
