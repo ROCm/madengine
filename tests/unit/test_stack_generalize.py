@@ -81,7 +81,7 @@ def test_an_image_spec_image_is_its_own_spec_and_adds_nothing():
 def test_a_recorded_stack_becomes_a_spec_and_the_facts_compat_lacks():
     build = {"base_docker": "rocm/base:1", "image_info": stack(vllm="0.30.0", torch="2.13.0")}
     spec, delta = gen.image_of(build, MATRIX, "c", finder({("vllm", "0.30.0"): ["torch==2.13.0"]}))
-    assert spec["base"] == "rocm/base:1" and spec["components"] == {"torch": "2.13.0"}
+    assert spec["base"] == "rocm/base:1" and spec["components"] == {"torch": "2.13.0", "vllm": "0.30.0@fw"}
     assert list(delta["add"]["vllm"]) == ["0.30.0@fw"]
 
 

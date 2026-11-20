@@ -140,7 +140,12 @@ def image_of(image_build: dict, matrix: dict, card: str = "", find=None) -> typi
     spec, _ = infer(info, None, (image_build or {}).get("base_docker") or "", matrix)
     if not spec.get("base"):
         spec.pop("base", None)
-    return spec, generalize([(card, info)], matrix, find)
+    delta = generalize([(card, info)], matrix, find)
+    # The builds this stack establishes are its own: the spec selects them, against the matrix
+    # they are merged into.
+    for name, entries in delta["add"].items():
+        spec.setdefault("components", {})[name] = next(iter(entries))
+    return spec, delta
 
 
 def insert_builds(text: str, builds: typing.Dict[str, dict]) -> str:

@@ -241,7 +241,8 @@ class TestEmitConfig:
                           tmp_path / "out", build, find)
         import json as _json, yaml as _yaml
         written = _json.load(open(got["path"]))
-        assert written["spec"] == {"base": "rocm/base:1", "python": "3.12", "components": {"torch": "2.13.0"}}
+        assert written["spec"] == {"base": "rocm/base:1", "python": "3.12",
+                                   "components": {"torch": "2.13.0", "vllm": "0.30.0@fw"}}
         assert [u["component"] for u in written["unresolved"]] == ["mylib"]
         matrix = _yaml.safe_load(open(got["compat"]))
         assert matrix["components"]["vllm"]["0.30.0@fw"]["requires"] == ["torch==2.13.0"]
