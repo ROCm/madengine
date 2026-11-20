@@ -164,3 +164,11 @@ def test_an_image_is_placed_under_its_closest_stack_with_only_what_differs():
 def test_an_image_sharing_no_build_keeps_its_own_spec():
     spec = {"base": "z", "components": {"vllm": "0.30.0@fw"}}
     assert gen.place(spec, IMAGES) is spec
+
+
+def test_a_requirement_the_base_provides_is_the_bases():
+    base = {"packages": {"torch": "2.13.0"}}
+    image = {"packages": {"torch": "2.13.0", "vllm": "0.30.0"}}
+    _, delta = gen.image_of({"base_docker": "b", "image_info": image, "base_info": base}, MATRIX, "c",
+                            finder({("vllm", "0.30.0"): ["torch==2.13.0"]}))
+    assert "requires" not in delta["add"]["vllm"]["0.30.0@fw"]

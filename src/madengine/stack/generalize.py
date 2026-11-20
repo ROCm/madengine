@@ -5,7 +5,8 @@ how each installs. A build manifest is the specific instance: per image, its sta
 build_plan for an image_spec image) and its base. When a card's configuration is generated
 (`madengine build --emit-config`, the pipeline's STANDALONE record), its image is generalized here:
 
-* the image as a spec: the base it was built on and the compat builds of what it added;
+* the image as a spec: the base it was built on and the compat builds of what it added (what the
+  base provides is the base's, and no build's requirement);
 * what compat lacks for that spec, as general facts: a build for a component version an
   authorized index serves (its url, and its requirements on components compat knows, from the
   wheel's metadata) -- merged into a copy of the matrix beside the generated configs, for the PR
@@ -106,8 +107,10 @@ def generalize(stacks: typing.Iterable[tuple], matrix: dict, find=None) -> dict:
     unresolved: typing.Dict[typing.Tuple[str, str], dict] = {}
     contradicts: typing.Dict[typing.Tuple[str, str, str], dict] = {}
     for card, info, *base in stacks:
-        spec, findings = infer(info, base[0] if base else None, "", matrix)
+        base = base[0] if base else None
+        spec, findings = infer(info, base, "", matrix)
         packages = {wheels.normalize(n): v for n, v in (info.get("packages") or {}).items()}
+        from_base = {wheels.normalize(n) for n in ((base or {}).get("packages") or {})}
         for f in findings:
             if f["status"] not in ("unauthorized", "new"):
                 continue
@@ -135,6 +138,8 @@ def generalize(stacks: typing.Iterable[tuple], matrix: dict, find=None) -> dict:
             reqs = []
             for line in _requires(wheel, matrix):
                 req = Requirement(line)
+                if wheels.normalize(req.name) in from_base:
+                    continue          # the base image provides it, as it does for the matrix's builds
                 have = packages.get(wheels.normalize(req.name))
                 v = _version(have) if have else None
                 if v is not None and req.specifier and not req.specifier.contains(v, prereleases=True):
