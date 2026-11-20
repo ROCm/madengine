@@ -138,7 +138,7 @@ def find_config(
     return candidate if candidate.exists() else None
 
 
-def load_config(path: Path) -> Dict[str, Any]:
+def load_config(path: Path, over: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Parse and version-check a way-4 file.
 
     Version 2 adds inheritance, so a fleet of workloads is maintained as a few shared layers:
@@ -153,11 +153,13 @@ def load_config(path: Path) -> Dict[str, Any]:
           niah: {env: {NIAH_WORDS: ...}} # file overrides one benchmark, not the whole list
 
     Bases may have defaults of their own; a cycle is refused. Mappings merge (OmegaConf), lists
-    and scalars are replaced. Interpolations resolve after the whole chain is merged.
+    and scalars are replaced. Interpolations resolve after the whole chain is merged, with *over*
+    (the card's and the run's values, which win) laid over the model.env names the file sets -- so
+    a value given at submit reaches every value built from it.
     """
     data = _load_raw(path)
     if data.get("version") == 2:
-        data = _compose_v2(path, data, ())
+        data = _compose_v2(path, data, (), over)
     return data
 
 
@@ -187,12 +189,19 @@ def _load_raw(path: Path) -> Dict[str, Any]:
     return data
 
 
-def _compose_v2(path: Path, data: Dict[str, Any], seen: Tuple[Path, ...]) -> Dict[str, Any]:
-    """The file merged over its `defaults` chain, interpolations resolved (OmegaConf)."""
+def _compose_v2(path: Path, data: Dict[str, Any], seen: Tuple[Path, ...],
+                over: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The file merged over its `defaults` chain, *over* laid over the model.env names it sets,
+    interpolations resolved (OmegaConf)."""
     from omegaconf import OmegaConf
     from omegaconf.errors import OmegaConfBaseException
 
     merged = _merge_chain(Path(path).resolve(), data, seen)
+    env = (merged.get("model") or {}).get("env")
+    if over and isinstance(env, dict):
+        for k in env:
+            if k in over and over[k] is not None:     # taken literally: escaped for OmegaConf
+                env[k] = str(over[k]).replace("${", "\\${")
     try:
         resolved = OmegaConf.to_container(OmegaConf.create(merged), resolve=True)
     except OmegaConfBaseException as exc:
@@ -397,7 +406,9 @@ def resolve_for_model(
     if path is None:
         return {}, warnings
 
-    config = load_config(path)
+    model_env = model_info.get("env_vars") or {}
+    runtime = runtime_env or {}
+    config = load_config(path, {**model_env, **runtime})
     serve = (config.get("model") or {}).get("serve")
     if serve:
         # Same rule as a site: block. resolve_serve_args can merge the map, but
@@ -409,8 +420,6 @@ def resolve_for_model(
             "than dropped. Remove it until a runtime applies it, or put the "
             "flags in the file the workload script already reads (models.yaml)."
         )
-    model_env = model_info.get("env_vars") or {}
-    runtime = runtime_env or {}
     benchmark = _benchmark_kind(config, model_env, runtime)
     env = resolve_env(
         config,

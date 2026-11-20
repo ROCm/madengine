@@ -1371,3 +1371,20 @@ class TestVersion2Inheritance:
         from madengine.deployment.layered_config import load_config
         p = self._write(tmp_path, "v1.yaml", "version: 1\nmodel:\n  env: {A: '${x}'}\n")
         assert load_config(p)["model"]["env"]["A"] == "${x}"       # no interpolation in v1
+
+
+def test_a_submitted_value_reaches_every_value_built_from_it(tmp_path):
+    from madengine.deployment.layered_config import resolve_for_model
+    (tmp_path / "w.yaml").write_text(textwrap.dedent("""\
+        version: 2
+        model:
+          env:
+            POOL: "2"
+            xP: ${model.env.POOL}
+            TAGS: run-${model.env.xP}p
+        """))
+    card = {"name": "m", "env_vars": {"MAD_CONFIG": "w.yaml"}}
+    env, _ = resolve_for_model(card, tmp_path, runtime_env={"POOL": "1"})
+    assert (env["POOL"], env["xP"], env["TAGS"]) == ("1", "1", "run-1p")
+    env, _ = resolve_for_model(card, tmp_path, runtime_env={"POOL": "${literal}"})
+    assert env["xP"] == "${literal}"                      # a submitted value is taken literally
