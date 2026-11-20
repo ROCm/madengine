@@ -10,7 +10,6 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from madengine.deployment.base import DeploymentStatus
 from madengine.deployment.slurm import SlurmDeployment
