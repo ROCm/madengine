@@ -259,3 +259,14 @@ class TestNamedImages:
         card = {"name": "w/m", "_fs_rel_path": "w",
                 "image_spec": {"extends": "${images.stack-a}", "gpu_arch": "gfx950"}}
         assert image_spec.effective_image_spec(card, {}, str(tmp_path)) == {"base": "b", "gpu_arch": "gfx950"}
+
+    def test_a_named_spec_may_extend_another(self, tmp_path):
+        write_mad(tmp_path)
+        images = tmp_path / "compat" / "images"
+        images.mkdir()
+        (images / "common.yaml").write_text(yaml.safe_dump({"env": {"A": "1", "B": "1"}, "finish": ["check"]}))
+        (images / "stack.yaml").write_text("extends: ${images.common}\nbase: b\nenv: {B: '2'}\n")
+        for value in ("${images.stack}", {"extends": "${images.stack}", "gpu_arch": "gfx950"}):
+            spec = image_spec.effective_image_spec({"name": "w/m", "_fs_rel_path": "w", "image_spec": value}, {},
+                                                   str(tmp_path))
+            assert spec["env"] == {"A": "1", "B": "2"} and spec["finish"] == ["check"] and spec["base"] == "b"

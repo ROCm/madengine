@@ -173,14 +173,21 @@ def _card_spec(model_info: typing.Dict, root: str) -> typing.Optional[dict]:
                  else f"no {SPEC_FILE} next to the card's models.json")
         raise ImageSpecError(f"{model_info.get('name')}: {SPEC_KEY} reference: {e} "
                              f"[{where}]") from None
-    if isinstance(resolved, dict) and "extends" in resolved:
-        base = resolved.pop("extends")
-        if not isinstance(base, dict):
-            raise ImageSpecError(f"{model_info.get('name')}: 'extends' must name a spec")
-        resolved = _deep_merge(base, resolved)
+    resolved = _flatten(resolved, model_info.get("name"))
     if not isinstance(resolved, dict):
         raise ImageSpecError(f"{model_info.get('name')}: {SPEC_KEY} must resolve to an object")
     return resolved
+
+
+def _flatten(spec, name):
+    """A spec with its `extends` chain merged in, base first (a named spec may extend another)."""
+    if not isinstance(spec, dict) or "extends" not in spec:
+        return spec
+    spec = dict(spec)
+    base = spec.pop("extends")
+    if not isinstance(base, dict):
+        raise ImageSpecError(f"{name}: 'extends' must name a spec")
+    return _deep_merge(_flatten(base, name), spec)
 
 
 def effective_image_spec(
