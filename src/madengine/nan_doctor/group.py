@@ -1,4 +1,4 @@
-"""5a: group NaN capsules, then order the groups for replay (debug-nan).
+"""5a: group NaN capsules, then order the groups for replay (mad-debug-numeric).
 
     madengine nan group <capsule_dir> --image <image> --out-dir <dir> [--recursive] [--job]
     madengine nan group <capsule_dir> --out-dir <dir> --from-json groups.json    # no container
@@ -9,11 +9,15 @@ writes, under --out-dir:
   groups.txt             the grouping as printed
   groups_priority.txt    one line per group in replay order:  G<n> <count> <capsule> <op>[ TAG]
 TAG is FALSE_POSITIVE? (an allocator/view op, or only uninitialised memory: not replayed),
-ORIGIN (the world-size>1 job's origin rank), or PROPAGATED? (its inputs were already
-non-finite at capture: the bug is upstream).
+COLLECTIVE (a synchronous collective: the member ranks' capsules of one call, replayed
+together), ORIGIN (the world-size>1 job's origin rank), or PROPAGATED? (its inputs were
+already non-finite at capture: the bug is upstream).
 
 Priority = capsule count; with a job manifest, the group holding the origin rank's capsule
-goes first, represented by that rank's own capsule.
+goes first, represented by that rank's own capsule.  One COLLECTIVE group per op: each
+rank's input to a collective differs by design, so compare_nan_capsules splits one call
+into a group per rank and trial.  The grouping key itself is compare_nan_capsules' (an
+Inductor / Triton kernel op is one site per kernel source hash + operand shapes).
 """
 
 import argparse
@@ -23,6 +27,7 @@ import json
 import os
 import shlex
 import sys
+from pathlib import Path
 
 FALSE_POSITIVE_OPS = (
     "aten.empty",
@@ -32,6 +37,8 @@ FALSE_POSITIVE_OPS = (
     "aten.view",
     "aten.as_strided",
 )
+# synchronous collectives (op_nan_capture._SYNC_COLLECTIVE_OPS)
+COLLECTIVE_OPS = ("vllm.all_reduce", "vllm.all_gather", "vllm.reduce_scatter")
 
 
 def _members(g):
@@ -43,14 +50,15 @@ def _members(g):
 
 def priority(groups_json, capsule_dir):
     """Lines of groups_priority.txt, in replay order."""
-    groups = json.load(open(groups_json))["groups"]
+    groups = json.loads(Path(groups_json).read_text())["groups"]
     origin = set()
     for m in glob.glob(
         os.path.join(capsule_dir, "**", "manifest*.json"), recursive=True
     ):
         try:
             origin |= set(
-                json.load(open(m)).get("verdict", {}).get("origin_ranks") or []
+                json.loads(Path(m).read_text()).get("verdict", {}).get("origin_ranks")
+                or []
             )
         except (OSError, ValueError):
             pass
@@ -67,10 +75,8 @@ def priority(groups_json, capsule_dir):
             None,
         )
 
-    lines = []
-    for i, g in enumerate(
-        sorted(groups, key=lambda g: (origin_member(g) is None, -g["count"])), 1
-    ):
+    rows = []
+    for g in sorted(groups, key=lambda g: (origin_member(g) is None, -g["count"])):
         ident = g["identity"]
         if isinstance(ident, str):
             try:
@@ -89,6 +95,10 @@ def priority(groups_json, capsule_dir):
             mi and all(x.get("nan_origin") == "uninitialized" for x in mi)
         ):
             tag = " FALSE_POSITIVE?"
+        elif op.startswith(COLLECTIVE_OPS) and not (
+            fin and all(f is False for f in fin)
+        ):
+            tag = " COLLECTIVE"
         elif om:
             tag = " ORIGIN"
         elif (fin and all(f is False for f in fin)) or (
@@ -97,10 +107,32 @@ def priority(groups_json, capsule_dir):
             tag = " PROPAGATED?"
         else:
             tag = ""
-        lines.append(
-            "G%d %d %s %s%s" % (i, g["count"], om or g["representative"], op, tag)
-        )
-    return lines
+        rows.append([g["count"], om or g["representative"], op, tag])
+    out, seen = [], {}
+    for r in rows:
+        if r[3] == " COLLECTIVE" and r[2] in seen:
+            seen[r[2]][0] += r[0]
+            continue
+        if r[3] == " COLLECTIVE":
+            seen[r[2]] = r
+        out.append(r)
+    return ["G%d %d %s %s%s" % (i, *r) for i, r in enumerate(out, 1)]
+
+
+def collective_notes(lines):
+    """groups.txt lists a collective's capsules as a group per rank and trial; say what
+    groups_priority.txt made of them, or the two files read as a contradiction."""
+    out = []
+    for ln in lines:
+        f = ln.split()
+        if ln.endswith(" COLLECTIVE"):
+            out.append(
+                "NOTE (5a): the %s capsules above -- one group per rank and trial, because "
+                "each rank's input to a\n  collective differs by design -- are ONE group in "
+                "groups_priority.txt: %s, %s capsule(s), COLLECTIVE.\n"
+                % (f[3], f[0], f[1])
+            )
+    return out
 
 
 def main(argv=None):
@@ -175,6 +207,10 @@ def main(argv=None):
     lines = priority(gj, os.path.abspath(a.capsule_dir))
     with open(os.path.join(out, "groups_priority.txt"), "w") as f:
         f.write("\n".join(lines) + ("\n" if lines else ""))
+    notes = collective_notes(lines)
+    if notes and os.path.exists(os.path.join(out, "groups.txt")):
+        with open(os.path.join(out, "groups.txt"), "a") as f:
+            f.write("".join(notes))
     print("\n".join(lines))
     print(
         "GROUPS=%d (%s)"

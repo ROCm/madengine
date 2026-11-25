@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Wire the nan-doctor capture into a model source, and take it out again
-(mad-debug-nan step 4.1 and step 9's "restore the source").
+(mad-debug-numeric step 4.1 and step 9's "restore the source").
 
     madengine nan wire apply   <model.py> --backup-dir <ARTIFACT_DIR> [--loop-line N]
     madengine nan wire restore <model.py> --backup-dir <ARTIFACT_DIR>
@@ -15,7 +15,7 @@ apply inserts the three-line integration of nan_doctor_rt.op_nan_capture.capture
     cap.step()                            first statement of the loop body
     cap.close()                           just after the loop
 
---loop-line defaults to find_capture_points.py's top LOOP.  It first copies the
+--loop-line defaults to `madengine nan capture-points`' top LOOP.  It first copies the
 file to <backup-dir>/<name>.orig with its sha256, refuses a file that already
 has a capture, and checks the result compiles.  restore copies the backup back
 and verifies the bytes match the recorded sha256.  Arming, filters and the
@@ -31,13 +31,14 @@ import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MARK = "# nan-doctor capture (madengine nan wire)"
 
 
 def sha(path):
-    return hashlib.sha256(open(path, "rb").read()).hexdigest()
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def paths(src, backup_dir):
@@ -64,13 +65,14 @@ def top_loop(src):
 
 
 def apply(src, backup_dir, loop_line):
-    text = open(src).read()
+    text = Path(src).read_text()
     if "capture_from_env" in text or "OpNanCapture" in text:
         sys.exit("%s already has a capture; not wiring twice" % src)
     orig, shaf = paths(src, backup_dir)
     os.makedirs(backup_dir, exist_ok=True)
     shutil.copy2(src, orig)
-    open(shaf, "w").write(sha(src) + "\n")
+    # sha256sum -c format, run in its dir
+    Path(shaf).write_text("%s  %s\n" % (sha(src), os.path.basename(orig)))
 
     tree = ast.parse(text)
     imports = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
@@ -99,9 +101,9 @@ def apply(src, backup_dir, loop_line):
         '_nd_sys.path.insert(0, _nd_os.environ.get("NAN_DOCTOR_RT_PARENT", "/opt/nan_doctor"))\n'
         "from nan_doctor_rt.op_nan_capture import capture_from_env\n" % MARK,
     )
-    open(src, "w").write("".join(lines))
+    Path(src).write_text("".join(lines))
     try:
-        compile(open(src).read(), src, "exec")
+        compile(Path(src).read_text(), src, "exec")
     except SyntaxError as e:
         shutil.copy2(orig, src)
         sys.exit("wired source does not compile (%s); original restored" % e)
@@ -113,7 +115,7 @@ def apply(src, backup_dir, loop_line):
             loop.lineno,
             loop.end_lineno,
             orig,
-            open(shaf).read().strip()[:16],
+            Path(shaf).read_text().split()[0][:16],
         )
     )
 
@@ -122,7 +124,7 @@ def restore(src, backup_dir):
     orig, shaf = paths(src, backup_dir)
     if not os.path.exists(orig):
         sys.exit("no backup %s" % orig)
-    want = open(shaf).read().strip()
+    want = Path(shaf).read_text().split()[0]  # "<hash>  <file>"; or a hash alone
     if sha(orig) != want:
         sys.exit("backup %s does not match its recorded sha256; not restoring" % orig)
     shutil.copy2(orig, src)
@@ -131,8 +133,8 @@ def restore(src, backup_dir):
 
 def status(src, backup_dir):
     orig, shaf = paths(src, backup_dir)
-    wired = MARK in open(src).read()
-    same = os.path.exists(shaf) and sha(src) == open(shaf).read().strip()
+    wired = MARK in Path(src).read_text()
+    same = os.path.exists(shaf) and sha(src) == Path(shaf).read_text().split()[0]
     print(
         "%s: %s; backup %s%s"
         % (

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write README.md for a step-6 reproducer, tar it, and print its sha256 (debug-nan).
+"""Write README.md for a step-6 reproducer, tar it, and print its sha256 (mad-debug-numeric).
 
     madengine nan readme --repro <ARTIFACT_DIR>/repro-G1 \
         --attempt <ARTIFACT_DIR>/replay/G1/c2.<job>.<host> --groups <ARTIFACT_DIR>/groups.json \
@@ -36,8 +36,10 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 from .verdict import (
     c1_rows,
@@ -57,11 +59,15 @@ EVERY_RUN = (
     "(`CAPSULE_CONCURRENCY=1 bash run.sh`)."
 )
 COTENANT = (
-    "**The replay alone does not reproduce this.** Each GPU runs one replay beside a "
-    "co-tenant workload -- `{cot}` -- which `run.sh` starts and stops with it. Replayed "
-    "alone, or with copies of itself as the only load, the same capsule ran clean: the "
-    "fault needs that kind of device load (mad-debug-nan step5-pressure.md). Do not close "
-    "this after a run without the co-tenant."
+    "**It was reproduced beside a co-tenant workload.** Each GPU runs one replay beside "
+    "`{cot}`, which `run.sh` starts and stops with it -- the device load the model "
+    "needed to fail (mad-debug-numeric step5-pressure.md). A run without the co-tenant that "
+    "reports `0/N` does not close this."
+)
+SOLO_PROBE = (
+    "It also reproduced with **one copy on one GPU** ({probe} in the ladder's solo probe): "
+    "no co-tenant is needed, and a single-process run is a valid test of a fix. The rate "
+    "above, at {conc} copies per GPU, is the one to compare against."
 )
 SOLO = (
     "It reproduced with **one copy per GPU** -- no co-tenant needed at this rate, which "
@@ -76,6 +82,25 @@ KB_TERMINAL = (
     "On the very operands this replay hands the op, its fp64 CPU reference is finite "
     "and fits the output dtype, so no correct kernel returns a non-finite value "
     "from them -- whatever produced those operands."
+)
+KB_WRONG = (
+    "On the very operands this replay hands the op, its fp64 CPU reference is finite "
+    "and fits the output dtype, and the op returns a WRONG FINITE value far from it "
+    "(the replay counts runs that repeat that wrong value); a correct kernel does not. "
+    "The model's NaN comes later, where the wrong value overflows downstream."
+)
+KB_VALUE = (
+    "The op has a value check (nan_doctor_rt `math_refs.VALUE_CHECKS`): an fp32 recompute, "
+    "from the op's own inputs, of what its consumer reads. On these operands that reference "
+    "is finite, and the runs counted below are the ones whose output is off from it by more "
+    "than a correct call ever is -- wrong FINITE values, never a NaN. A correct kernel does "
+    "not do that, whatever produced the operands."
+)
+KB_RERUN = (
+    "The op is not repeatable: each counted run executes it twice, the second time on "
+    "identical copies of its operands (and the same random-number state), and the two "
+    "outputs differ by more than rounding noise. A correct deterministic kernel returns the "
+    "same bits; this one returns another answer -- a race inside it, whatever the operands are."
 )
 KB_SYNTH = (
     "On these operands -- synthesized from the capsule's per-tensor statistics, "
@@ -114,10 +139,13 @@ UNV = (
 )
 
 
+# Written for a REPRODUCING attempt only, so a held-back variable was not needed for this NaN;
+# the old wording ("pass it, or the replay runs without it") read as a missing step.
 HELD = (
-    "\n* **`{var}` is held back by the replay's env restore** (`env:` banner `held back:`) and "
-    "`run.sh` does not pass it: if the workload set it (e.g. a library path the model needs), "
-    "add `--env {var}=<the workload's value>` to the replay command in `run.sh`, or the replay runs without it."
+    "\n* `{var}` was set in the workload but is held back by the replay's env restore (`env:` "
+    "banner `held back:`); the replay reproduced without it (in a container the image's own "
+    "value applies), so this NaN does not need it. Add `--env {var}=<the workload's value>` "
+    "to the replay command in `run.sh` only if a later experiment depends on it."
 )
 
 
@@ -127,17 +155,33 @@ def cotenant_of(val):
     return None if (val or "").strip().lower() in ("", "none", "0", "off") else val
 
 
+# Held back on purpose by the replay (device selection: run.sh sets it per copy).
+HELD_OK = (
+    "HIP_VISIBLE_DEVICES",
+    "ROCR_VISIBLE_DEVICES",
+    "CUDA_VISIBLE_DEVICES",
+    "GPU_DEVICE_ORDINAL",
+)
+# Library logging the capture turned on (HIPBLASLT_LOG_MASK/FILE on capture GPU 0, ...): not
+# something the replay needs, so not a "held back" warning (seen on qwen_tf32).
+HELD_LOGGING = re.compile(
+    r"^(HIPBLASLT_LOG_|ROCBLAS_LOG_|ROCBLAS_LAYER$|AMD_LOG_|TENSILE_DB$|HIP_TRACE_)"
+)
+
+
 def held_back(logs, repro):
     """Vars a copy log's env banner lists as `held back:` that run.sh does not export."""
     run_sh = os.path.join(repro, "run.sh")
-    txt = open(run_sh).read() if os.path.exists(run_sh) else ""
+    txt = Path(run_sh).read_text() if os.path.exists(run_sh) else ""
     out = []
     for lg in logs[:1]:
-        for l in open(lg, errors="replace").read().splitlines():
+        for l in Path(lg).read_text(errors="replace").splitlines():
             m = re.match(r"\s*held back:\s*([A-Za-z_][A-Za-z0-9_]*)", l)
             if (
                 m
                 and m.group(1) not in out
+                and m.group(1) not in HELD_OK
+                and not HELD_LOGGING.match(m.group(1))
                 and not re.search(
                     r"(^|[\s;])(export\s+)?%s=" % re.escape(m.group(1)), txt, re.M
                 )
@@ -156,7 +200,11 @@ def sha256(path):
 
 def propose(rows, terminal=None):
     verdict, why = _propose(rows, terminal)
-    kb = KB_TERMINAL if "same operands" in why else KB
+    kb = (
+        KB_RERUN
+        if "rerun check" in why
+        else KB_TERMINAL if "same operands" in why else KB
+    )
     return (
         verdict,
         {"KERNEL_BUG": kb, "KERNEL_BUG_UNVERIFIED": UNV}.get(verdict, ""),
@@ -167,7 +215,8 @@ def propose(rows, terminal=None):
 def image_from_run_sh(repro):
     m = (
         re.search(
-            r"IMAGE=\$\{IMAGE:-([^}]+)\}", open(os.path.join(repro, "run.sh")).read()
+            r"IMAGE=\$\{IMAGE:-([^}]+)\}",
+            Path(os.path.join(repro, "run.sh")).read_text(),
         )
         if os.path.exists(os.path.join(repro, "run.sh"))
         else None
@@ -177,10 +226,14 @@ def image_from_run_sh(repro):
 
 def pack(repro, ledger, step, verdict):
     tgz = repro.rstrip("/") + ".tar.gz"
+    # pigz when there is one: the same .tar.gz, on every core (a 1 GB real-values package
+    # took 4 min with gzip and outran an agent's tool timeout on a --repack)
+    z = ["-I", "pigz"] if shutil.which("pigz") else ["-z"]
     subprocess.check_call(
         [
             "tar",
-            "-czf",
+            *z,
+            "-cf",
             tgz,
             "-C",
             os.path.dirname(repro),
@@ -232,8 +285,17 @@ def main(argv=None):
         default=os.environ.get("CAPSULE_MODE", "chain"),
         help="chain or op, as the reproducing ladder ran (default $CAPSULE_MODE)",
     )
+    p.add_argument(
+        "--chain-package",
+        help="the op-only package of a chain capsule (capsule_slim): "
+        "the verified chain package kept beside it, named in the README",
+    )
     p.add_argument("--ledger")
     p.add_argument("--step", default="step6")
+    p.add_argument(
+        "--note",
+        help="--repack: the TARBALL ledger line's label (default: from --step and the package)",
+    )
     a = p.parse_args(argv)
     a.cotenant = cotenant_of(a.cotenant)
     repro = os.path.abspath(a.repro)
@@ -243,9 +305,13 @@ def main(argv=None):
             what = "fix package (step 8), README by hand"
         elif not glob.glob(os.path.join(repro, "capsule", "*.pt")):
             what = "native package (step 5N), README by hand"
+        elif "<!-- CHECK" in Path(os.path.join(repro, "README.md")).read_text():
+            what = (
+                "repacked; README CHECK line STILL OPEN (resolve it: step6-finish.md)"
+            )
         else:
             what = "repacked after README edit (CHECK resolved)"
-        pack(repro, a.ledger, a.step, what)
+        pack(repro, a.ledger, a.step, a.note or what)
         return
     if not a.attempt:
         sys.exit("--attempt is required (unless --repack)")
@@ -256,7 +322,7 @@ def main(argv=None):
     if len(caps) != 1:
         sys.exit("expected exactly one capsule in %s/capsule" % repro)
     cap = caps[0]
-    summ = open(os.path.join(a.attempt, "summary.txt")).read().splitlines()
+    summ = Path(os.path.join(a.attempt, "summary.txt")).read_text().splitlines()
     tot = next((l for l in summ if l.startswith("=== totals")), "")
     m = re.search(r"non-finite (\d+)/(\d+)", tot)
     bad, runs = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
@@ -268,7 +334,8 @@ def main(argv=None):
             if re.match(r"\s+g\d+_k\d+\.", l)
         }
     )
-    conc = re.search(r"/c(\d+)\.", a.attempt.rstrip("/") + "/")
+    # c1det: the ladder's deterministic probe
+    conc = re.search(r"/c(\d+)(?:det)?\.", a.attempt.rstrip("/") + "/")
     conc = int(conc.group(1)) if conc else (copies // max(gpus, 1))
     stopped = next((l for l in summ if l.startswith("=== stopped early")), "")
     envl = next(
@@ -279,7 +346,7 @@ def main(argv=None):
     # captured build: the line plus its indented continuation, from one copy log
     build, key = [], ""
     for lg in sorted(glob.glob(os.path.join(a.attempt, "g*_k*.log")))[:1]:
-        lines = open(lg, errors="replace").read().splitlines()
+        lines = Path(lg).read_text(errors="replace").splitlines()
         for i, l in enumerate(lines):
             if l.startswith(
                 ("captured on:", "captured build:", "contention:", "operands:")
@@ -299,7 +366,7 @@ def main(argv=None):
     op = geom = ""
     if a.groups:
         rep = os.path.basename(cap)
-        for g in json.load(open(a.groups))["groups"]:
+        for g in json.loads(Path(a.groups).read_text())["groups"]:
             if os.path.basename(g["representative"]) == rep:
                 ident = g["identity"]
                 if isinstance(ident, str):
@@ -312,10 +379,66 @@ def main(argv=None):
     terminal = c1_terminal(summ)
     if not rows:  # single-op replay (CAPSULE_MODE=op): the op's own fp64 check
         for lg in sorted(glob.glob(os.path.join(a.attempt, "g*_k*.log"))):
-            terminal = op_terminal(open(lg, errors="replace").read().splitlines())
+            terminal = op_terminal(Path(lg).read_text(errors="replace").splitlines())
             if terminal:
                 break
     verdict, sentence, why = propose(rows, terminal)
+    if (
+        verdict == "KERNEL_BUG"
+        and sentence != KB_RERUN
+        and any(
+            "returned a WRONG FINITE value" in l
+            for l in summ
+            + sum(
+                (
+                    Path(lg).read_text(errors="replace").splitlines()
+                    for lg in sorted(glob.glob(os.path.join(a.attempt, "g*_k*.log")))[
+                        :1
+                    ]
+                ),
+                [],
+            )
+        )
+    ):
+        sentence = KB_WRONG
+        why = why.replace("terminal non-finite", "terminal wrong finite value")
+    # A capsule captured for a wrong FINITE value (no NaN anywhere): its summary says so,
+    # and every "NaN" sentence below would be false.
+    wrongcap = any(l.lstrip().startswith("(wrong-value capsule") for l in summ)
+    if wrongcap and verdict == "KERNEL_BUG" and sentence not in (KB_WRONG, KB_RERUN):
+        sentence = KB_VALUE
+    # An Inductor kernel's reference is not a CPU run: it is the kernel's own source
+    # promoted to fp64, run on the GPU (inductor_ref.py)
+    kop = op or (rows[-1]["op"] if rows else "")
+    if kop.startswith("inductor.") and sentence:
+        sentence = sentence.replace(
+            "fp64 CPU reference",
+            "fp64 reference (the kernel's own Triton source "
+            "promoted to fp64, run on the GPU: `inductor_ref.py`)",
+        )
+    probe = ""
+    for ps in sorted(
+        glob.glob(
+            os.path.join(
+                os.path.dirname(os.path.abspath(a.attempt.rstrip("/"))),
+                "c1det.*",
+                "summary.txt",
+            )
+        )
+    ):
+        pm = re.search(
+            r"non-finite (\d+)/(\d+)",
+            next(
+                (
+                    l
+                    for l in Path(ps).read_text().splitlines()
+                    if l.startswith("=== totals")
+                ),
+                "",
+            ),
+        )
+        if pm and int(pm.group(1)) > 0:
+            probe = "%s/%s runs" % pm.groups()
     synth = any("SYNTHETIC" in b for b in build)
     inconsistent = any("SYNTHETIC-INCONSISTENT" in b for b in build)
     derived = any("SYNTHETIC (derived" in b for b in build)
@@ -333,7 +456,7 @@ def main(argv=None):
     kfacts = (
         dict(
             re.match(r"(\w+):\s*(.*)", l).groups()
-            for l in open(kern[-1]).read().splitlines()
+            for l in Path(kern[-1]).read_text().splitlines()
             if re.match(r"\w+:", l)
         )
         if kern
@@ -359,14 +482,16 @@ def main(argv=None):
     chain = " -> ".join(r["op"] for r in rows) or op or "?"
     unit = "launches of the op alone" if a.mode == "op" else "chain runs"
     rate = "%d/%d %s (%.2g per run)" % (bad, runs, unit, bad / runs) if runs else "n/a"
+    if wrongcap and runs:
+        rate += " with a wrong finite output"
     size = os.path.getsize(cap)
 
-    readme = """# NaN reproducer: {op}{geom}
+    readme = """# {title}: {op}{geom}
 
 ## What this is
 
 A capsule recorded from a live run of the user's workload at the moment `{op}`
-produced a non-finite output, plus the scripts to replay it **without the model, dataset or
+{produced}, plus the scripts to replay it **without the model, dataset or
 training code**.
 {synth_note}
 * {replayed}: `{chain}`{key}
@@ -387,19 +512,38 @@ training code**.
 bash run.sh            # {override}
 ```
 
-It starts **{conc} {copies} of the replay on every GPU** of the node and prints
+It runs the replay ladder: {probe_first}**{conc} {copies} of the replay on every GPU** of the node; it prints
 `LADDER_RESULT=...`; per-copy logs and `summary.txt` land in `out/`. Measured here:
-**{rate}** with {conc} {copies} on each of {gpus} GPU{gs}{stop}.
+**{rate}** with {conc} {copies} on each of {gpus} GPU{gs}{stop}, on node `{host}` -- the only
+node it was verified on. Until it is shown elsewhere, a clean replay on another node (`NOT_SET_UP`,
+`NOT_REPRODUCED`) does not mean the bug is absent there or gone: a capsule can reproduce on one
+node of a model and not on another (once 64000/64000 on one MI350X node, 0/32000 on another).
 
 {contention}
 """.format(
         op=op or rows[-1]["op"] if rows else op,
-        geom=(" " + geom) if geom else "",
+        # a grouping label such as "(any: --job)" (one job, any geometry) is not a
+        # geometry; 'unmapped': not a GEMM (op_nan_capture.geometry_key)
+        geom=(
+            (" " + geom)
+            if geom and not geom.startswith("(") and geom != "unmapped"
+            else ""
+        ),
         chain=chain,
         replayed=(
             "Op replayed (alone, no chain)" if a.mode == "op" else "Chain replayed"
         ),
-        key=("\n* hipBLASLt problem: `%s`" % key) if key else "",
+        key=(("\n* hipBLASLt problem: `%s`" % key) if key else "")
+        + (
+            (
+                "\n* Op-only: the chain capsule this was cut from (the ops that fed `%s`) is "
+                "left out -- the op alone reproduces on these operands. The full capsule, "
+                "verified the same way, is `%s/` beside this package (not in this tarball)."
+                % (op, a.chain_package)
+            )
+            if a.chain_package
+            else ""
+        ),
         capname=os.path.basename(cap),
         mb=size / 1e6,
         csha=sha256(cap),
@@ -421,6 +565,14 @@ It starts **{conc} {copies} of the replay on every GPU** of the node and prints
         conc=conc,
         gpus=gpus,
         rate=rate,
+        probe_first=(
+            ""
+            if a.cotenant
+            else (
+                "first one copy alone on GPU 0 (the deterministic probe: a fault that "
+                "hits every run there ends it), else "
+            )
+        ),
         copies="copy" if conc == 1 else "copies",
         gs="" if gpus == 1 else "s",
         contention=(
@@ -429,7 +581,11 @@ It starts **{conc} {copies} of the replay on every GPU** of the node and prints
             else (
                 EVERY_RUN.format(conc=conc, rate=rate)
                 if runs and bad == runs and conc > 1
-                else CONTENTION.format(conc=conc) if conc > 1 else SOLO
+                else (
+                    SOLO_PROBE.format(probe=probe, conc=conc)
+                    if probe and conc > 1
+                    else CONTENTION.format(conc=conc) if conc > 1 else SOLO
+                )
             )
         ),
         stop=(
@@ -437,12 +593,27 @@ It starts **{conc} {copies} of the replay on every GPU** of the node and prints
             if stopped
             else ""
         ),
+        title="Wrong-value reproducer" if wrongcap else "NaN reproducer",
+        produced=(
+            "returned a wrong (finite) value"
+            if sentence in (KB_WRONG, KB_VALUE, KB_RERUN) or wrongcap
+            else "produced a non-finite output"
+        ),
+        # c1det.<tag>.<host>: the ladder's deterministic probe
+        host=(
+            re.search(r"/c\d+(?:det)?\.[^./]+\.([^/]+)$", a.attempt.rstrip("/"))
+            or [None, "?"]
+        )[1],
     )
     with open(os.path.join(repro, "README.md"), "w") as f:
         f.write(readme)
     print("README %s/README.md  proposed=%s (%s)" % (repro, verdict, why))
-    if verdict.startswith("FP32") or "DETERMINISTIC" in why:
+    if "DETERMINISTIC" in why:
         print("DO_NOT_SHIP %s" % why)
+    elif verdict.startswith("FP32"):
+        # not a kernel bug, but a reproducer all the same: step 6 ships it as a
+        # model-numerics one and steps 7-8 find why the model hands the op those values
+        print("MODEL_NUMERICS %s" % why)
     if a.pack:
         pack(repro, a.ledger, a.step, "proposed=%s (README auto; CHECK)" % verdict)
 

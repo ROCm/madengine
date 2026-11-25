@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""The capture's own story from a run's logs, in a few dozen lines (debug-nan 5-6).
+"""The capture's own story from a run's logs, in a few dozen lines (mad-debug-numeric 5-6).
 
-    capture_digest.py <log | .json | .json.gz | run dir> ... [--width N] [--max N]
+    madengine nan digest <log | .json | .json.gz | run dir> ... [--width N] [--max N]
 
 Prints the [op-nan] lines -- armed, op filter, pending, MASKED, captured,
 settle, nan origin, census, deferred-check stats -- and the smoke test's loop
@@ -156,6 +156,15 @@ def main():
                     if d:
                         print(d)
                         found = True
+    if not found and all(
+        re.search(r"\.(ctl|c0|c1)\.", os.path.basename(t)) for t in a.paths
+    ):
+        # wave.sh names logs <gpu>_<i>.<arm>.<tag>.<host>.log; a control arm is unwired on purpose
+        print(
+            "no [op-nan] lines in %s: control arm (no capture by design)"
+            % " ".join(a.paths)
+        )
+        return
     if not found:
         print("no [op-nan] lines in %s" % " ".join(a.paths))
         print(

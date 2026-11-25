@@ -1,18 +1,31 @@
 #!/usr/bin/env python3
-"""Draft <ARTIFACT_DIR>/report.md for mad-debug-nan step 9 from the skill's own artifacts.
+"""Draft <ARTIFACT_DIR>/report.md for mad-debug-numeric step 9 from the skill's own artifacts.
 
     madengine nan report <ARTIFACT_DIR> [--out report.md]
+    madengine nan report <ARTIFACT_DIR> --fill <answers.md> [--out report.md]
+
+The draft also drafts <ARTIFACT_DIR>/result.json (nan_doctor_rt/result_card.py: the facts on
+disk, TODO for the root cause and fix in fixed spellings); --fill ends with its check.
+
+The draft prints its `TODO(agent)` list, numbered, with each one's section -- answer them
+from that list, without reading the report back (a re-draft moves an existing report.md to
+report.prev<n>.md, so report.md is always the draft just printed). `--fill` puts the answers
+in, in one call:
+the answers file holds `## TODO <n>` headings, each followed by the text that replaces TODO n
+(from `TODO(agent)` to the end of its line); then it refreshes the time table from the ledger
+(run it after `madengine nan ledger ... end step9`, so the report-writing time counts) and
+prints what is left open.
 
 Fills every section step9-report.md requires that is a fact on disk -- the per-step
-time table (ledger.py), the rate lines from the ledger, each wave's summary, the
+time table (`madengine nan ledger`), the rate lines from the ledger, each wave's summary, the
 grouping, every 5b attempt (copies per GPU x GPUs, runs done, hits, early stop,
 env verdict, captured build, capture-time contention), each tarball's sha256 and
 proposed verdict, the groups never replayed, and the step-5N native fallback
 (trigger, candidates, jobs, verdict from the ledger), the step-7 root cause and step-8
 fix (ROOT_CAUSE.md, fix/ tarball, their ledger lines) -- and leaves `TODO(agent)` where
 judgement is needed (verdict per group, what it means, caveats, next steps).
-Model-independent: it reads only what ledger.py, wave_summary.py,
-compare_nan_capsules.py, the node launchers and make_repro_readme.py write.
+Model-independent: it reads only what `madengine nan ledger`, `waves`, `group`, the
+capture runs and `readme` write.
 """
 
 # flake8: noqa: E741,E731,E402  (terse variable names, kept from the original scripts)
@@ -21,21 +34,24 @@ import argparse
 import glob
 import os
 import re
+import subprocess
 import sys
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def read(p):
     try:
-        return open(p, errors="replace").read()
+        return Path(p).read_text(errors="replace")
     except OSError:
         return ""
 
 
 def group_of(d):
-    """'G1' for replay/G1/c2.* and verify-G1/repro-G1/out/c2.*; else the parent dir."""
-    m = re.search(r"(?:^|/)(?:replay/|verify-|repro-)(G\d+)(?:/|$)", d)
+    """'G1' for replay/G1/c2.* and verify-G1/repro-G1/out/c2.* (or an op-only package's
+    verify-G1-op/repro-G1-op/ and its chain's verify-G1-chain/); else the parent dir."""
+    m = re.search(r"(?:^|/)(?:replay/|verify-|repro-)(G\d+)(?:-op|-chain)?(?:/|$)", d)
     return m.group(1) if m else os.path.basename(os.path.dirname(d))
 
 
@@ -92,15 +108,44 @@ def attempt_facts(d):
         ),
         "",
     )
-    cot = re.sub(r"^python3 -m nan_doctor_rt\.(\S+)", r"\1", cot)
     cot = re.sub(
-        r" --(hidden|inter|heads|kv-heads|head-dim|layers|vocab|seq|batch|qkv-bias) \S+",
-        "",
-        cot,
+        r"^python3 -m nan_doctor_rt\.(\S+)", r"\1", cot
+    )  # full command: the sizes are the load
+    # an A/B run's own setting (replay_nan_op `A/B (--no-hipblaslt): VAR ...`), or an env difference
+    # left after --restore-env: a row that does not say it reads like the plain replay
+    ab = sorted(
+        {
+            re.sub(r"^\s*A/B \((\S+)\):\s+(\S+).*?here=(\S+).*", r"\1 (\2=\3)", l)
+            for l in lines
+            if l.lstrip().startswith("A/B (")
+        }
+    )
+    for i, l in enumerate(
+        lines
+    ):  # older logs: the differences under a STILL DIFFERENT banner
+        if l.startswith("env:") and "STILL DIFFERENT" in l:
+            ab += sorted(
+                {
+                    re.sub(
+                        r"^\s+(\S+)\s+capture=(\S+)\s+here=(\S+).*",
+                        r"env \1=\3 (capture \2)",
+                        x,
+                    )
+                    for x in lines[i + 1 : i + 13]
+                    if re.match(r"^\s+\S+\s+capture=", x)
+                }
+            )
+            break
+    load = "; ".join(
+        filter(
+            None,
+            [cot or "replay copies only"]
+            + [("A/B " + x) if not x.startswith("env ") else x for x in ab],
+        )
     )
     return dict(
         dir=d,
-        load=cot or "replay copies only",
+        load=load,
         conc=c.group(1) if c else "?",
         host=c.group(2) if c else "?",
         gpus=gpus,
@@ -135,20 +180,100 @@ def _ledger_table(path):
     return buf.getvalue()
 
 
+def result_card(cmd, A):
+    """nan_doctor_rt/result_card.py draft|check: the result as data (compare_results.py
+    compares two runs)."""
+    from .runner import runtime_parent
+
+    script = os.path.join(runtime_parent(), "nan_doctor_rt", "result_card.py")
+    r = subprocess.run([sys.executable, script, cmd, A], capture_output=True, text=True)
+    print((r.stdout + r.stderr).rstrip())
+
+
+TODO_RE = re.compile(r"TODO\(agent\).*$")
+
+
+def todo_list(lines):
+    """[(n, section, line index, text)] for every TODO(agent), numbered from 1 in file order."""
+    sec, todos = "", []
+    for i, l in enumerate(lines):
+        if l.startswith("## "):
+            sec = l[3:].strip()
+        elif "TODO(agent)" in l:
+            todos.append((len(todos) + 1, sec, i, l.strip()))
+    return todos
+
+
+def print_todos(lines):
+    for n, sec, _, l in todo_list(lines):
+        print("TODO %d [%s] %s" % (n, sec, l[:220]))
+
+
+def fill(path, answers_path, led):
+    """Replace TODO n with the answer under `## TODO n`; refresh the time table."""
+    lines = read(path).splitlines()
+    if not lines:
+        sys.exit("nan report: no report at %s -- draft it first" % path)
+    ans, cur = {}, None
+    for l in read(answers_path).splitlines():
+        m = re.match(r"##\s*TODO\s+(\d+)\s*$", l)
+        if m:
+            cur = int(m.group(1))
+            ans[cur] = []
+        elif cur is not None:
+            ans[cur].append(l)
+    todos = {n: i for n, _, i, _ in todo_list(lines)}
+    bad = sorted(set(ans) - set(todos))
+    if bad:
+        sys.exit(
+            "nan report: no TODO %s in %s (it has %d) -- nothing written"
+            % (", ".join(map(str, bad)), path, len(todos))
+        )
+    for n in sorted(
+        ans, reverse=True
+    ):  # bottom-up: a multi-line answer shifts what follows
+        i = todos[n]
+        text = "\n".join(ans[n]).strip()
+        lines[i : i + 1] = TODO_RE.sub(lambda _: text, lines[i]).split("\n")
+    if os.path.exists(led):  # the table predates step 9's end: refresh it
+        try:
+            a = lines.index("## Time per step") + 1
+            b = next(j for j in range(a, len(lines)) if lines[j].startswith("Not run:"))
+            lines[a:b] = [""] + _ledger_table(led).strip().splitlines() + [""]
+        except (ValueError, StopIteration):
+            print(
+                'nan report: no "## Time per step" ... "Not run:" block -- time table not refreshed'
+            )
+    Path(path).write_text("\n".join(lines) + "\n")
+    print("FILLED %s: %d answer(s), time table refreshed" % (path, len(ans)))
+    left = todo_list(lines)
+    print("%d TODO left" % len(left))
+    print_todos(lines)
+    result_card("check", os.path.dirname(os.path.abspath(path)))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("artifact_dir")
     p.add_argument("--out", default=None)
+    p.add_argument(
+        "--fill",
+        metavar="ANSWERS",
+        default=None,
+        help="answers file (## TODO <n> headings): fill the report, refresh its time table",
+    )
     a = p.parse_args()
     A = os.path.abspath(a.artifact_dir)
     led = os.path.join(A, "ledger.md")
+    if a.fill:
+        return fill(a.out or os.path.join(A, "report.md"), a.fill, led)
     ledger = read(led).splitlines()
     out = []
     w = out.append
     w("# NaN investigation report -- %s\n" % os.path.basename(A))
     w(
-        "_Drafted by make_report.py from the ledger and artifacts; every `TODO(agent)` needs "
-        "judgement. Numbers below are copied from files, not from memory._\n"
+        "_Drafted by `madengine nan report` from the ledger and artifacts (numbers copied from files, not "
+        "from memory); the judgement lines are the agent's._\n"
     )
 
     w(
@@ -158,24 +283,58 @@ def main():
         'reproducer (step 6), root cause (step 7), fix (step 8) -- never "reproducer done" as "fixed".\n'
     )
 
+    gl = [
+        re.sub(r"^\S+ \S+\s+", "", l)
+        for l in ledger
+        if re.search(r"GPU=\S+ ARCH=\S+", l)
+    ]
+    w("## GPU\n")
+    w(
+        "\n".join("* " + l[:220] for l in gl[-2:])
+        if gl
+        else "* TODO(agent): the device line (madengine nan gpu-check --torch: name, arch, CUs, memory) -- not in the ledger"
+    )
+    w("")
+
     w("## Time per step\n")
     if os.path.exists(led):
-        t = _ledger_table(led)
+        t = _ledger_table(led).strip()
         ended = set(
             re.findall(r"^\S+ \S+\s+(step\d+)\S*\s+end\b", "\n".join(ledger), re.M)
+        )
+        # `madengine nan ledger ... skip` lines: the table already lists those steps as *skipped*
+        ended |= set(
+            re.findall(r"^\S+ \S+\s+(step\d+)\S*\s+skipped\b", "\n".join(ledger), re.M)
         )
         skipped = []
         for st in ["step%d" % i for i in range(2, 9)]:
             if st in ended:
                 continue
-            hits = [
-                l
-                for l in ledger
-                if re.search(r"\b%s\b[^;(]{0,12}\b(skip\w*|SKIP|NO|declined)\b" % st, l)
-            ]
+            pat = r"\b%s\b[^;(]{0,12}\b(skip\w*|SKIP|NO|declined)\b" % st
+            hits = [l for l in ledger if re.search(pat, l)]
             # the step's own line first ("<ts>  step2  skipped ..."), then a mention elsewhere (step 1's answers)
             hits.sort(key=lambda l: not re.match(r"^\S+ \S+\s+%s\b" % st, l))
-            why = [re.sub(r"^\S+ \S+\s+\S+\s+", "", l)[:160] for l in hits]
+            # quote the clause that says it, not the whole line (step 1's answers list every step)
+            why = []
+            for l in hits:
+                body = re.sub(r"^\S+ \S+\s+\S+\s+", "", l)
+                m = re.search(pat, body)
+                c = (
+                    body[m.start() :].split(";")[0].strip()
+                    if m and not re.match(r"^\S+ \S+\s+%s\b" % st, l)
+                    else body
+                )
+                if c.count(")") > c.count("("):
+                    c = c.rstrip(")").strip()
+                why.append(c[:160])
+            if (
+                not why
+                and st == "step5"
+                and any("CAPTURE_TO_REPRO_RESULT=" in l for l in ledger)
+            ):
+                why = [
+                    "5a/5b ran inside step 4's capture-to-reproducer job (timed under step4)"
+                ]
             if (
                 not why
                 and st == "step3"
@@ -183,9 +342,18 @@ def main():
             ):
                 why = ["follows from the step-2 skip (no rate to raise)"]
             skipped.append(
-                "* %s: *skipped* -- %s" % (st, why[0] if why else "TODO(agent) why")
+                "* %s: %s -- %s"
+                % (
+                    st,
+                    (
+                        "*folded*"
+                        if why and why[0].startswith("5a/5b ran")
+                        else "*skipped*"
+                    ),
+                    why[0] if why else "TODO(agent) why",
+                )
             )
-        w(t.strip() + "\n\nNot run:\n\n" + ("\n".join(skipped) or "* (none)") + "\n")
+        w(t + "\n\nNot run:\n\n" + ("\n".join(skipped) or "* (none)") + "\n")
 
     w("## Where the rate came from\n")
     rate = [
@@ -219,7 +387,9 @@ def main():
         if ctl:
             w(
                 "\nStep 2 was skipped: the only model-level rate is the step-4 control arm (%s), "
-                "in that wave's environment.\n" % "; ".join(ctl)
+                "in that wave's environment -- counted per trial log: a log (container) that runs "
+                "several processes counts once; per-process counts are in the ledger.\n"
+                % "; ".join(ctl)
             )
         else:
             w(
@@ -230,6 +400,21 @@ def main():
     else:
         w(
             "\nTODO(agent): measured in step 2 (with environment), or user-supplied (provisional)?\n"
+        )
+    # Step 8's model A/B stock arm: the same model, stock, usually more trials than step 4's
+    # 2-6 controls -- a second rate, quoted beside it
+    ab = [
+        re.sub(r"^\S+ \S+\s+", "", l)[:220]
+        for l in ledger
+        if re.search(r"\sstep8\S*\s", l) and re.search(r"(?i)\bstock\b[^;]*?\d+/\d+", l)
+        # the model's, not the reproducer's launches
+        and re.search(r"(?i)\b(model|trials?|runs? NaN)\b", l)
+    ]
+    if ab:
+        w(
+            "\nStep 8's model A/B, stock arm (a second model-level measurement, same environment "
+            "as its job): quote it beside the rate above and take the larger denominator as "
+            "`<NAN_RATE>`:\n\n" + "\n".join("    " + l for l in ab[:3])
         )
 
     w("## Image, build and replay environment\n")
@@ -251,13 +436,16 @@ def main():
         }
     )
     kerns = {}
-    for k in sorted(glob.glob(os.path.join(A, "replay", "*", "kernel.*.txt"))):
+    for k in sorted(
+        glob.glob(os.path.join(A, "replay", "*", "kernel.*.txt"))
+        + glob.glob(os.path.join(A, "verify-*", "*", "out", "kernel.*.txt"))
+    ):
         kf = dict(
             re.match(r"(\w+):\s*(.*)", l).groups()
             for l in read(k).splitlines()
             if re.match(r"\w+:", l)
         )
-        kerns[os.path.basename(os.path.dirname(k))] = kf
+        kerns[group_of(os.path.dirname(k))] = kf
     inj = sorted({kf.get("injected", "?").split(" --")[0] for kf in kerns.values()})
     native_v = [
         re.search(r"VERDICT (NATIVE_\w+)", l).group(1)
@@ -327,20 +515,57 @@ def main():
                 f["contention"],
             )
         )
+    # COLLECTIVE groups: one torchrun over the member ranks (collective_r3 replay), no
+    # ladder summary.txt
+    coll = {}
+    for o in sorted(glob.glob(os.path.join(A, "replay", "*", "collective.*.out"))):
+        t = read(o)
+        g = os.path.basename(os.path.dirname(o))
+        res = (re.findall(r"^LADDER_RESULT=(.*)$", t, re.M) or ["none"])[-1]
+        ver = (re.findall(r"^VERDICT (\S+)", t, re.M) or ["-"])[-1]
+        path = (re.findall(r"^R3 vllm: path (.*)$", t, re.M) or ["-"])[-1]
+        host = (re.search(r"collective\.[^.]+\.([^.]+)\.out$", o) or [None, "?"])[1]
+        coll[g] = True
+        w(
+            "| %s | `%s` | %s | one torchrun over the member ranks | - | %s | - | %s | %s | %s | - |"
+            % (
+                g,
+                os.path.basename(o),
+                host,
+                res.split()[-1] if res != "none" else "-",
+                res.split()[0],
+                ver,
+                path,
+            )
+        )
     w(
         "\nA one-copy `0/N` on a contention-gated fault is an experiment not set up, not a clean result.\n"
     )
 
-    w("## Groups\n")
+    w("## Groups\n\n(capsule paths are relative to the artifact dir)\n")
     pr = read(os.path.join(A, "groups_priority.txt")).splitlines()
-    replayed = {group_of(f["dir"]) for f in facts}
+    replayed = {group_of(f["dir"]) for f in facts} | set(coll)
+    # op of each group (groups_priority.txt: <G> <n> <capsule> <op>): a group with a replayed
+    # group's op is the same site captured again -- said here, not left as a TODO
+    gop = {l.split()[0]: l.split()[3] for l in pr if len(l.split()) >= 4}
+    rop = {}
+    for g in sorted(replayed):
+        rop.setdefault(gop.get(g), g)
     for l in pr:
         g = l.split()[0]
-        l = re.sub(r"\S*/%s/" % re.escape(os.path.basename(A)), "<ARTIFACT_DIR>/", l)
-        w(
-            "* %s%s"
-            % (l, "" if g in replayed else "  -- **not replayed**: TODO(agent) why")
-        )
+        l = re.sub(
+            r"\S*/%s/" % re.escape(os.path.basename(A)), "", l
+        )  # relative to the artifact dir
+        if g in replayed:
+            why = ""
+        elif gop.get(g) in rop:
+            why = (
+                "  -- **not replayed**: same op as %s (replayed) -- folded into it"
+                % (rop[gop[g]])
+            )
+        else:
+            why = "  -- **not replayed**: TODO(agent) why"
+        w("* %s%s" % (l, why))
     w("")
 
     w("## Reproducer tarballs\n")
@@ -349,7 +574,10 @@ def main():
         m = re.search(r"TARBALL (\w+)\s+(\S+\.tar\.gz)\s+size=(\d+)\s*(.*)", l)
         if m:
             # a step-8 fix package is not a reproducer: listed under its own heading
-            (fixes if re.search(r"\sstep8\S*\s", l) else last)[m.group(2)] = m
+            # keyed by file name: the same tarball is ledgered with and without its directory
+            (fixes if re.search(r"\sstep8\S*\s", l) else last)[
+                os.path.basename(m.group(2))
+            ] = m
     fmt = lambda d: "\n".join(
         "* `%s`  sha256 `%s`  %s B  %s"
         % (m.group(2), m.group(1), m.group(3), m.group(4))  # noqa: E731
@@ -366,8 +594,17 @@ def main():
     native = [
         re.sub(r"^\S+ \S+\s+", "", l)
         for l in ledger
-        if re.search(r"\bstep(?:5n|6\[native\])\s", l)
+        if re.search(r"\bstep(?:5n|6\[native\])\s", l, re.I)
     ]
+    skipped = [l for l in native if re.match(r"step5n\s+skipped\b", l, re.I)]
+    if (
+        skipped
+        and len(skipped) == len(native)
+        and not os.path.isdir(os.path.join(A, "native"))
+    ):
+        # a capsule reproduced
+        w("Step 5N did not run: %s\n" % skipped[-1].split("skipped", 1)[1].strip())
+        native = []
     if native or os.path.isdir(os.path.join(A, "native")):
         w("## Native reproducer (step 5N)\n")
         trig = [l for l in native if "NATIVE_TRIGGER=" in l]
@@ -414,10 +651,11 @@ def main():
         ("step7", "rootcause", "ROOT_CAUSE.md", "Root cause (step 7)"),
         ("step8", "fix", "README.md", "Fix (step 8)"),
     ):
+        # the step's own lines (its 3rd field), not other steps' lines that mention it
         rows = [
             l.split(None, 1)[1]
             for l in ledger
-            if re.search(r"\b%s\b" % st, l)
+            if re.match(r"\S+\s+\S+\s+%s\b" % st, l)
             and not re.match(r"\S+\s+\S+\s+\S+\s+(start|end)\b", l)
         ]
         doc = os.path.join(A, d, f)
@@ -453,10 +691,36 @@ def main():
             "\nLedger (budget, kind, iterations, outcome):\n\n"
             + ("\n".join("    " + r for r in rows) or "    (none -- skipped?)")
         )
+        if st == "step7":
+            # Discovery or confirmation: a root cause re-tested from an earlier
+            # investigation's ROOT_CAUSE.md is a confirmation
+            txt = "\n".join(ledger)
+            pri = sorted(
+                set(
+                    re.findall(
+                        r"prior:\s*(\S*artifacts/[^\s,;)]+|\S+/rootcause/ROOT_CAUSE\.md)",
+                        txt,
+                    )
+                )
+            )
+            if re.search(r"PRIORS=none|prior: skipped", txt):
+                w(
+                    "* priors: **none** (PRIORS=none) -- the root cause was found from this "
+                    "run's evidence alone"
+                )
+            elif pri:
+                w(
+                    "* priors: hypothesis from %s re-tested here -- a root cause matching it is "
+                    "a **confirmation**, not a discovery; say so in the root cause"
+                    % ", ".join("`%s`" % x for x in pri[:3])
+                )
+            elif re.search(r"prior: none", txt):
+                w("* priors: none found (`prior: none`)")
         w(
             "\nTODO(agent): %s\n"
             % (
-                "the root cause (where, mechanism, trigger, causal experiment) and which track found it, "
+                "the root cause (where, mechanism, trigger, causal experiment, defence: the guard "
+                "and why it did not apply, or none) and which track found it, "
                 "or NO_ROOT_CAUSE with excluded and still-open hypotheses, or why skipped."
                 if st == "step7"
                 else "the fix (change, fix or workaround, validation: control n/N, patched 0/N with expected hits, "
@@ -480,11 +744,30 @@ def main():
         + "\n\nTODO(agent): anything else capped, sampled or folded -- and on what basis.\n"
     )
     w("## Next steps\n\nTODO(agent)\n")
+    w(
+        "## Result card\n\n`result.json` -- this result as data (`result_card.py`); "
+        "`compare_results.py <this dir> <another run>` says whether two runs found the same bug, "
+        "root cause and fix.\n"
+    )
     path = a.out or os.path.join(A, "report.md")
-    if os.path.exists(path) and not a.out:
-        path = os.path.join(A, "report.draft.md")
-    open(path, "w").write("\n".join(out) + "\n")
-    print("DRAFT %s (%d TODO)" % (path, sum(l.count("TODO(agent)") for l in out)))
+    # A re-draft replaces report.md and keeps the old one as report.prev<n>.md: --fill always
+    # fills report.md, so it must be the draft whose TODO numbers were just printed.  Writing
+    # the new draft beside it let --fill put every answer into the stale report, one TODO off.
+    if os.path.exists(path):
+        n = 1
+        while os.path.exists(re.sub(r"\.md$", ".prev%d.md" % n, path)):
+            n += 1
+        prev = re.sub(r"\.md$", ".prev%d.md" % n, path)
+        os.replace(path, prev)
+        print(
+            "nan report: the earlier %s is now %s"
+            % (os.path.basename(path), os.path.basename(prev))
+        )
+    Path(path).write_text("\n".join(out) + "\n")
+    lines = "\n".join(out).splitlines()
+    print("DRAFT %s (%d TODO)" % (path, len(todo_list(lines))))
+    print_todos(lines)
+    result_card("draft", A)
 
 
 if __name__ == "__main__":

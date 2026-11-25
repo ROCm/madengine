@@ -6,7 +6,7 @@
     python3 intake.py --schema                 # print the schema as documentation
 
 An **intake** answers step 1 ("how does this workload run") without asking: MAD's
-/mad-debug-nan skill and mad-nan-hunt workflow write one from `madengine discover`
+/mad-debug-numeric skill and mad-nan-hunt workflow write one from `madengine discover`
 (GLOSSARY.md, reference/step1-intake.md).  nan-doctor owns this schema; producers
 only fill it.  Exit 0 = valid; exit 2 = invalid, one `INTAKE_ERROR <field>: <why>`
 line per problem.  Standard library only.
@@ -79,6 +79,11 @@ PREFERENCES = {
     "fix": ((bool,), False, "Q4 run step 8 (needs rootcause; interactive only)"),
     "groups": (("largest", "all"), "largest", "Q5 <GROUPS_TO_REPLAY>"),
     "budget_minutes": ((int,), 0, "Q6/step 7 wall-clock budget; 0 = none given"),
+    "priors": (
+        ("use", "none"),
+        "use",
+        "Q7 <PRIORS>: use earlier investigations of this script (none = fresh eyes)",
+    ),
 }
 
 

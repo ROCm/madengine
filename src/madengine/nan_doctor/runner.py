@@ -33,24 +33,29 @@ RUNTIME_MOUNT = "/opt/nan_doctor"
 # (`python3 -m nan_doctor gpu-check --torch` asks torch about device 0).
 HOST_MOUNT = "/opt/nan_doctor_host"
 
-# Flags that shape the timing of what is replayed.  Keep in step with the flags the
-# model's own run used (madengine's container runner).
-DOCKER_FLAGS = [
+# The flags madengine's container runner gives every AMD model run, so a replay sees
+# the timing the capture saw; the container runner builds its options from this list.
+MODEL_RUN_AMD_FLAGS = [
     "--network=host",
-    "--ipc=host",
-    "--shm-size=64g",
-    "--device=/dev/kfd",
-    "--device=/dev/dri",
     "--group-add",
     "video",
     "--cap-add=SYS_PTRACE",
+    "--security-opt",
+    "seccomp=unconfined",
+    "--security-opt",
+    "apparmor=unconfined",
+    "--ipc=host",
+]
+
+DOCKER_FLAGS = MODEL_RUN_AMD_FLAGS + [
+    "--shm-size=64g",
+    "--device=/dev/kfd",
+    "--device=/dev/dri",
     "--cap-add=IPC_LOCK",
     "--ulimit",
     "memlock=-1:-1",
     "--ulimit",
     "stack=67108864:67108864",
-    "--security-opt",
-    "seccomp=unconfined",
 ]
 
 _ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

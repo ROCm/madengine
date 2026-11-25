@@ -1,4 +1,4 @@
-"""Summarise ONE attempt of a node-wide capsule replay (debug-nan step 5b).
+"""Summarise ONE attempt of a node-wide capsule replay (mad-debug-numeric step 5b).
 
     madengine nan summary <attempt_dir>
 
@@ -13,6 +13,7 @@ line, which the concurrency ladder reads.  The same text is written to
 <attempt_dir>/summary.txt.
 
 Per copy:  NAN      the loop counted >= 1 non-finite run/launch
+           WRONG    the same for a wrong-value capsule (wrong finite outputs)
            CLEAN    the loop ran and counted 0
            STOPPED  0 hits, and the node-wide stop file ended it: not a clean copy
            OOM      the copy died out of device memory
@@ -36,6 +37,7 @@ NOISE_RE = re.compile(
     r"^\[hsa-hotswap|^\[aiter\] (WARNING|import)|UserWarning|^ *warnings\.warn|NUMA balancing"
     r"|^rocblaslt (error|warning)|^hipModuleLoad failed| error: file not found$"
 )
+WRONGCAP = "[wrong-value capsule"
 LOOP_RE = re.compile(r"non-finite on (\d+)/(\d+) (?:chain runs|launches)")
 OOM_RE = re.compile(r"OutOfMemoryError|out of memory|hipErrorOutOfMemory")
 
@@ -77,7 +79,8 @@ def summarize(attempt_dir):
             bad += b
             runs += r
             if b > 0:
-                st = "NAN"
+                # a wrong-value capsule's hits are wrong finite outputs, not NaNs
+                st = "WRONG" if any(WRONGCAP in l for l in lines) else "NAN"
                 n["NAN"] += 1
             elif os.path.exists(stop):
                 st = "STOPPED"
@@ -90,9 +93,19 @@ def summarize(attempt_dir):
         else:
             st = "ERROR"
             n["ERROR"] += 1
+        shown = loop.group(0) if loop else "-"
+        if any(WRONGCAP in l for l in lines):
+            # a wrong-value capsule's count is of wrong finite outputs: say so
+            shown = shown.replace("non-finite on", "wrong output on")
+        w("  %-24s %-5s %-40s %s" % (os.path.basename(f), st, shown, verdict or "-"))
+    # A wrong-value capsule (captured for a wrong FINITE value): the loop's "non-finite"
+    # counts are runs that failed the capsule's value check again; the outputs are finite.
+    flat = [l for f in logs for l in all_lines[f]]
+    wrongcap = any(WRONGCAP in l for l in flat)
+    if wrongcap or any("returned a WRONG FINITE value" in l for l in flat):
         w(
-            "  %-24s %-5s %-40s %s"
-            % (os.path.basename(f), st, loop.group(0) if loop else "-", verdict or "-")
+            "  (wrong-value capsule: WRONG / non-finite above = runs whose output failed the "
+            "capsule's value check again -- the outputs are finite, the values wrong)"
         )
 
     shown = False
@@ -124,7 +137,6 @@ def summarize(attempt_dir):
     if not shown:
         w("=== [C1] walk: none (no chain in the capsule, or no copy reached it) ===")
 
-    flat = [l for f in logs for l in all_lines[f]]
     envs = {}
     for l in flat:
         if l.startswith("env:"):
@@ -144,10 +156,26 @@ def summarize(attempt_dir):
         w(l)
 
     w(
-        "=== totals: copies NAN %d / CLEAN %d / OOM %d / ERROR %d; non-finite %d/%d ==="
-        % (n["NAN"], n["CLEAN"], n["OOM"], n["ERROR"], bad, runs)
+        "=== totals: copies %s %d / CLEAN %d / OOM %d / ERROR %d; non-finite %d/%d ==="
+        % (
+            "WRONG" if wrongcap else "NAN",
+            n["NAN"],
+            n["CLEAN"],
+            n["OOM"],
+            n["ERROR"],
+            bad,
+            runs,
+        )
     )
-    if os.path.exists(futile):
+    if os.path.exists(futile) and bad > 0:
+        # the stop fired on the progress files (written every 2000 runs); a copy's later
+        # counts hold hits: it reproduced -- one line, not NOT_SET_UP beside REPRODUCED.
+        w(
+            "=== futility stop (%s) fired before the first hits reached the progress files; "
+            "the copies' totals hold %d: REPRODUCED -- the rate is a floor (re-run with "
+            "--futility 0 for a rate) ===" % (_first_line(stop), bad)
+        )
+    elif os.path.exists(futile):
         w(
             "=== futility stop (%s): 0 non-finite in the runs the model needed many times over -- "
             "the replay is not recreating the model's trigger (NOT_SET_UP, not a negative) ==="

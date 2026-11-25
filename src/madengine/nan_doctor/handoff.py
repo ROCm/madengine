@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write <ARTIFACT_DIR>/native/handoff.md: what the capsule path tried, for step 5N (debug-nan).
+"""Write <ARTIFACT_DIR>/native/handoff.md: what the capsule path tried, for step 5N (mad-debug-numeric).
 
     madengine nan handoff <ARTIFACT_DIR> [--logs <dir with <job>.out files>]
 
@@ -15,7 +15,9 @@ job ids the ledger recorded) -- and writes one file:
   * Capture      the census of NaN-creating sites, aggregated over trials
   * Contention   the capture's load beside every replay's: processes on the GPU,
                  what they run, memory -- LIGHTER flags a load far below the capture's
-  * Attempts     one row per replay: load, n/N, verdict, walk
+  * Compiled     C1's kernel capsules, output code and the capture job's replay of the kernel
+  * Attempts     one row per replay: load, n/N, verdict, walk -- and every COLLECTIVE group's
+                 replay (replay/<G>/collective.*.out: LADDER_RESULT= / VERDICT)
   * Ruled out    every clean experiment with the smallest rate it excludes (95%):
                  a null shorter than 3/rate rules nothing out at that rate
   * Implications PROPOSED readings, each with its source; the agent confirms or
@@ -35,6 +37,7 @@ import json
 import os
 import re
 import statistics
+from pathlib import Path
 
 LEDGER_LINE = re.compile(r"^(\S+ \S+)\s+(\S+)\s+(.*)$")
 KIND = {
@@ -61,7 +64,7 @@ NO_BACKWARD = (
 
 def read(p):
     try:
-        return open(p, errors="replace").read()
+        return Path(p).read_text(errors="replace")
     except OSError:
         return ""
 
@@ -124,6 +127,56 @@ def attempt(summary_path, A):
         ),
         build=first(cl, r"^captured build:"),
     )
+
+
+def collective_replays(A):
+    """COLLECTIVE groups' 5b replays: one torchrun over the member ranks (collective_r3), no
+    summary.txt -- replay/<G>/collective.<job>.<host>.out, parsed as `madengine nan report`
+    does.  Without it the handoff said "no 5b attempt / nothing ruled out / none was
+    replayed" beside a 0/2000 collective replay."""
+    rows = []
+    for o in sorted(glob.glob(os.path.join(A, "replay", "*", "collective.*.out"))):
+        t = read(o)
+        res = (re.findall(r"^LADDER_RESULT=(.*)$", t, re.M) or [""])[-1]
+        nf = re.search(r"(\d+)/(\d+)", res)
+        m = re.search(r"collective\.([^.]+)\.([^/]+)\.out$", o)
+        rows.append(
+            dict(
+                rel=os.path.relpath(o, A),
+                group=os.path.basename(os.path.dirname(o)),
+                job=m.group(1) if m else "?",
+                host=m.group(2) if m else "?",
+                result=res.split()[0] if res else "",
+                hits=int(nf.group(1)) if nf else None,
+                runs=int(nf.group(2)) if nf else None,
+                verdict=(re.findall(r"^VERDICT (\S+)", t, re.M) or [""])[-1],
+                path=(re.findall(r"^R3 \w+: path (.*)$", t, re.M) or [""])[-1].strip(),
+                ranks=(re.findall(r"^VERDICT \S+ ranks (\[[^]]*\])", t, re.M) or [""])[
+                    -1
+                ],
+                op=(re.findall(r"^collective (\S+)", t, re.M) or ["?"])[-1],
+            )
+        )
+    return rows
+
+
+def workload(text):
+    """'inference' / 'training' / '' from the ledger's RUN_SCRIPT= and unwrapped command:
+    the handoff called a vLLM serving run "the model's training step"."""
+    t = " ".join(
+        x
+        for x in text
+        if re.search(r"RUN_SCRIPT=|NAN_SIGNAL=|unwrapped|MODEL_CMD|command", x)
+    )
+    if re.search(
+        r"/inference/|\b(vllm|sglang|serve|generate|inference|decode|prefill|logprobs?)\b",
+        t,
+        re.I,
+    ):
+        return "inference"
+    if re.search(r"/training/|train|fwdbwd|backward|optimizer|\bloss\b|grad", t, re.I):
+        return "training"
+    return ""
 
 
 def pressure_rows(ledger, logs):
@@ -209,12 +262,14 @@ def capture_facts(A):
             for x in re.findall(r"nan-capture armed.*?containers_per_gpu=(\d+)", t)
         ]
         lines = t.splitlines()
+        census = False
         for i, l in enumerate(lines):
             m = re.search(
                 r"\]\s+(survived|MASKED|pending|captured|settled)\s+(\S+)\s+(\d+)\s+(\d+)\.\.(\d+)\s+(.*)$",
                 l,
             )
             if m:
+                census = True
                 s = sites.setdefault(
                     (m.group(1), m.group(6).strip()),
                     dict(trials=0, hits=0, lo=10**9, hi=-1),
@@ -245,6 +300,24 @@ def capture_facts(A):
                 procs.append(int(m.group(1)))
                 if m.group(2):
                     held.append(float(m.group(2)))
+        if not census:
+            # no exit census (the trial died, e.g. on a capsule save error): its `pending:` lines
+            # still name the sites the hook saw -- counted once per trial each
+            seen = {}
+            for l in lines:
+                m = re.search(r"\]\s+pending:\s+(\S+)\s+@\s+(\S+).*?\bat step (\d+)", l)
+                if m:
+                    key = "%s @ %s" % (m.group(1), m.group(2))
+                    seen[key] = min(seen.get(key, 10**9), int(m.group(3)))
+            for key, st in seen.items():
+                s = sites.setdefault(
+                    ("pending (no census: trial died)", key),
+                    dict(trials=0, hits=0, lo=10**9, hi=-1),
+                )
+                s["trials"] += 1
+                s["hits"] += 1
+                s["lo"] = min(s["lo"], st)
+                s["hi"] = max(s["hi"], st)
     return dict(
         armed=armed,
         sites=sites,
@@ -292,13 +365,19 @@ def main():
     cap = capture_facts(A)
     grp = read(os.path.join(A, "groups_priority.txt")).strip()
     pts = sorted(glob.glob(os.path.join(A, "capsules", "**", "*.pt"), recursive=True))
+    colls = collective_replays(A)
+    wl = workload(text)
+    step = {
+        "inference": "the model's inference (forward only)",
+        "training": "the model's training step",
+    }.get(wl, "the model's step")
     out = []
     w = out.append
     imp = []  # (proposal, source)
 
     w("# Step 5N handoff -- %s\n" % os.path.basename(A))
     w(
-        "_Written by native_handoff.py from the capsule path's artifacts. `Implications` are "
+        "_Written by `madengine nan handoff` from the capsule path's artifacts. `Implications` are "
         "PROPOSED: confirm or strike each before N3 (step5n-native.md)._\n"
     )
 
@@ -321,8 +400,13 @@ def main():
             % (a0["sif"], "; %s" % a0["build"] if a0["build"] else "")
         )
     else:
-        img = [t for t in text if re.search(r"\b(image|SIF|IMAGE)\b", t)]
-        w("* image (ledger): %s" % (img[-1][:200] if img else "TODO -- no image line"))
+        vals = [
+            m.group(2) for t in text for m in re.finditer(r"\b(IMAGE|SIF)=(\S+)", t)
+        ]
+        w(
+            "* image (ledger): %s"
+            % ("`%s`" % vals[-1] if vals else "TODO -- no IMAGE= / SIF= in the ledger")
+        )
     if a0 and a0["precision"]:
         w(
             "* precision at capture: `%s`"
@@ -344,7 +428,8 @@ def main():
                 arms[m.group(1)].append(int(m.group(3)))
         for arm, st in sorted(arms.items()):
             w(
-                "* model NaN step, %s arm (`%s`): %d trial(s), steps %d..%d, median %g"
+                "* model failure step (NaN or the signal), %s arm (`%s`): %d trial(s), "
+                "steps %d..%d, median %g"
                 % (
                     "capture" if arm == "cap" else "control",
                     os.path.basename(f),
@@ -355,7 +440,7 @@ def main():
                 )
             )
     try:
-        groups = json.load(open(os.path.join(A, "groups.json")))["groups"]
+        groups = json.loads(Path(os.path.join(A, "groups.json")).read_text())["groups"]
     except Exception:
         groups = []
     by_key = collections.defaultdict(list)
@@ -400,7 +485,25 @@ def main():
         w("* captured %dx: `%s`  %s" % (n, op, prob))
     if not cap["armed"]:
         w(
-            "(no armed capture log found via wave.*.out or **/*.cap.*.log -- run capture_digest.py on a capture trial log by hand)"
+            "(no armed capture log found via wave.*.out or **/*.cap.*.log -- run madengine nan digest on a capture trial log by hand)"
+        )
+    # A finite signal (wrong values, no NaN): the candidate's hit is a wrong output, and the
+    # recipe track runs native_sweep -- said here, where 5N starts reading.
+    sig = [m.group(1) for t in text for m in [re.search(r"NAN_SIGNAL=(.*)$", t)] if m]
+    signal = sig[-1].replace("\\", "") if sig else ""
+    finite = any(
+        "wrong_value" in read(f)
+        for f in glob.glob(os.path.join(A, "capsule_info.*.txt"))
+    )
+    if finite or (signal and not re.search(r"nan|finite|inf", signal, re.I)):
+        imp.append(
+            (
+                "A finite signal (wrong values, no NaN): a candidate's hit is an output off its "
+                "higher-precision reference beyond a correct call's error, or one that differs "
+                "between reruns on the same inputs (N3); honour NATIVE_DISCOVER=1, and step 7's "
+                "recipe sweeps it with nan_doctor_rt.native_sweep.",
+                "signal / capsule origin",
+            )
         )
     masked = [site for (st, site) in cap["sites"] if st == "MASKED"]
     if masked and not cap["captured"]:
@@ -432,9 +535,10 @@ def main():
     cap_others = (max(cap["procs"]) * cpg - 1) if cap["procs"] else None
     held_med = statistics.median(cap["held"]) if cap["held"] else None
     w(
-        "LIGHTER = fewer other processes than the capture, or no backward pass. Memory is shown, not judged: "
+        "LIGHTER = fewer other processes than the capture%s. Memory is shown, not judged: "
         "a co-tenant far smaller than the capture has reproduced (a training step's kernel mix, not its "
         "footprint, was the trigger once).\n"
+        % ("" if wl == "inference" else ", or no backward pass")
     )
     w(
         "| load | other processes on the GPU | what they run | memory they hold | result |"
@@ -442,10 +546,11 @@ def main():
     w("|---|---|---|---|---|")
     if cap["procs"]:
         w(
-            "| **capture** (the model) | %s | the model's training step | %s | NaN |"
+            "| **capture** (the model) | %s | %s | %s | fails |"
             % (
                 "%d (%d process(es)/container x %d container(s)/GPU, minus itself)"
                 % (cap_others, max(cap["procs"]), cpg),
+                step,
                 (
                     "%.1f-%.1f GB (median %.1f)"
                     % (min(cap["held"]), max(cap["held"]), held_med)
@@ -467,12 +572,27 @@ def main():
                 t["result"],
             )
         )
+    for c in colls:
+        w(
+            "| 5b %s `%s` | none: one torchrun over the member ranks %s | the collective `%s` alone%s | - | %s/%s %s |"
+            % (
+                c["group"],
+                os.path.basename(c["rel"]),
+                c["ranks"],
+                c["op"],
+                " (path %s)" % c["path"] if c["path"] else "",
+                c["hits"],
+                c["runs"],
+                c["result"],
+            )
+        )
     lighter = []
     for r in sweeps:
         light = []
         if cap_others and r["procs"] is not None and r["procs"] < cap_others:
             light.append("%d vs %d processes" % (r["procs"], cap_others))
-        if r["kind"] in NO_BACKWARD:
+        # inference has no backward pass to miss
+        if r["kind"] in NO_BACKWARD and wl != "inference":
             light.append("no backward pass")
         if light and r["hits"] == 0:
             lighter.append(light)
@@ -493,19 +613,76 @@ def main():
         imp.append(
             (
                 "Every clean co-tenant load was LIGHTER than the capture's (%s): no clean load had as many "
-                "neighbours running a backward pass as the capture did, so its zeros do not clear the load. "
-                "Start from at least the capture's number of neighbours per GPU, each running forward + "
-                "backward (the model's step, or a stand-in with its op types and sizes); reduce the kind of load after."
-                % "; ".join(sorted({x for l in lighter for x in l}))[:220],
+                "neighbours running %s as the capture did, so its zeros do not clear the load. "
+                "Start from at least the capture's number of neighbours per GPU, each running %s "
+                "(the model's step, or a stand-in with its op types and sizes); reduce the kind of load after."
+                % (
+                    "; ".join(sorted({x for l in lighter for x in l}))[:220],
+                    "the model's step" if wl == "inference" else "a backward pass",
+                    "the model's step" if wl == "inference" else "forward + backward",
+                ),
                 "Contention table",
             )
         )
+
+    # ---------------------------------------------------------------- compiled code (C1)
+    # C1's Inductor assert and its kernel capsules: on the compiled track the decisive
+    # evidence, which this file did not mention ("(no 5b attempt on disk)" only)
+    kcaps = sorted(glob.glob(os.path.join(A, "capsules_inductor", "*.pt")))
+    ocode = sorted(
+        glob.glob(os.path.join(A, "output_code.c1*.log"))
+        + glob.glob(os.path.join(A, "wave_c0c1", "output_code.*.log"))
+    )
+    if kcaps or ocode:
+        w("\n## Compiled code (C1: Inductor NaN asserts)\n")
+        kres = [
+            l.strip()
+            for f in sorted(glob.glob(os.path.join(A, "replay", "kernel", "run.*.out")))
+            for l in read(f).splitlines()
+            if l.startswith("INDUCTOR_REPLAY_RESULT=")
+        ]
+        for f in kcaps:
+            w("* kernel capsule: `%s`" % os.path.relpath(f, A))
+        for f in ocode:
+            w("* output code: `%s`" % os.path.relpath(f, A))
+        if kres:
+            w(
+                "* kernel capsule replayed from the package by the capture job: `%s`"
+                % kres[-1]
+            )
+        if os.path.exists(os.path.join(A, "repro-kernel.tar.gz")):
+            w(
+                "* package: `repro-kernel.tar.gz` (source graph: "
+                "`repro-kernel/source_graph.txt`)"
+            )
+        if kres and re.match(r"INDUCTOR_REPLAY_RESULT=[1-9]", kres[-1]):
+            imp.insert(
+                0,
+                (
+                    "C1 saved the kernel that made the NaN and it replays without the model (%s): "
+                    "the reproducer exists (repro-kernel). What is open is the verdict: run its "
+                    "source nodes (source_graph.txt) eagerly and in fp64 on the capsule's inputs "
+                    "(step5n-compiled.md *Kernel capsule*) -- fp64 non-finite too = NATIVE_MATH, "
+                    "finite = the kernel." % kres[-1].split()[0],
+                    "replay/kernel",
+                ),
+            )
+        elif kcaps:
+            imp.insert(
+                0,
+                (
+                    "C1 saved a kernel capsule (%s): replay it first (step5n-compiled.md *Kernel "
+                    "capsule*) -- hits with finite inputs make it the reproducer, before any "
+                    "hand-written candidate." % os.path.basename(kcaps[-1]),
+                    "capsules_inductor/",
+                ),
+            )
 
     # ---------------------------------------------------------------- attempts
     w("\n## Attempts (capsule replays)\n")
     if atts:
         w(
-            "| group | attempt | host | copies/GPU x GPUs | non-finite / runs | result | first op to go wrong | walk verdict |"
+            "| group | attempt | host | copies/GPU x GPUs | bad / runs (non-finite or wrong value) | result | first op to go wrong | walk verdict |"
         )
         w("|---|---|---|---|---|---|---|---|")
         for t in atts:
@@ -529,7 +706,30 @@ def main():
             ]
             if extra:
                 w("\n`%s`:\n\n" % t["rel"] + "\n".join("    " + x[:220] for x in extra))
-    else:
+    if colls:
+        w(
+            "\nCOLLECTIVE groups (one torchrun over the member ranks replays the recorded "
+            "collective):\n"
+        )
+        w(
+            "| group | replay | host | ranks | bad / runs | result | check on the recorded inputs | path |"
+        )
+        w("|---|---|---|---|---|---|---|---|")
+        for c in colls:
+            w(
+                "| %s | `%s` | %s | %s | %s | %s | %s | %s |"
+                % (
+                    c["group"],
+                    c["rel"],
+                    c["host"],
+                    c["ranks"] or "?",
+                    "%s/%s" % (c["hits"], c["runs"]) if c["runs"] is not None else "?",
+                    c["result"] or "?",
+                    c["verdict"] or "-",
+                    c["path"] or "-",
+                )
+            )
+    if not atts and not colls:
         w("(no 5b attempt on disk)")
 
     # ---------------------------------------------------------------- ruled out
@@ -553,6 +753,22 @@ def main():
                     t["runs"],
                     fmt_rate(excl(t["runs"])),
                     t["result"] or "?",
+                )
+            )
+    for c in colls:
+        if c["hits"] == 0 and c["runs"]:
+            ruled.append(
+                "collective %s replay (`%s` on the recorded inputs, one torchrun over ranks %s%s), "
+                "0/%d -> excludes >= %s (%s, job %s)"
+                % (
+                    c["group"],
+                    c["op"],
+                    c["ranks"] or "?",
+                    ", path " + c["path"] if c["path"] else "",
+                    c["runs"],
+                    fmt_rate(excl(c["runs"])),
+                    c["result"] or "?",
+                    c["job"],
                 )
             )
     for r in clean:
@@ -587,8 +803,8 @@ def main():
                 "The capsule's exact values, op and copies-only load never fail where the model needed far "
                 "fewer runs (NOT_SET_UP): the missing ingredient is the load, the kernel mix or state around "
                 "the op -- not the values. A copies-only single-op candidate repeats this experiment; start "
-                "from the op beside the model's step (top-down, or bottom-up beside a training-step "
-                "stand-in).",
+                "from the op beside the model's step (top-down, or bottom-up beside a stand-in "
+                "for that step).",
                 t["rel"],
             ),
         )
@@ -683,7 +899,52 @@ def main():
                 "attempts",
             )
         )
-    if pts and not atts:
+    for c in colls:
+        if c["hits"]:
+            imp.insert(
+                0,
+                (
+                    "Collective %s REPRODUCED on its recorded inputs (%d/%d, %s): that replay is a "
+                    "reproducer (repro-%s) -- 5N needs a reason beyond it (the trigger above)."
+                    % (
+                        c["group"],
+                        c["hits"],
+                        c["runs"],
+                        c["verdict"] or "?",
+                        c["group"],
+                    ),
+                    c["rel"],
+                ),
+            )
+            break
+    for c in colls:
+        if c["hits"] == 0 and c["runs"]:
+            imp.append(
+                (
+                    "Collective %s replayed clean on its recorded inputs (%d/%d%s)%s: the inputs "
+                    "alone do not make it fail -- what differs is the message size / dtype (they "
+                    "pick the implementation path), the env, the traffic around it, or the "
+                    "captured event is not the model's failure (compare its step with the model "
+                    "failure step in Facts). A candidate that only repeats this collective on "
+                    "these inputs repeats this experiment; write it at the failing step's shapes "
+                    "and env, RANKS=<world size> (step5n-native.md *World size > 1*)."
+                    % (
+                        c["group"],
+                        c["hits"],
+                        c["runs"],
+                        ", path " + c["path"] if c["path"] else "",
+                        (
+                            " although the recorded output was wrong (%s)"
+                            % c["verdict"]
+                            if c["verdict"]
+                            else ""
+                        ),
+                    ),
+                    c["rel"],
+                )
+            )
+            break
+    if pts and not atts and not colls:
         imp.append(
             (
                 "%d capsule(s) exist but none was replayed: the captured op, its exact views/strides and "
@@ -728,7 +989,7 @@ def main():
 
     path = a.out or os.path.join(A, "native", "handoff.md")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    open(path, "w").write("\n".join(out) + "\n")
+    Path(path).write_text("\n".join(out) + "\n")
     print(
         "HANDOFF %s (%d attempts, %d sweep rows, %d ruled out, %d implications, %d lines)"
         % (path, len(atts), len(sweeps), len(ruled), len(imp), len(out))

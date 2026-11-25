@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Is the model this run script runs a PyTorch program?  (mad-debug-nan step 1, first check)
+"""Is the model this run script runs a PyTorch program?  (mad-debug-numeric step 1, first check)
 
-    framework_check.py <run script> [--source <model.py> ...]
+    madengine nan framework-check <run script> [--source <model.py> ...]
 
-Every rung of debug-nan hooks PyTorch: the capture is a __torch_dispatch__ mode, a
+Every rung of mad-debug-numeric hooks PyTorch: the capture is a __torch_dispatch__ mode, a
 capsule is torch.save'd ATen ops, the replay re-dispatches them.  A JAX, TensorFlow or
 other non-PyTorch model gives no capsule and no replay -- only hours of empty waves --
 so the skill must refuse it before anything is created.
@@ -140,7 +140,18 @@ def find_file(name, roots):
         p = os.path.normpath(os.path.join(r, name))
         if os.path.isfile(p):
             return p
+    # By basename -- but a name with directories (torchtitan/train.py) must match its
+    # literal tail: an unrelated train.py elsewhere in the tree is not that file.
     base = os.path.basename(name)
+    tail = [
+        c
+        for c in os.path.normpath(name).split(os.sep)[:-1]
+        if c and c not in (".", "..")
+    ]
+    tail = tail[
+        len(tail)
+        - next((i for i, c in enumerate(reversed(tail)) if "$" in c), len(tail)) :
+    ]
     for r in roots:
         for d, dirs, files in os.walk(r):
             dirs[:] = [
@@ -148,7 +159,7 @@ def find_file(name, roots):
             ]
             if d[len(r) :].count(os.sep) > 3:
                 dirs[:] = []
-            if base in files:
+            if base in files and (not tail or d.split(os.sep)[-len(tail) :] == tail):
                 return os.path.join(d, base)
     return None
 

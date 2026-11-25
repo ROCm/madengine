@@ -36,6 +36,11 @@ from . import repro_readme, runner
 CLOSURE = [
     "__init__.py",
     "op_nan_capture.py",
+    "math_refs.py",
+    "twins.py",
+    "inductor_ref.py",
+    "failure_signature.py",
+    "capsule_operands.py",
     "replay_nan_op.py",
     "kernel_patch.py",
     "kernel_mutations.py",
@@ -58,6 +63,18 @@ export CAPSULE_ITER_COUNT=${{CAPSULE_ITER_COUNT:-{iters}}} CAPSULE_CONCURRENCY=$
 PYTHONPATH="$PWD/host${{PYTHONPATH:+:$PYTHONPATH}}" exec python3 -m nan_doctor replay "capsule/{capname}" \\
   --image "$IMAGE" --out-dir "$PWD/out" --runtime-dir "$PWD/runtime" --mode {mode}{cotenant}{extra}{envs} "$@"
 """
+
+
+def _attempt_synthesized(attempt):
+    """True when the replay that reproduced ran on synthesized operands."""
+    for name in ("summary.txt",):
+        path = os.path.join(attempt, name)
+        if not os.path.isfile(path):
+            continue
+        with open(path) as fh:
+            if "SYNTHETIC (--synthesize" in fh.read():
+                return True
+    return False
 
 
 def build(repro, capsule, image, iters, conc, mode, cotenant, extra_args, env):
@@ -90,7 +107,7 @@ def build(repro, capsule, image, iters, conc, mode, cotenant, extra_args, env):
                 mode=mode,
                 cotenant=(" --cotenant %s" % shlex.quote(cotenant)) if cotenant else "",
                 extra=(
-                    (" --extra-args %s" % shlex.quote(extra_args)) if extra_args else ""
+                    (" --extra-args=%s" % shlex.quote(extra_args)) if extra_args else ""
                 ),
                 envs="".join(
                     " --env %s" % shlex.quote("%s=%s" % kv) for kv in env.items()
@@ -142,7 +159,7 @@ def main(argv=None):
     if not os.path.isfile(a.capsule):
         print("capsule not readable: %s" % a.capsule, file=sys.stderr)
         return 2
-    m = re.search(r"/c(\d+)\.", os.path.abspath(a.attempt).rstrip("/") + "/")
+    m = re.search(r"/c(\d+)(?:det)?\.", os.path.abspath(a.attempt).rstrip("/") + "/")
     conc = a.concurrency or (int(m.group(1)) if m else None)
     if not conc:
         print(
@@ -152,6 +169,12 @@ def main(argv=None):
         return 2
     repro = os.path.join(os.path.abspath(a.artifact_dir), "repro-%s" % a.group)
     env = dict(kv.partition("=")[::2] for kv in a.env)
+    extra = a.extra_args.strip()
+    # A shapes-only capsule replays only with --synthesize. The reproducing attempt
+    # records that in its summary; the shipped run.sh has to pass it too, or the
+    # extracted reproducer errors before the first copy.
+    if "--synthesize" not in extra.split() and _attempt_synthesized(a.attempt):
+        extra = (extra + " --synthesize").strip()
     cap = build(
         repro,
         os.path.abspath(a.capsule),
@@ -160,7 +183,7 @@ def main(argv=None):
         conc,
         a.mode,
         a.cotenant.strip() if a.cotenant else "",
-        a.extra_args.strip(),
+        extra,
         env,
     )
     rd = [

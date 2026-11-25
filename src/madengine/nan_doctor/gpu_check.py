@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Which GPU is this, and has debug-nan been tested on it?  (mad-debug-nan steps 0 and 1)
+"""Which GPU is this, and has mad-debug-numeric been tested on it?  (steps 0 and 1)
 
-    gpu_check.py [--torch]
+    madengine nan gpu-check [--torch]
 
-debug-nan is built and tested on AMD Instinct MI300X and newer: gfx942 (MI300X, MI300A,
-MI325X), gfx950 (MI350X, MI355X), and any GPU whose
+mad-debug-numeric is built and tested on AMD Instinct MI300X and newer: gfx942 (MI300X, MI300A,
+MI325X), gfx950 (MI350X, MI355X), gfx1250 (MI455X; one investigation), and any GPU whose
 marketing name is Instinct MI<n> with n >= 300.  Everything else -- older Instinct
 (MI250X, MI210: gfx90a), Radeon, NVIDIA -- is untested: the capture, replay and kernel
 tooling assume ROCm and GFX9-family ISA, and the skill is likely not to work there.
@@ -30,10 +30,12 @@ import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 TESTED_ARCHS = {
     "gfx942": "MI300X / MI300A / MI325X",
     "gfx950": "MI350X / MI355X",
+    "gfx1250": "MI455X (one investigation)",
 }
 
 
@@ -55,7 +57,7 @@ def kfd_archs():
     for p in sorted(glob.glob("/sys/class/kfd/kfd/topology/nodes/*/properties")):
         try:
             props = dict(
-                l.split(None, 1) for l in open(p).read().splitlines() if " " in l
+                l.split(None, 1) for l in Path(p).read_text().splitlines() if " " in l
             )
         except OSError:
             continue

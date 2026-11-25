@@ -62,10 +62,25 @@ COMMANDS = {
         "4: apply/restore the three-line capture wiring in a source tree",
     ),
     "digest": ("digest", "sys", "digest capture logs"),
+    "power": (
+        "power",
+        "argv",
+        "7/8: runs an experiment needs; is a clean result powered?",
+    ),
     "kernel-match": (
         "kernel_match",
         "prog",
         "match a replay's kernel id against the model's kernel",
+    ),
+    "arms": (
+        "configs",
+        "argv",
+        "2 (no signal): differential-mode arms: detect | arms | list",
+    ),
+    "diff": (
+        "output_diff",
+        "argv",
+        "2 (no signal): compare the arms' outputs -> ND_DIFF verdict / switch",
     ),
 }
 

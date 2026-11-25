@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Point at the lines of a model (and its launcher) that mad-debug-nan steps 4 and
+"""Point at the lines of a model (and its launcher) that mad-debug-numeric steps 4 and
 5a-load need, so the agent reads windows instead of whole files.
 
     madengine nan capture-points <model.py> [<launcher.sh> ...] [--context N]
@@ -10,8 +10,11 @@ Static and model-independent (no import, no GPU).  For .py files it uses the AST
   HOOK      framework-owned loops (Lightning training_step / Trainer.fit, HF
             Trainer.train): no loop in user code -> wire the capture as a callback
   LOOP      loops whose body does training/repro work (backward, optimizer/scheduler
-            step, pipeline progress, train/training_step, ...), ranked; the top ones
-            get a code window -> where cap.step() / cap.close() go
+            step, pipeline progress, train/training_step, ...) or inference work
+            (generate(), inference_mode / no_grad), ranked; the top ones get a code
+            window -> where cap.step() / cap.close() go.  Module-level loops count
+            like function loops; a `with torch.no_grad():` block (or a no_grad /
+            inference_mode decorator) around a loop counts for the outermost loop in it
   LAZY      torch.compile, TrainPipeline*, CUDA graphs: built on the first call, so
             arm after step 1 (NAN_CAPTURE_ARM_AFTER_STEPS=1)
   SWALLOW   `except Exception` / bare `except` around the work: capture exceptions
@@ -33,6 +36,7 @@ point (main / __main__) yourself -- never guess a placement from silence.
 import argparse
 import ast
 import re
+from pathlib import Path
 
 WORK = [  # (regex on a call's dotted name, weight, label)
     (r"(^|\.)backward$", 5, "backward"),
@@ -47,6 +51,9 @@ WORK = [  # (regex on a call's dotted name, weight, label)
         "train step",
     ),
     (r"(^|\.)(zero_grad)$", 2, "zero_grad"),
+    # inference: a request / decode loop (HF and vLLM generate, a no-grad forward)
+    (r"(^|\.)generate$", 5, "generate"),
+    (r"(^|\.)(inference_mode|no_grad)$", 2, "inference_mode/no_grad"),
     (
         r"scaled_dot_product_attention$|(^|\.)(matmul|mm|bmm|linear|addmm)$",
         2,
@@ -85,7 +92,7 @@ FAN_SH = [
         "device pinning",
     ),
     (
-        r"docker run|apptainer exec|singularity exec|lux_exec|srun\b",
+        r"docker run|apptainer exec|singularity exec|srun\b",
         "container/process launch",
     ),
     (r"torchrun|--nproc[-_]per[-_]node|--ntasks-per-node|mpirun", "distributed launch"),
@@ -110,6 +117,27 @@ def dotted(node):
     return ""
 
 
+def _module_train_mode(call):
+    """True for `model.train()` / `net.train(False)` / `m.train(mode=True)`: nn.Module's mode
+    switch, not a framework loop.  A receiver named like a trainer (`trainer.train()`, HF) or
+    any other argument keeps it a HOOK."""
+    f = call.func
+    if not (isinstance(f, ast.Attribute) and f.attr == "train"):
+        return False
+    if "trainer" in dotted(f.value).lower():
+        return False
+    if not call.args and not call.keywords:
+        return True
+    if (
+        len(call.args) == 1
+        and not call.keywords
+        and isinstance(call.args[0], ast.Constant)
+        and isinstance(call.args[0].value, bool)
+    ):
+        return True
+    return not call.args and [k.arg for k in call.keywords] == ["mode"]
+
+
 def enclosing(tree):
     owner = {}
     for fn in ast.walk(tree):
@@ -118,6 +146,59 @@ def enclosing(tree):
                 if hasattr(n, "lineno"):
                     owner.setdefault(n.lineno, fn.name)
     return owner
+
+
+INFER_CTX = r"(^|\.)(inference_mode|no_grad)$"
+
+
+def _under_inference_ctx(tree):
+    """ids of the loops that run under a `with torch.no_grad():` / `inference_mode()` block
+    or in a function decorated with one, and are the outermost loop there.  The context is
+    outside the loop, so the loop's own calls never show it: the decode loop of a
+    module-level script (`with torch.no_grad(): ... for step in range(...)`, its body all
+    helper calls and `@`) scored 0 -> `no LOOP candidate`.  Only a with-block outside any
+    loop counts: under a step loop the step loop already scores the with's call, and
+    crediting its inner layer loop too would tie them.
+    """
+    hit = set()
+
+    def visit(node, under, in_loop):
+        for c in ast.iter_child_nodes(node):
+            u, l = under, in_loop
+            if isinstance(
+                c, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+            ):
+                u, l = (
+                    any(
+                        re.search(INFER_CTX, dotted(d))
+                        for d in getattr(c, "decorator_list", [])
+                    ),
+                    False,
+                )
+            elif (
+                isinstance(c, (ast.With, ast.AsyncWith))
+                and not in_loop
+                and any(re.search(INFER_CTX, dotted(i.context_expr)) for i in c.items)
+            ):
+                u = True
+            elif isinstance(c, (ast.For, ast.While, ast.AsyncFor)):
+                # a walk over parameters / a literal tuple is weight init, not a step loop
+                # (`with torch.no_grad(): for name, p in model.named_parameters()`)
+                it = getattr(c, "iter", None)
+                walk = it is not None and (
+                    isinstance(it, (ast.Tuple, ast.List, ast.Set))
+                    or re.search(
+                        r"(^|\.)(named_)?(parameters|modules|buffers|children)$|state_dict",
+                        dotted(it),
+                    )
+                )
+                if under and not in_loop and not walk:
+                    hit.add(id(c))
+                l = True
+            visit(c, u, l)
+
+    visit(tree, False, False)
+    return hit
 
 
 def scan_py(path, src, ctx, show):
@@ -135,6 +216,8 @@ def scan_py(path, src, ctx, show):
         if imps:
             out.append((max(imps), "IMPORTS", "last top-level import"))
         owner = enclosing(tree)
+        # every loop of the file: in a function, at module level, nested in a module-level with
+        under_ctx = _under_inference_ctx(tree)
         loops = []
         for n in ast.walk(tree):
             if not isinstance(n, (ast.For, ast.While, ast.AsyncFor)):
@@ -148,6 +231,9 @@ def scan_py(path, src, ctx, show):
                             score += w
                             why.add(lab)
                             break
+            if id(n) in under_ctx and "inference_mode/no_grad" not in why:
+                score += 2
+                why.add("inference_mode/no_grad")
             if score:
                 loops.append(
                     (score, n.lineno, getattr(n, "end_lineno", n.lineno), sorted(why))
@@ -185,7 +271,11 @@ def scan_py(path, src, ctx, show):
                 hooks.append(
                     (n.lineno, "HOOK", "def %s: the framework owns the loop" % n.name)
                 )
-            if isinstance(n, ast.Call) and re.search(HOOK_CALLS, dotted(n.func)):
+            if (
+                isinstance(n, ast.Call)
+                and re.search(HOOK_CALLS, dotted(n.func))
+                and not _module_train_mode(n)
+            ):
                 hooks.append(
                     (
                         n.lineno,
@@ -282,7 +372,7 @@ def main():
     p.add_argument("--max-hits", type=int, default=6, help="per category, per file")
     a = p.parse_args()
     for path in a.files:
-        src = open(path, errors="replace").read()
+        src = Path(path).read_text(errors="replace")
         if path.endswith(".py"):
             lines, hits = scan_py(path, src, a.context, a.windows)
         else:

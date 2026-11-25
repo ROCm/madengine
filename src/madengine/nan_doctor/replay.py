@@ -1,4 +1,4 @@
-"""Replay one NaN capsule under load on every GPU of this node (debug-nan step 5b).
+"""Replay one NaN capsule under load on every GPU of this node (mad-debug-numeric step 5b).
 
     madengine nan replay <capsule.pt> --image <image> --out-dir <dir> [options]
 
@@ -9,12 +9,21 @@ times; a capsule without a chain falls back to the single op x N (`--mode op` fo
 The copies on one GPU are each other's co-tenants and wait for each other at a barrier
 before their first run, so they overlap from the start.
 
+Deterministic probe: before the fan-out, ONE copy on GPU 0 runs the capsule
+--deterministic-probe times (100; 0 off; skipped with --cotenant).  Every run non-finite =
+a deterministic fault: the ladder ends there, REPRODUCED at concurrency 1, instead of
+loading the capsule into NGPUS x concurrency copies.
+
 Ladder: start at the capture's processes per GPU + 1 (read from the capsule), so the replay
 is at least as loaded as the model was; an out-of-memory attempt is retried with one copy
 fewer, down to 1.  The first attempt that runs to completion ends the ladder: REPRODUCED,
 CLEAN, or NOT_SET_UP (0 hits in `futility x the capsule's op call index` node-wide runs: the
-replay is not recreating the model's trigger, which more runs cannot fix).  Every copy of an
-attempt is stopped together once the node has --stop-hits non-finite runs.
+replay is not recreating the model's trigger, which more runs cannot fix).  Runs in the
+first --futility-grace seconds of an attempt do not count toward futility (default 180
+with --cotenant, else 0): a co-tenant loads the device in seconds but computes only after
+its own start-up, and solo-speed runs in between would end a reproducing attempt
+NOT_SET_UP.  Every copy of an attempt is stopped together once the node has --stop-hits
+non-finite runs.
 
 The last line of output is LADDER_RESULT=...; each attempt directory holds summary.txt.
 Paths are the same on the host and in the containers (the working directory and the
@@ -22,7 +31,8 @@ directories of CAPSULE and OUT_DIR are bind-mounted at their own path).
 
 Environment defaults (so a reproducer's run.sh can override without editing it):
 CAPSULE_ITER_COUNT, CAPSULE_CONCURRENCY, CAPSULE_MODE, CAPSULE_COTENANT, CAPSULE_EXTRA_ARGS,
-CAPSULE_STOP_HITS, CAPSULE_FUTILITY, CAPSULE_SECONDS, NGPUS.
+CAPSULE_STOP_HITS, CAPSULE_FUTILITY, CAPSULE_FUTILITY_GRACE, CAPSULE_DETERMINISTIC_PROBE,
+CAPSULE_SECONDS, NGPUS.
 """
 
 # flake8: noqa: E741,E731,E402  (terse variable names, kept from the original scripts)
@@ -38,6 +48,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 from . import runner, summary
 
@@ -75,7 +86,7 @@ def read_progress(attempt_dir):
         if not p.endswith(".progress"):
             continue
         try:
-            parts = open(os.path.join(attempt_dir, p)).read().split()
+            parts = Path(os.path.join(attempt_dir, p)).read_text().split()
             runs += int(parts[0])
             hits += int(parts[1])
         except (OSError, ValueError, IndexError):
@@ -97,6 +108,8 @@ class Ladder:
         extra_args="",
         stop_hits=10,
         futility=100,
+        futility_grace=None,
+        det_runs=100,
         seconds=0,
         mounts=(),
         env=None,
@@ -117,6 +130,12 @@ class Ladder:
             int(futility),
             seconds,
         )
+        self.grace = (
+            (180 if self.cotenant else 0)
+            if futility_grace is None
+            else float(futility_grace)
+        )
+        self.det_runs = int(det_runs)
         self.mounts, self.env, self.runtime_dir, self.poll = (
             list(mounts),
             dict(env or {}),
@@ -135,15 +154,15 @@ class Ladder:
             raise ValueError("--cotenant must not contain single quotes")
 
     # ---- what runs in each container -------------------------------------------------
-    def payload(self):
+    def payload(self, iters=None):
+        iters = self.iters if iters is None else iters
         base = "python3 -m nan_doctor_rt.replay_nan_op %s" % shlex.quote(self.capsule)
         if self.mode == "op":
-            p = base + " --iters %d --restore-env" % self.iters
+            p = base + " --iters %d --restore-env" % iters
         else:
             p = (
                 base
-                + " --chain --chain-fallback --chain-iters %d --restore-env"
-                % self.iters
+                + " --chain --chain-fallback --chain-iters %d --restore-env" % iters
             )
         if self.cotenant:
             p += " --contend-with %s" % shlex.quote(self.cotenant)
@@ -210,16 +229,21 @@ class Ladder:
             probe,
         )
 
-    def attempt(self, c, expect, op_index):
-        d = os.path.join(self.out_dir, "c%d.%s.%s" % (c, self.tag, self.host))
+    def attempt(
+        self, c, expect, op_index, ngpus=None, iters=None, suffix="", stop_hits=None
+    ):
+        """One attempt: (ATTEMPT_RESULT, dir, hits, runs) -- hits and runs from the totals
+        line of summary.txt (the copies' final counts; .progress lags behind)."""
+        ngpus = ngpus or self.ngpus
+        d = os.path.join(self.out_dir, "c%d%s.%s.%s" % (c, suffix, self.tag, self.host))
         os.makedirs(d, exist_ok=True)
         os.chmod(d, 0o777)
         self.out(
             "[%s] attempt: concurrency=%d -> %d copies, logs in %s"
-            % (time.strftime("%c"), c, self.ngpus * c, d)
+            % (time.strftime("%c"), c, ngpus * c, d)
         )
         procs = []
-        for gpu in range(self.ngpus):
+        for gpu in range(ngpus):
             for k in range(c):
                 loop = "--progress-file %s --stop-file %s" % (
                     os.path.join(d, "g%d_k%d.progress" % (gpu, k)),
@@ -232,14 +256,14 @@ class Ladder:
                     )
                 cmd = "PYTHONUNBUFFERED=1 NAN_REPLAY_CONCURRENCY=%d %s %s" % (
                     c,
-                    self.payload(),
+                    self.payload(iters),
                     loop,
                 )
                 log = os.path.join(d, "g%d_k%d.%s.log" % (gpu, k, self.host))
-                name = "nan_replay_%d_c%d_g%d_k%d" % (self.tag, c, gpu, k)
+                name = "nan_replay_%d_c%d%s_g%d_k%d" % (self.tag, c, suffix, gpu, k)
                 self._names.append(name)
                 procs.append((self._popen(gpu, cmd, log, name), log))
-        self._wait(d, procs, expect)
+        self._wait(d, procs, expect, self.stop_hits if stop_hits is None else stop_hits)
         for p, log in procs:
             with open(log, "a") as f:
                 f.write("%s%s\n" % (TRIAL_RC, p.returncode))
@@ -250,37 +274,50 @@ class Ladder:
         self.out(text.rstrip("\n"))
         with open(os.path.join(d, "summary.txt"), "w") as f:
             f.write(text)
-        return res, d
+        tot = [
+            m
+            for l in text.splitlines()
+            if l.startswith("=== totals:")
+            for m in [re.search(r"non-finite (\d+)/(\d+)", l)]
+            if m
+        ]
+        hits, runs = (int(tot[-1].group(1)), int(tot[-1].group(2))) if tot else (0, 0)
+        return res, d, hits, runs
 
-    def _wait(self, d, procs, expect):
+    def _wait(self, d, procs, expect, stop_hits):
         """Wait for the copies; stop ALL of them together once the node has --stop-hits non-finite
-        runs, or once it has run `expect` times clean (futility).  Stopping one copy early would
-        de-stress its co-tenants, so the stop file is node-wide."""
+        runs, or once it has run `expect` times clean (futility; runs inside the grace do
+        not count, hits always do).  Stopping one copy early would de-stress its
+        co-tenants, so the stop file is node-wide."""
         stop = os.path.join(d, "STOP")
+        t0, base = time.time(), 0
         while any(p.poll() is None for p, _ in procs):
             if self._term:
                 break
             if not os.path.exists(stop):
                 runs, hits = read_progress(d)
-                if self.stop_hits > 0 and hits >= self.stop_hits:
+                if time.time() - t0 < self.grace:
+                    base = runs
+                runs -= base
+                if stop_hits > 0 and hits >= stop_hits:
                     self.out(
                         "[%s] node-wide non-finite runs: %d >= --stop-hits=%d -- stopping every copy"
-                        % (time.strftime("%c"), hits, self.stop_hits)
+                        % (time.strftime("%c"), hits, stop_hits)
                     )
-                    open(stop, "w").write(
+                    Path(stop).write_text(
                         "hits=%d target=%d at %s\n"
-                        % (hits, self.stop_hits, time.strftime("%F %T"))
+                        % (hits, stop_hits, time.strftime("%F %T"))
                     )
                 elif expect > 0 and hits == 0 and runs >= expect:
                     self.out(
                         "[%s] futility: 0 non-finite in %d node-wide runs >= %d -- stopping every copy (NOT_SET_UP)"
                         % (time.strftime("%c"), runs, expect)
                     )
-                    open(stop, "w").write(
+                    Path(stop).write_text(
                         "futility runs=%d expect=%d at %s\n"
                         % (runs, expect, time.strftime("%F %T"))
                     )
-                    open(os.path.join(d, "FUTILE"), "w").write("%d\n" % runs)
+                    Path(os.path.join(d, "FUTILE")).write_text("%d\n" % runs)
             time.sleep(self.poll)
         for p, _ in procs:
             p.wait()
@@ -331,8 +368,9 @@ class Ladder:
             % (
                 time.strftime("%c"),
                 (
-                    "NOT_SET_UP after %d clean node-wide runs (--futility=%d x capture op index %s)"
-                    % (expect, self.futility, op_index)
+                    "NOT_SET_UP after %d clean node-wide runs (--futility=%d x capture op "
+                    "index %s), counted after a %gs grace"
+                    % (expect, self.futility, op_index, self.grace)
                     if expect
                     else "off"
                 ),
@@ -340,18 +378,50 @@ class Ladder:
         )
         self.out("[%s] payload: %s" % (time.strftime("%c"), self.payload()))
         tried, c, result = [], start, None
-        while True:
+        # A deterministic fault needs no fan-out: one solo copy that NaNs on every run
+        # settles it (a contention-gated fault does not hit every run alone).
+        if self.det_runs > 0 and not self.cotenant:
+            r, d, hits, runs = self.attempt(
+                1,
+                expect,
+                op_index,
+                ngpus=1,
+                iters=self.det_runs,
+                suffix="det",
+                stop_hits=0,
+            )
+            tried.append("c1det:%s:%d/%d" % (r, hits, runs))
+            if r == "REPRODUCED" and runs > 0 and hits == runs:
+                result = (
+                    "REPRODUCED at concurrency 1 -- deterministic: %d/%d solo runs on GPU 0 "
+                    "non-finite, no fan-out" % (hits, runs)
+                )
+            elif r == "ERROR":
+                result = (
+                    "ERROR at concurrency 1 (deterministic probe) -- read the copy logs"
+                )
+            self.out(
+                "[%s] deterministic probe: %s %d/%d -> %s"
+                % (
+                    time.strftime("%c"),
+                    r,
+                    hits,
+                    runs,
+                    result or "not deterministic, ladder from c%d" % start,
+                )
+            )
+        while result is None:
             if self._term:
                 result = "ERROR interrupted"
                 break
-            r, d = self.attempt(c, expect, op_index)
+            r, d, _, _ = self.attempt(c, expect, op_index)
             tried.append("c%d:%s" % (c, r))
             if r == "REPRODUCED":
                 result = "REPRODUCED at concurrency %d" % c
             elif r == "CLEAN":
                 result = "NOT_REPRODUCED at concurrency %d" % c
             elif r == "NOT_SET_UP":
-                runs = open(os.path.join(d, "FUTILE")).read().strip()
+                runs = Path(os.path.join(d, "FUTILE")).read_text().strip()
                 result = (
                     "NOT_SET_UP at concurrency %d -- 0 in %s runs, the model hit it within %s op calls: "
                     "escalate (step5-pressure.md)" % (c, runs, op_index)
@@ -431,6 +501,21 @@ def main(argv=None):
         "node-wide runs; 0 = off (default 100)",
     )
     ap.add_argument(
+        "--futility-grace",
+        type=float,
+        default=_env("CAPSULE_FUTILITY_GRACE", None),
+        help="seconds after an attempt starts whose runs futility does not count "
+        "(default 180 with --cotenant, else 0)",
+    )
+    ap.add_argument(
+        "--deterministic-probe",
+        type=int,
+        default=int(_env("CAPSULE_DETERMINISTIC_PROBE", 100)),
+        help="runs of ONE solo copy on GPU 0 before the fan-out; every run non-finite "
+        "ends the ladder REPRODUCED at concurrency 1; 0 = off, skipped with "
+        "--cotenant (default 100)",
+    )
+    ap.add_argument(
         "--seconds",
         default=_env("CAPSULE_SECONDS", "0"),
         help="also stop every copy this long after its loop starts",
@@ -472,6 +557,8 @@ def main(argv=None):
             extra_args=a.extra_args,
             stop_hits=a.stop_hits,
             futility=a.futility,
+            futility_grace=a.futility_grace,
+            det_runs=a.deterministic_probe,
             seconds=a.seconds,
             mounts=[runner.parse_mount(m) for m in a.mount],
             env=dict(kv.partition("=")[::2] for kv in a.env),

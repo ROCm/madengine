@@ -3,7 +3,7 @@
 
     kernel_match.py <replay kernel.<job>.<host>.txt> <model hipBLASLt log> [<log> ...]
 
-The kernel file is the 5b ladder's (replay_verdict.py kernel): its `solution_index:`
+The kernel file is the 5b ladder's (`madengine nan verdict kernel`): its `solution_index:`
 and its `bench:` line, whose geometry is the capsule's.  The model logs are
 hipBLASLt bench-format call logs (HIPBLASLT_LOG_MASK=32, HIPBLASLT_LOG_FILE=...)
 from a run of the model -- one capture trial with the log on is enough: the
@@ -20,6 +20,7 @@ Exit status 0 for MATCH, 1 otherwise.  No torch, no GPU: runs on a login node.
 import re
 import sys
 from collections import Counter
+from pathlib import Path
 
 # The bench flags that pick the problem; alpha/beta/strides/scales do not.
 KEY_FLAGS = (
@@ -57,7 +58,7 @@ def key(f):
 def main(argv):
     if len(argv) < 3:
         sys.exit(__doc__)
-    txt = open(argv[1]).read()
+    txt = Path(argv[1]).read_text()
     idx = re.search(r"^solution_index:\s*(\d+)", txt, re.M)
     bench = re.search(r"^bench:\s*(hipblaslt-bench .+)$", txt, re.M)
     if not (idx and bench):
@@ -80,12 +81,13 @@ def main(argv):
     )
     used = Counter()
     for path in argv[2:]:
-        for line in open(path, errors="replace"):
-            if not line.startswith("hipblaslt-bench"):
-                continue
-            f = flags(line)
-            if key(f)[:-1] == want:
-                used[(f.get("--solution_index", "?"), "--bias_vector" in f)] += 1
+        with open(path, errors="replace") as fh:
+            for line in fh:
+                if not line.startswith("hipblaslt-bench"):
+                    continue
+                f = flags(line)
+                if key(f)[:-1] == want:
+                    used[(f.get("--solution_index", "?"), "--bias_vector" in f)] += 1
     if not used:
         print("KERNEL_UNKNOWN=no call of this geometry in the model log(s)")
         return 1

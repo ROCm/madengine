@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mechanical readings of a debug-nan 5b replay, so nobody greps copy logs for them.
+"""Mechanical readings of a mad-debug-numeric 5b replay, so nobody greps copy logs for them.
 
     madengine nan verdict attempt <attempt_dir> [--reproduced]
     madengine nan verdict kernel <kernel-id log>
@@ -26,6 +26,7 @@ import glob
 import os
 import re
 import sys
+from pathlib import Path
 
 ROW = re.compile(r"^\s+(\d+)\s+(\S+)\s+(yes|no|NO)\s+(\S+)\s+(\S+)\s*(.*)$")
 TERMINAL = re.compile(r"^\s+terminal fp64 ref on replay operands: (\S+)")
@@ -66,8 +67,11 @@ def c1_terminal(lines):
 
 def op_terminal(lines):
     """A single-op replay's own fp64 check ([2] of replay_nan_op.py: no chain walk,
-    e.g. CAPSULE_MODE=op): 'finite', 'NON-FINITE', or None if it printed neither."""
+    e.g. CAPSULE_MODE=op): 'finite', 'NON-FINITE', 'rerun' (a rerun capsule: counted by
+    its rerun check, which needs no reference), or None if it printed none of them."""
     for ln in lines:
+        if "a launch counts when the op fails its rerun check again" in ln:
+            return "rerun"
         if "-> the true result is finite AND fits in" in ln:
             return "finite"
         if "-> the true result (" in ln and "exceeds" in ln:
@@ -91,6 +95,12 @@ def propose(rows, terminal=None):
     terminal-on-replay-operands reference (c1_terminal), when it printed one.  With
     no walk (single-op replay), terminal is the op's own check (op_terminal)."""
     if not rows:
+        if terminal == "rerun":
+            return (
+                "KERNEL_BUG",
+                "single op: not repeatable on identical operands (rerun check): "
+                "no correct deterministic kernel does that, whatever the operands",
+            )
         # The verdict table's own rule: the terminal fp64 ref on the replay operands
         # is finite -> KERNEL_BUG, whatever produced those operands.
         if terminal == "finite":
@@ -112,6 +122,18 @@ def propose(rows, terminal=None):
         )
     term, anc = split_terminal(rows)
     anc_div = [r for r in anc if r["vs"] == "DIVERGED"]
+    if terminal == "rerun":
+        # a rerun capsule: the reproducing runs gave different outputs on identical
+        # operands -- no correct deterministic kernel does that, whatever the operands are
+        why = (
+            "the op is not repeatable on identical operands (rerun check): no correct "
+            "deterministic kernel does that, whatever produced them"
+        )
+        if anc_div:
+            why += "; ancestor DIVERGED (%s), which does not change it" % ", ".join(
+                r["op"] for r in anc_div
+            )
+        return "KERNEL_BUG", why
     # most specific first: a non-finite fp64 reference means no correct kernel does
     # better -- not a kernel bug at all, whatever else the walk shows.  Only a
     # reference that RAN and came back non-finite says that: 'unavailable' (no CPU
@@ -150,6 +172,14 @@ def propose(rows, terminal=None):
         )
     if term["ref"] == "finite" and not anc_div:
         return "KERNEL_BUG", "terminal fp64 ref finite, no ancestor DIVERGED"
+    # The reference on the replay's own operands (a fused op's value check, an fp32
+    # recompute from its inputs: aiter MLA decode, which has no fp64 kernel) is the
+    # stronger of the two: the loop reproduced and nothing upstream diverged.
+    if terminal == "finite" and not anc_div:
+        return (
+            "KERNEL_BUG",
+            "terminal reference on the replay operands finite, no ancestor DIVERGED",
+        )
     why = []
     if term["ref"] != "finite":
         why.append("terminal op has no reference (%s)" % term["ref"])
@@ -163,15 +193,16 @@ def first_nonfinite(logs):
     tally = collections.Counter()
     for lg in logs:
         on = False
-        for ln in open(lg, errors="replace"):
-            if ln.startswith("  first op to go non-finite, by run:"):
-                on = True
-            elif on:
-                m = TALLY.match(ln)
-                if not m:
-                    on = False
-                    continue
-                tally[m.group(1)] += int(m.group(2))
+        with open(lg, errors="replace") as fh:
+            for ln in fh:
+                if ln.startswith("  first op to go non-finite, by run:"):
+                    on = True
+                elif on:
+                    m = TALLY.match(ln)
+                    if not m:
+                        on = False
+                        continue
+                    tally[m.group(1)] += int(m.group(2))
     return tally
 
 
@@ -185,7 +216,7 @@ def attempt(d, reproduced):
         )
     rows, terminal = [], None
     for lg in logs:
-        lines = open(lg, errors="replace").read().splitlines()
+        lines = Path(lg).read_text(errors="replace").splitlines()
         rows = c1_rows(lines)
         if rows:
             terminal = c1_terminal(lines)
@@ -208,7 +239,12 @@ def attempt(d, reproduced):
                 "; first non-finite != first wrong: --chain-repeat-check names the op "
                 "whose output stopped repeating"
             )
-    text0 = open(logs[0], errors="replace").read() if logs else ""
+    text0 = Path(logs[0]).read_text(errors="replace") if logs else ""
+    if "returned a WRONG FINITE value" in text0:
+        # a wrong-value capsule: its "non-finite" hits are runs that failed the value check
+        why = why.replace("terminal non-finite", "terminal wrong finite value").replace(
+            "first non-finite at", "first wrong at"
+        )
     if "SYNTHETIC-INCONSISTENT" in text0:
         # Derived operands (attention out / softmax_lse) drawn independently of q/k/v:
         # a correct kernel overflows on them too, so a hit proves nothing.
@@ -236,7 +272,7 @@ def attempt(d, reproduced):
 
 
 def kernel(log):
-    text = open(log, errors="replace").read()
+    text = Path(log).read_text(errors="replace")
     lines = text.splitlines()
 
     def first(pat):
@@ -244,8 +280,16 @@ def kernel(log):
         return m.group(1).strip() if m else ""
 
     idx = first(r"^\s+solution_index: (\S+)")
+    # a grouped GEMM: whose solution it is ("the wrong group's: rows N", or "ONE group's")
+    note = first(r"^\s+solution_index: \S+ \(as dispatched; (.+)\)$")
+    groups = re.findall(
+        r"^\s+group rows (\d+ \(group\(s\) [\d,]+\): solution \S+.*)$", text, re.M
+    )
     name = first(r"^\s+kernel:\s+(.+)$")
     arch = first(r"^\s+arch:\s+(.+)$")
+    if not arch:  # Tensile names carry it: ..._ISA950_...
+        m = re.search(r"_ISA(\d{3,4})(?:_|$)", name)
+        arch = "gfx%s" % m.group(1) if m else ""
     bench = first(r"^(hipblaslt-bench .+)$")
     muts = []
     on = False
@@ -265,7 +309,9 @@ def kernel(log):
         inj = "no (stock) -- nans_to_nops: no instruction materialises a NaN constant"
     else:
         inj = "unknown"
-    print("solution_index: %s" % (idx or "?"))
+    print("solution_index: %s" % (idx or "?") + (" (%s)" % note if note else ""))
+    for gl in groups:
+        print("group:          rows %s" % gl.strip())
     print(
         "kernel:         %s"
         % (name or "? (not identified: see %s)" % os.path.basename(log))
