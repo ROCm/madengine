@@ -28,6 +28,10 @@ class TestPlaceholderCredentials:
             "your-username",
             "your-token-or-password",
             " YOUR-DOCKER-USERNAME ",
+            "add-your-github-id",
+            "add-your-github-pat-here",
+            "generated-by-jenkins-github-app-token",
+            "add your credential",
         ):
             assert is_placeholder_credential(value)
 
@@ -46,6 +50,14 @@ class TestPlaceholderCredentials:
     def test_one_template_field_is_not_usable(self):
         assert not _usable_credentials(
             {"username": "real-user", "password": "your-docker-token"}
+        )
+
+    def test_mad_github_template_is_not_usable(self):
+        assert not _usable_credentials(
+            {
+                "username": "add-your-github-id",
+                "password": "add-your-github-pat-here",
+            }
         )
 
     def test_dummy_fixture_dockerhub_is_not_usable(self):

@@ -23,7 +23,11 @@ from contextlib import redirect_stderr, redirect_stdout
 from rich.console import Console as RichConsole
 
 from madengine.core.additional_context_defaults import DEFAULT_GUEST_OS
-from madengine.core.auth import login_to_registry
+from madengine.core.auth import (
+    _usable_credentials,
+    github_clone_identity,
+    login_to_registry,
+)
 from madengine.core.console import Console, redact_secrets
 from madengine.core.context import Context
 from madengine.core.dataprovider import Data
@@ -1990,33 +1994,48 @@ class ContainerRunner:
 
                         # Clone model repo if needed
                         if "url" in model_info and model_info["url"] != "":
+                            cred_name = model_info.get("cred") or ""
+                            cred_entry = {}
+                            if cred_name and self.credentials:
+                                cred_entry = self.credentials.get(cred_name) or {}
                             if (
-                                "cred" in model_info
-                                and model_info["cred"] != ""
-                                and self.credentials
+                                model_info["url"].startswith("ssh://")
+                                and cred_entry.get("ssh_key_file")
+                                and cred_entry.get("username")
                             ):
-                                print(f"Using credentials for {model_info['cred']}")
-
-                                if model_info["url"].startswith("ssh://"):
+                                print(f"Using credentials for {cred_name}")
+                                model_docker.sh(
+                                    f"git -c core.sshCommand='ssh -l "
+                                    f"{cred_entry['username']} "
+                                    f"-i {cred_entry['ssh_key_file']} "
+                                    f"-o IdentitiesOnly=yes "
+                                    f"-o UserKnownHostsFile=/dev/null "
+                                    f"-o StrictHostKeyChecking=no' "
+                                    f"clone {model_info['url']}",
+                                    timeout=240,
+                                )
+                            else:
+                                identity = github_clone_identity(cred_entry)
+                                if identity and not model_info["url"].startswith(
+                                    "ssh://"
+                                ):
+                                    username, password = identity
+                                    if _usable_credentials(cred_entry):
+                                        print(f"Using credentials for {cred_name}")
+                                    else:
+                                        print("Using gh auth token for git clone")
                                     model_docker.sh(
-                                        f"git -c core.sshCommand='ssh -l {self.credentials[model_info['cred']]['username']} "
-                                        f"-i {self.credentials[model_info['cred']]['ssh_key_file']} -o IdentitiesOnly=yes "
-                                        f"-o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no' "
-                                        f"clone {model_info['url']}",
-                                        timeout=240,
-                                    )
-                                else:  # http or https
-                                    model_docker.sh(
-                                        f"git clone -c credential.helper='!f() {{ echo username={self.credentials[model_info['cred']]['username']}; "
-                                        f"echo password={self.credentials[model_info['cred']]['password']}; }};f' "
+                                        "git clone -c credential.helper='!f() { "
+                                        f"echo username={username}; "
+                                        f"echo password={password}; }};f' "
                                         f"{model_info['url']}",
                                         timeout=240,
                                         secret=f"git clone {model_info['url']}",
                                     )
-                            else:
-                                model_docker.sh(
-                                    f"git clone {model_info['url']}", timeout=240
-                                )
+                                else:
+                                    model_docker.sh(
+                                        f"git clone {model_info['url']}", timeout=240
+                                    )
 
                             model_docker.sh(
                                 git_safe_directory_command(f"/myworkspace/{model_dir}")
