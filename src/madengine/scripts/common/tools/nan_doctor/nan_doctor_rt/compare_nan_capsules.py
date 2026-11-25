@@ -15,6 +15,14 @@ capture format answers the question directly instead:
   site       op + geometry key + stack digest + dtypes.  The code location and
              the problem shape.  This is the primary grouping key.
 
+             A Triton / Inductor kernel op (`inductor.*`, `triton.*`) is keyed on
+             its kernel source hash and operand shapes instead of the stack: the
+             stack runs through the generated module, whose path is a per-process
+             cache directory, so every trial's capsule had its own digest and one
+             kernel came out as one group per trial (2026-11-23, qwen_vllm_rmsnorm_nan
+             G1..G3 and torchcompile_nan_forward G1..G4, all one
+             inductor.<kernel>.s<hash>).  The source hash already names the site.
+
   call index the capsule's `identity` also carries the op call number, but that
              counter is per-PROCESS.  It identifies "the same op" only among
              ranks of ONE run, which is what the capture docstring means.  Across
@@ -75,6 +83,47 @@ def load_capsule(path):
         return torch.load(path, map_location="cpu", weights_only=False)
 
 
+KERNEL_OP_PREFIXES = ("inductor.", "triton.")
+
+
+def kernel_source(capsule, op):
+    """The kernel source hash of a Triton / Inductor kernel op, None for anything else.
+
+    `inductor.<kernel>.s<hash>` carries it in the name; `triton.<kernel>.w<idx>`
+    does not (a hand-written kernel name such as `_fwd_kernel` is not unique), so
+    it comes from the capsule's triton_kernels descriptor.  No hash, no folding:
+    the op then keeps the stack in its key like an ATen op.
+    """
+    if not op.startswith(KERNEL_OP_PREFIXES):
+        return None
+    desc = (capsule.get("triton_kernels") or {}).get(op) or {}
+    sha = desc.get("src_sha") if isinstance(desc, dict) else None
+    if not sha and op.startswith("inductor."):
+        last = op.rsplit(".", 1)[-1]
+        sha = last[1:] if last.startswith("s") and len(last) > 1 else None
+    return str(sha) if sha else None
+
+
+def operand_shapes(capsule):
+    """size/stride of every tensor operand and the int scalars, in call order.
+
+    A kernel op's geometry: geometry_key is a GEMM mapping ("unmapped" for a
+    Triton kernel), and one kernel source launched on another problem size (a
+    dynamic-shape xnumel) is kept apart.  Read from the packed metadata -- no
+    operand bytes are touched.
+    """
+    out = []
+    for a in capsule.get("args") or ():
+        if isinstance(a, dict) and a.get("__op_nan_tensor__"):
+            out.append("%s/%s" % ("x".join(str(s) for s in a.get("size") or ()) or "()",
+                                  ",".join(str(s) for s in a.get("stride") or ())))
+        elif isinstance(a, int):                      # sizes, strides, constexpr flags
+            out.append(str(a))
+        else:
+            out.append("-")                           # a float is data, not geometry
+    return " ".join(out) or "-"
+
+
 def describe(capsule, path):
     """Pull the comparable fields out of a capsule and let the capsule go.
 
@@ -97,16 +146,21 @@ def describe(capsule, path):
 
     shas = capsule.get("arg_shas") or []
     dist = capsule.get("dist") or {}
+    op = str(ident.get("op", capsule.get("op", "?")))
+    src_sha = kernel_source(capsule, op)
 
     return {
         "path": os.path.abspath(path),
         "name": os.path.basename(path),
         # -- primary key: the program point --------------------------------- #
-        "op": str(ident.get("op", capsule.get("op", "?"))),
+        "op": op,
         "call_index": ident.get("call_index"),
         "geometry_key": str(ident.get("geometry_key", "unmapped")),
         "stack_digest": str(ident.get("stack_digest", "?")),
         "dtypes": tuple(str(d) for d in (ident.get("dtypes") or ())),
+        # kernel ops only (None for ATen): the source hash stands in for the stack
+        "kernel_src": src_sha,
+        "operand_shapes": operand_shapes(capsule) if src_sha else None,
         # -- secondary key: the operands ------------------------------------ #
         "arg_shas": tuple(None if s is None else str(s) for s in shas),
         # -- reported, never grouped on ------------------------------------- #
@@ -152,10 +206,18 @@ def identity_key(rec, strict, job=False):
     for why keying on a per-process counter across runs is worse than useless.
     --job (ranks of ONE distributed job) drops the geometry: under expert or pipeline
     parallelism the same program point runs on different shapes on every rank.
+
+    A kernel op (kernel_source) puts its source hash where the stack digest goes
+    and adds its operand shapes; see the module docstring.  An ATen op's key is
+    unchanged: an ATen op is called from many places, and the stack is what tells
+    them apart.
     """
+    src = rec.get("kernel_src")
     return (rec["op"], rec["call_index"] if strict else None,
             "(any: --job)" if job else rec["geometry_key"],
-            rec["stack_digest"], rec["dtypes"])
+            ("(any: kernel source %s)" % src) if src else rec["stack_digest"],
+            rec["dtypes"],
+            None if not src else "(any: --job)" if job else rec["operand_shapes"])
 
 
 def group(records, strict, job=False):
@@ -288,7 +350,7 @@ def report(grouped, records, failures, found, limit_names, strict,
       % (found, len(records), len(failures), len(grouped), what))
 
     for i, (key, subgroups) in enumerate(grouped, 1):
-        op, _call_index, geometry_key, stack_digest, dtypes = key
+        op, _call_index, geometry_key, stack_digest, dtypes, shapes = key
         members = [r for _sha, recs in subgroups for r in recs]
         w("\n" + "=" * 78 + "\n")
         w("GROUP %d -- %d capsule(s)\n" % (i, len(members)))
@@ -297,7 +359,15 @@ def report(grouped, records, failures, found, limit_names, strict,
         w("  example      : %s\n" % members[0]["name"])
         w("  op           : %s\n" % op)
         w("  geometry     : %s\n" % geometry_key)
-        w("  stack digest : %s\n" % stack_digest)
+        if shapes is not None:
+            w("  operands     : %s\n" % shapes)
+            digests = sorted(set(r["stack_digest"] for r in members))
+            w("  stack digest : %s  (%s; not keyed: the source hash names the "
+              "site)\n"
+              % (stack_digest, digests[0] if len(digests) == 1
+                 else "%d distinct, e.g. %s" % (len(digests), digests[0])))
+        else:
+            w("  stack digest : %s\n" % stack_digest)
         w("  arg dtypes   : %s\n" % (", ".join(dtypes) or "-"))
         w("  call index   : %s\n" % fmt_call_indices(members, strict))
         w("  captured by  : %s\n" % fmt_provenance(members))
@@ -404,9 +474,18 @@ def to_json(grouped, failures, found, records, strict):
         "identity_groups": len(grouped),
         "groups": [
             {
-                "identity": {"op": k[0], "geometry_key": k[2],
-                             "stack_digest": k[3], "dtypes": list(k[4]),
-                             "call_index": k[1]},
+                # A kernel op's stack_digest stays a real digest (the representative's:
+                # result_card / compare_results read it as one) and the key's
+                # "(any: kernel source ...)" is `site`; ATen groups are unchanged.
+                "identity": dict({"op": k[0], "geometry_key": k[2],
+                                  "stack_digest": k[3], "dtypes": list(k[4]),
+                                  "call_index": k[1]},
+                                 **({} if k[5] is None else {
+                                     "stack_digest": subs[0][1][0]["stack_digest"],
+                                     "stack_digests": sorted(set(
+                                         r["stack_digest"] for _s, recs in subs
+                                         for r in recs)),
+                                     "site": k[3], "operand_shapes": k[5]})),
                 "call_indices": sorted(set(
                     r["call_index"] for _s, recs in subs for r in recs
                     if r["call_index"] is not None)),

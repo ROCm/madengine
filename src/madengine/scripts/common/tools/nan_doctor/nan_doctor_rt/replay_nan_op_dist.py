@@ -91,7 +91,14 @@ from .op_nan_capture import SHAPES_ONLY_MSG, has_data, unpack, upgrade_capsule  
 
 def resolve_op(name):
     """'ns.op.overload' -> the OpOverload, any namespace (aten, fsdp, flash_attn, ...).
-    A library op needs its library imported; the error says so."""
+    A library op needs its library imported; the error says so.  A triton.* op is a
+    Triton kernel launch, rebuilt from the capsule's triton_kernels descriptor."""
+    if name.startswith(("triton.", "inductor.")):
+        from .op_nan_capture import triton_op_for
+        try:
+            return triton_op_for(name)
+        except Exception as e:                          # noqa: BLE001
+            raise SystemExit("Triton op %r did not resolve: %s: %s" % (name, type(e).__name__, e))
     parts = name.split(".")
     if len(parts) != 3:
         raise SystemExit("unsupported op string %r" % name)

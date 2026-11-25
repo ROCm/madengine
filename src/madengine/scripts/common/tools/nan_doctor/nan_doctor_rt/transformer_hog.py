@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Synthetic co-tenant with a decoder-only transformer training step's kernel mix,
-for replay_nan_op.py --contend-with (mad-debug-nan step5-pressure.md).  Random
+for replay_nan_op.py --contend-with (mad-debug-numeric step5-pressure.md).  Random
 weights and tokens: no model files, nothing imported from the model.  Runs until
 killed; the GPU is kept busy back to back (one synchronize per step, no host-side
 checks), which is what made it a far stronger trigger than the real trainer.

@@ -31,8 +31,8 @@ Useful flags:
     --solution-index N   pin the hipBLASLt solution (same env var that
                          replay_hipblaslt_log.py uses).  Get N by grepping your
                          HIPBLASLT_LOG for the problem key the capsule prints.
-    --no-hipblaslt       route to rocBLAS instead -- the A/B test from step 0 of
-                         docs/hipblaslt-nan-check.md, now on one isolated GEMM.
+    --no-hipblaslt       route to rocBLAS instead -- the hipBLASLt-vs-rocBLAS A/B test,
+                         on one isolated GEMM.
     --bench              print the equivalent hipblaslt-bench command and exit.
     --disasm FILE        write the ISA of the hipBLASLt kernel this capsule dispatches
                          to -- as installed, unmodified -- to FILE.  Off by default.
@@ -112,6 +112,7 @@ if not __package__:  # run by path: make the package importable so relative impo
     __package__ = "nan_doctor_rt"
 import argparse
 import atexit
+import math
 import os
 import socket
 import sys
@@ -132,7 +133,8 @@ from .kernel_mutations import add_mutate_args          # noqa: E402
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("capsule", help=".pt written by OpNanCapture")
+    ap.add_argument("capsule", nargs="?",
+                    help=".pt written by OpNanCapture (not needed for --list-mutations --patch-kernel)")
     ap.add_argument("--iters", type=int, default=1,
                     help="replay N times and count how many produced NaN/Inf (default 1)")
     ap.add_argument("--progress-file", metavar="FILE", default=None,
@@ -279,7 +281,12 @@ def parse_args(argv=None):
     ap.add_argument("--atol", type=float, default=1e-3)
     add_patch_args(ap)
     add_mutate_args(ap)
-    return ap.parse_args(argv)
+    a = ap.parse_args(argv)
+    # --list-mutations --patch-kernel enumerates from the kernel alone, GPU- and capsule-free
+    # (step7-recipe-sweep.md); argparse demanded a capsule anyway
+    if a.capsule is None and not (a.list_mutations and a.patch_kernel):
+        ap.error("the following arguments are required: capsule")
+    return a
 
 
 # Imported rather than run (a guardrail experiment reusing unpack/_bind/the
@@ -315,6 +322,7 @@ unpack = None
 tree_leaves = None
 upgrade_capsule = None
 _CHAIN_REF = None
+_MEMFMT_TAG = None
 _scannable = None
 hipblaslt_geometry = None
 op_writes = None
@@ -340,9 +348,11 @@ def _import_torch():
     node that has ROCm but no torch and no GPU.
     """
     global torch, unpack, tree_leaves, _CHAIN_REF, _scannable, hipblaslt_geometry
-    global op_writes, _ALLOC_OPS, upgrade_capsule
+    global op_writes, _ALLOC_OPS, upgrade_capsule, _MEMFMT_TAG, _Meta
     import torch as _torch
     from torch.utils._pytree import tree_leaves as _tl
+    from .op_nan_capture import _MEMFMT_TAG as _memfmt
+    _MEMFMT_TAG = _memfmt
     # _scannable promotes the float8 dtypes torch.isfinite refuses; the chain walk
     # scans every intermediate, so it meets them far more often than a single-op
     # replay does.
@@ -352,14 +362,14 @@ def _import_torch():
     from .op_nan_capture import (unpack as _unpack, _CHAIN_REF as _ref,
                                 synthesize_operands as _synth,
                                 _scannable as _scan,
-                                hipblaslt_geometry as _geom,
+                                hipblaslt_geometry as _geom, _Meta as _meta,
                                 op_writes as _writes,
                                 ALLOC_EXCLUDE_OPS as _alloc,
                                 upgrade_capsule as _upgrade)
     torch, unpack, tree_leaves, upgrade_capsule = _torch, _unpack, _tl, _upgrade
     if args.synthesize:
         _synth(args.synthesize_seed)
-    _CHAIN_REF, _scannable, hipblaslt_geometry = _ref, _scan, _geom
+    _CHAIN_REF, _scannable, hipblaslt_geometry, _Meta = _ref, _scan, _geom, _meta
     op_writes = _writes
     _ALLOC_OPS = frozenset(_alloc.split(","))
 
@@ -376,6 +386,14 @@ def resolve_op(name):
     import it by name first and let the AttributeError below report it if the
     module name and the namespace do not coincide.
     """
+    if name.startswith(("triton.", "inductor.")):
+        # A Triton kernel launch (op_nan_capture "Triton launches"): rebuilt from the
+        # capsule's triton_kernels descriptor, registered when the capsule was loaded.
+        from .op_nan_capture import triton_op_for
+        try:
+            return triton_op_for(name)
+        except Exception as e:                          # noqa: BLE001
+            sys.exit("Triton op %r did not resolve: %s: %s" % (name, type(e).__name__, e))
     parts = name.split(".")
     if len(parts) != 3:
         sys.exit("unsupported op string %r" % name)
@@ -400,23 +418,38 @@ def bench_cmd(g, dtype_tag="f32_r", compute="xf32_r", solution=None):
            " --batch_count {batch_count}").format(**g)
     cmd += (" --a_type {t} --b_type {t} --c_type {t} --d_type {t}"
             " --compute_type {c} --activation_type none".format(t=dtype_tag, c=compute))
+    if g.get("bias"):
+        cmd += " --bias_vector --bias_source d --bias_type {t}".format(t=dtype_tag)
     if solution is not None:
         cmd += " --algo_method index --solution_index %d" % solution
     return cmd
+
+
+def packed_geometry(cap):
+    """hipBLASLt geometry from the packed args' shapes and strides, for a capsule recorded
+    before its op was mapped (aten.linear before 2026-11-19); None if unmapped."""
+    def meta(x):
+        if isinstance(x, dict) and _CHAIN_REF in x:
+            x = (cap.get("pool") or {}).get(x[_CHAIN_REF])
+        if isinstance(x, dict) and "size" in x and "stride" in x:
+            return _Meta(x["size"], x["stride"])
+        return x
+    try:
+        func = getattr(torch.ops.aten, cap["op"].split(".")[1]).__getattr__(cap["op"].split(".")[2])
+        return hipblaslt_geometry(func, [meta(a) for a in cap.get("args") or []])
+    except Exception:                                   # noqa: BLE001
+        return None
 
 
 _BENCH_DTYPE = {"torch.bfloat16": ("bf16_r", "f32_r"), "torch.float16": ("f16_r", "f32_r"),
                 "torch.float32": ("f32_r", None)}
 
 
-def grouped_bench_cmds(cap):
-    """--bench for aten._grouped_mm (2-D A, 3-D B, offs): ['# comment', 'hipblaslt-bench ..', ..].
-
-    hipblaslt-bench has no grouped problem to pin, so each DISTINCT group size gets the
-    plain-mm line of that group (A[s:e] @ B[g]); hipBLASLt picks the solution for the
-    plain problem itself, so no --solution_index.  From metadata alone (shapes, strides
-    and the recorded integer offs), so it works on a shapes-only capsule.  Example:
-    a failing group of 13803 rows from an MoE capsule reproduced as plain mm."""
+def grouped_geoms(cap):
+    """aten._grouped_mm (2-D A, 3-D B, offs) -> (len(groups), [(rows, [group indices], plain-mm
+    hipBLASLt geometry)] per DISTINCT group size), or None for another op or layout.  Each
+    group is dispatched as its own plain GEMM (A[s:e] @ B[g]); from metadata alone (shapes,
+    strides, the recorded integer offs), so it works on a shapes-only capsule."""
     def meta(x):
         if isinstance(x, dict) and _CHAIN_REF in x:
             return (cap.get("pool") or {}).get(x[_CHAIN_REF])
@@ -426,28 +459,49 @@ def grouped_bench_cmds(cap):
     offs = meta(a[2] if len(a) > 2 else (cap.get("kwargs") or {}).get("offs"))
     if not (isinstance(A, dict) and isinstance(B, dict) and isinstance(offs, dict)) \
             or len(A["size"]) != 2 or len(B["size"]) != 3 or offs.get("base") is None:
-        return []
-    t, c = _BENCH_DTYPE.get(str(A["dtype"]), (None, None))
-    if t is None:
-        return []
-    if c is None:
-        c = "xf32_r" if cap["precision"]["float32_matmul_precision"] != "highest" else "f32_r"
+        return None
     ends = unpack(offs, "cpu").flatten().tolist()
     by_m = {}
     for gi, (s, e) in enumerate(zip([0] + ends[:-1], ends)):
         if e > s:
             by_m.setdefault(e - s, []).append(gi)
     q, r = A["size"][1], B["size"][2]
-    out = ["# aten._grouped_mm: no grouped problem in hipblaslt-bench -- the plain-mm line of each "
-           "distinct group size (%d group(s), %d size(s)); the bad group is the one the capsule's "
-           "output names" % (len(ends), len(by_m))]
+    out = []
     for m in sorted(by_m):
         X = torch.empty_strided((m, q), tuple(A["stride"]), device="meta")
         Y = torch.empty_strided((q, r), tuple(B["stride"][1:]), device="meta")
         geom = hipblaslt_geometry(torch.ops.aten.mm.default, (X, Y))
         if geom:
-            out.append("# group rows %d: group(s) %s" % (m, ",".join(map(str, by_m[m]))))
-            out.append(bench_cmd(geom, dtype_tag=t, compute=c))
+            out.append((m, by_m[m], geom))
+    return len(ends), out
+
+
+def grouped_bench_cmds(cap):
+    """--bench for aten._grouped_mm (2-D A, 3-D B, offs): ['# comment', 'hipblaslt-bench ..', ..].
+
+    hipblaslt-bench has no grouped problem to pin, so each DISTINCT group size gets the
+    plain-mm line of that group (grouped_geoms); hipBLASLt picks the solution for the
+    plain problem itself, so no --solution_index.  Example: the failing group of a
+    qwen3 MoE capsule (13803 rows) reproduced as plain mm."""
+    gg = grouped_geoms(cap)
+    if not gg:
+        return []
+    a = cap.get("args") or []
+    A = a[0] if a else None
+    if isinstance(A, dict) and _CHAIN_REF in A:
+        A = (cap.get("pool") or {}).get(A[_CHAIN_REF])
+    t, c = _BENCH_DTYPE.get(str((A or {}).get("dtype")), (None, None))
+    if t is None:
+        return []
+    if c is None:
+        c = "xf32_r" if cap["precision"]["float32_matmul_precision"] != "highest" else "f32_r"
+    n, groups = gg
+    out = ["# aten._grouped_mm: no grouped problem in hipblaslt-bench -- the plain-mm line of each "
+           "distinct group size (%d group(s), %d size(s)); the bad group is the replay's "
+           "GROUPED_WRONG_ROWS" % (n, len(groups))]
+    for m, gis, geom in groups:
+        out.append("# group rows %d: group(s) %s" % (m, ",".join(map(str, gis))))
+        out.append(bench_cmd(geom, dtype_tag=t, compute=c))
     return out
 
 
@@ -683,7 +737,7 @@ def _budget_note():
     is measured, the other is the old constant wearing the same clothes.
     """
     if _BASELINE["per_launch"] is None:
-        return "  (auto, but nothing measurable ran: the old fixed default)"
+        return "  (auto: no trial has been timed yet -- the fallback default)"
     return ("  (auto: %gx of %.1fs setup + %.4gs/launch x %d%s)"
             % (_MUTATE_BUDGET, _BASELINE["setup"], _BASELINE["per_launch"], args.iters,
                "" if _BASELINE["scale"] == 1.0
@@ -807,6 +861,10 @@ def _dispatches(log, g):
     except SystemExit:
         return [], None
 
+    if not g:
+        sel = _grouped_dispatches(logged)
+        if sel is not None:
+            return sel
     # The log also carries whatever GEMMs torch ran while warming up. Patching one of
     # those would give a sweep in which every row is NAN for an uninteresting reason.
     matched = logged
@@ -820,13 +878,68 @@ def _dispatches(log, g):
                   % " ".join("%s=%s" % (k, v) for k, v in zip(_GEOM_KEY, key)))
             print("        considering all %d logged dispatch(es) instead." % len(logged))
 
+    return _names_index(matched)
+
+
+def _names_index(matched):
+    """(distinct kernel names in log order, the solution index OF THE LAST NAME -- the one
+    discover_kernel returns; it used to be the first dispatch's, a different kernel's)."""
     names = []
     for x in matched:
         if x.kernel and x.kernel not in names:
             names.append(x.kernel)
-    index = next((x.get("solution_index") for x in matched
+    last = [x for x in matched if names and x.kernel == names[-1]] or matched
+    index = next((x.get("solution_index") for x in reversed(last)
                   if x.get("solution_index") is not None), None)
     return names, index
+
+
+_GROUPED_NOTE = [""]        # why discover_kernel's solution index is (or is not) the wrong group's
+
+
+def _grouped_dispatches(logged):
+    """aten._grouped_mm: (names, index) of the WRONG group's dispatch, or None (not a
+    grouped capsule, or no group matched).  Each group is its own GEMM and hipBLASLt
+    picks a solution per group size -- 8 different kernels for 16 groups (qwen3 MoE),
+    where the first logged one named a correct group's solution (13813, not
+    the wrong 12889-row group's 13817).  The wrong group comes from this process's
+    value check (GROUPED_WRONG_ROWS) or --grouped-wrong-rows."""
+    cap = _CAP[0]
+    gg = grouped_geoms(cap) if cap and cap.get("op") == "aten._grouped_mm.default" else None
+    if not gg:
+        return None
+    n, groups = gg
+    want = set(_GROUPED_WRONG)
+    for x in (getattr(args, "grouped_wrong_rows", None) or "").split(","):
+        if x.strip().isdigit():
+            want.add(int(x))
+    print("  grouped GEMM: %d group(s), %d distinct size(s); the solution each size dispatched:"
+          % (n, len(groups)))
+    per = []
+    for m, gis, geom in groups:
+        key = tuple(str(geom.get(k, 1)) for k in _GEOM_KEY)
+        hits = [x for x in logged if x.key == key]
+        names, index = _names_index(hits)
+        per.append((m, names, index))
+        print("    group rows %d (group(s) %s): solution %s%s"
+              % (m, ",".join(map(str, gis)), "?" if index is None else index,
+                 "   <- WRONG" if m in want else ""))
+    hit = [p for p in per if p[0] in want and p[1]]
+    if hit:
+        _GROUPED_NOTE[0] = "the wrong group's: rows %d" % hit[0][0]
+        if len({p[2] for p in hit}) > 1:
+            print("  note: the wrong groups dispatched %d different solutions; naming rows %d's"
+                  % (len({p[2] for p in hit}), hit[0][0]))
+        return [hit[0][1][-1]], hit[0][2]
+    if want:
+        print("  the wrong group(s) (rows %s) matched no logged dispatch"
+              % ",".join(map(str, sorted(want))))
+    _GROUPED_NOTE[0] = ("ONE group's -- which group was wrong is not known here: the replay's "
+                        "GROUPED_WRONG_ROWS=, passed as --grouped-wrong-rows, names it")
+    print("  which group is wrong is not known here: the kernel below is ONE group's, not "
+          "necessarily the wrong one (pass --grouped-wrong-rows <rows> from the replay's "
+          "GROUPED_WRONG_ROWS= line)")
+    return None
 
 
 def discover_kernel(g):
@@ -858,7 +971,8 @@ def discover_kernel(g):
                 print("        %s" % n)
             print("        Pin one with --patch-kernel if that is not what you meant.")
         if index is not None:
-            print("  solution_index: %s (as dispatched)" % index)
+            print("  solution_index: %s (as dispatched%s)"
+                  % (index, "; " + _GROUPED_NOTE[0] if _GROUPED_NOTE[0] else ""))
         return names[-1]
 
     print("  the extended profile (mask %d) gave no kernel name: %s"
@@ -912,7 +1026,7 @@ def discover_aiter_kernels():
         return []
     print("  identifying the dispatched aiter kernel(s) (one extra replay; the aiter")
     print("  loader prints each hipModuleLoad, so no profile is involved)")
-    env = dict(os.environ)
+    env = dict(os.environ, AITER_LOG_LEVEL="INFO")     # its load lines ARE the discovery
     try:
         p = subprocess.run(child_cmd(iters=1), env=env, stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT, text=True,
@@ -1187,6 +1301,14 @@ def print_mutation_plan(target, rows):
     print("\n%d mutation(s), %d enumerable; worst case %.1f h at --mutate-timeout %.0fs%s"
           % (len(rows), len(live), len(live) * tmo / 3600.0, tmo,
              "" if args.mutate_timeout is not None else _budget_note()))
+    if args.mutate_timeout is None and _BASELINE["per_launch"] is None:
+        # A listing measures nothing, so that figure is the fallback timeout times the trial
+        # count -- a ceiling no real sweep approaches (2026-11-20: "8.4 h" for trials of
+        # 8-45 s).  Plan from the sweep's own baseline line instead.
+        print("  (no trial timed: that is the fallback timeout x the trial count, a ceiling, not an"
+              " estimate -- a trial ends at its run count or its first hit;")
+        print("   the sweep prints the real per-trial budget after its baseline, from the 5b rate"
+              " and the capsule's per-run time)")
     if len(live) != len(rows):
         print("%d mutation(s) cannot be built and would be ERROR rows in a sweep."
               % (len(rows) - len(live)))
@@ -1745,8 +1867,12 @@ def show_mutation_asm(target, m, rec, after):
                 print(ins.line)
         print("")
     elif args.mutate_disasm == "diff":
-        print("\n  %s removed the NaN; %d instruction(s) differ from the original:"
-              % (m.name, len(rec["disasm"])))
+        # Say which lines ARE the difference: 2026-11-23 (deepseek MLA, vmcnt0) the
+        # unmarked context lines around each edit (v_mov_b32_dpp at 0x2850/0x2860) were
+        # read as part of "14 instruction(s) differ" -- the 14 are the -/+ pairs only.
+        print("\n  %s removed the NaN; %d instruction(s) differ from the original "
+              "(the -/+ lines; unmarked lines are %d unchanged neighbour(s) of context):"
+              % (m.name, len(rec["disasm"]), args.mutate_disasm_context))
         for line in kp.format_disasm_diff(target.insns, after,
                                           context=args.mutate_disasm_context,
                                           limit=args.mutate_disasm_max):
@@ -2073,11 +2199,18 @@ def chain_sweep_order(cap, tally, culprit=None):
     for (ci, _op), n in (tally or {}).items():
         rank[ci] = max(rank.get(ci, 0), n)
     cci = (culprit or {}).get("call_index")
-    if cci is None and not rank:
+    # A wrong-value capsule (a rerun or value check fired on the capsule's own op) names its
+    # op by the capture's check, which outranks one walk's small DIVERGED on an ancestor:
+    # that can be the node (another GEMM solution than the capture's), and a sweep -- or a
+    # listing, which stops at the first kernel -- then started on the wrong kernel
+    # (2026-11-20/21: aten.mm DIVERGED 0.0156 on some nodes, bit-repeatable everywhere).
+    tci = rev[0]["call_index"] if rev and cap.get("verify") and rev[0]["op"] == cap.get("op") else None
+    if cci is None and not rank and tci is None:
         return rev
-    # sorted() is stable, so anything both keys are silent about keeps its
+    # sorted() is stable, so anything the keys are silent about keeps its
     # reverse-chain position behind the ops they name.
-    return sorted(rev, key=lambda rec: (0 if rec["call_index"] == cci else 1,
+    return sorted(rev, key=lambda rec: (0 if rec["call_index"] == tci else 1,
+                                        0 if rec["call_index"] == cci else 1,
                                         -rank.get(rec["call_index"], 0)))
 
 
@@ -2137,6 +2270,7 @@ def op_yielded_finding(trials, ci):
 # The capsule's op name, so a single-op sweep can ask which aiter family to look in
 # without re-loading a 1.4 GB capsule just to read one string.
 _CAP_OP = [None]
+_CAP = [None]               # the loaded capsule (grouped GEMM kernel discovery reads its offs)
 
 
 def _capsule_op_name():
@@ -2174,6 +2308,13 @@ def aiter_cos_for_op(op):
     loads = _AITER_LOADS[0]
     if not loads:
         return []
+    # Exact, where it applies: aten ops never load an aiter .co, so when this op is the
+    # chain's ONLY aiter.* op, every file-backed aiter load of the replay is its own
+    if op.startswith("aiter.") and _CAP[0] is not None:
+        aiter_ops = set(r["op"] for r in (_CAP[0].get("chain") or [])
+                        if r["op"].startswith("aiter."))
+        if aiter_ops <= {op}:
+            return list(dict.fromkeys(loads))
     low = op.lower()
     if "backward" in low or low.endswith("_bwd"):
         want = ("_bwd", "/bwd", "bwd_")
@@ -2284,6 +2425,19 @@ def run_chain_mutations(cap, tally, dev, culprit=None):
                  + (", ..." if len(dropped) > 8 else "")))
 
     trials, rc, seen_kernels = [], 0, {}
+    if args.patch_hsaco or args.patch_co or args.patch_kernel:
+        # An explicit target is the kernel the user names for the capsule's own op: sweep it once,
+        # under that op's label.  Walking the chain handed it to whichever op came first, and the
+        # rows read "aten.mm (call #1617)" for an aiter .co (2026-11-21).
+        last = cap["chain"][-1] if cap.get("chain") else {"op": cap.get("op"), "call_index": 0}
+        print("\n  == sweeping %s (call #%s) -> the explicit target %s"
+              % (last["op"], last["call_index"], args.patch_hsaco or args.patch_co or args.patch_kernel))
+        rc = run_mutations(None, kernel=args.patch_kernel, op=last["op"], call_index=last["call_index"],
+                           collect=trials)
+        if not args.list_mutations and (args.mutate_report or trials):
+            report(trials, args.patch_hsaco or args.patch_co or args.patch_kernel, _LAST_TARGET[0],
+                   args.mutate_report)
+        return rc
     for r in dropped:
         trials.append(_skipped_row(
             "%s@%d" % (r["op"].split(".")[-2] if "." in r["op"] else r["op"],
@@ -2294,6 +2448,14 @@ def run_chain_mutations(cap, tally, dev, culprit=None):
     for pos, rec in enumerate(order):
         op, ci = rec["op"], rec["call_index"]
         label = "%s (call #%d)" % (op, ci)
+        if args.list_mutations and seen_kernels and not args.mutate_chain_ops:
+            # A listing wants the kernel a sweep would start on: the culprit's, which the walk
+            # reaches first.  Walking on printed a page of SKIPPED upstream ops and "cannot
+            # prepare" GEMMs (2026-11-21).  --mutate-chain-ops N lists N ops instead.
+            print("\n  listing stops at the first op with a patchable kernel (%s); %d upstream op(s)"
+                  " not listed (--mutate-chain-ops N to list more)" % (", ".join(seen_kernels),
+                                                                       len(order) - pos))
+            break
         g = _op_geometry(rec)
         if g is None:
             # No hipBLASLt key means no Tensile kernel -- but it does NOT mean no
@@ -2406,6 +2568,14 @@ def run_chain_mutations(cap, tally, dev, culprit=None):
                     "not swept: --mutate-stop-on-finding stopped the walk after %s"
                     % label, r["op"], r["call_index"]))
             break
+    if args.list_mutations:
+        # A listing, not a sweep: no trial ran, so the sweep summary (which read "only the
+        # identity control ran" with --mutate-no-identity) does not apply, and an op with no
+        # patchable kernel is not a failure of the listing (2026-11-20: exit 1, job FAILED).
+        print("\n  listed %d kernel(s): %s; %d chain op(s) have no patchable kernel (SKIPPED)"
+              % (len(seen_kernels), ", ".join(seen_kernels) or "none",
+                 sum(1 for t in trials if t.get("outcome") == "SKIPPED")))
+        return 0 if seen_kernels else 1
     if args.mutate_report or trials:
         report(trials, ", ".join(seen_kernels) or None, _LAST_TARGET[0],
                args.mutate_report)
@@ -2465,12 +2635,19 @@ def run_mutations(g, kernel=None, op=None, call_index=None, collect=None, hsaco=
             return 1
         kernel = hsaco
     elif kernel is None:
-        kernel = args.patch_kernel or discover_kernel(g)
+        # An aiter op with no GEMM geometry: ask aiter FIRST.  Tensile discovery profiles
+        # the whole replay process, so it finds the GEMMs of the replay's own checks (the
+        # value check's fp32 reference) and would name one of those as this op's kernel
+        # (2026-11-20: an einsum of the reference named instead of the aiter .co).
+        cos = (aiter_cos_for_op(_capsule_op_name())
+               if g is None and _capsule_op_name().startswith("aiter.") and not args.patch_kernel
+               else [])
+        kernel = None if cos else (args.patch_kernel or discover_kernel(g))
         if not kernel:
             # Tensile discovery came back empty.  On a fused-attention capsule that
             # is not a failure to diagnose -- it is the signature of an op that never
             # went through hipBLASLt at all, so ask aiter before giving up.
-            cos = aiter_cos_for_op(_capsule_op_name())
+            cos = cos or aiter_cos_for_op(_capsule_op_name())
             if len(cos) > 1:
                 print("  %d aiter .co(s) dispatched; sweeping the first. Pin one with"
                       " --patch-hsaco." % len(cos))
@@ -2824,12 +3001,20 @@ _ENV_NEVER_RESTORE = {
     "ROCBLAS_LOG_BENCH_PATH": "diagnostic log: per-call host work perturbs the timing; would write into the capture's log",
     "ROCBLAS_LOG_PROFILE_PATH": "diagnostic log: per-call host work perturbs the timing; would write into the capture's log",
     "AMD_LOG_LEVEL": "diagnostic log: per-call host work perturbs the timing; would write into the capture's log",
+    # aiter's INFO lines are how kernel discovery and the overlay served check see which .co loaded;
+    # a run script's AITER_LOG_LEVEL=WARNING, restored, hid them (2026-11-21: discovery fell back to
+    # an upstream GEMM, and aiter_fix_validate.sh read a working fix as NOT_SERVED)
+    "AITER_LOG_LEVEL": "diagnostic log: aiter's INFO load lines are what kernel discovery and the served check read",
     # A library overlay is the thing under test (a step-8 fix, a hand-built patch):
     # restoring would UNSET it whenever the capture ran the stock library, and the
     # replay would silently measure the stock kernel. env_banner's `libpath:` line
     # says which library this process was given.
     "HIPBLASLT_TENSILE_LIBPATH": "library overlay under test: restoring would unset it",
     "TENSILE_LIBPATH": "library overlay under test: restoring would unset it",
+    # an aiter .co overlay (a sweep trial, a step-8 kept fix): aiter <= 0.1.2x reads
+    # AITER_ASM_DIR, 0.1.26+ rewrites it from AITER_META_DIR at import
+    "AITER_ASM_DIR": "aiter kernel overlay under test: restoring would unset it",
+    "AITER_META_DIR": "aiter kernel overlay under test: restoring would unset it",
 }
 # The overlay vars above are held back only when THIS run sets them (an overlay under
 # test).  Unset here and set at capture, the capture's value is the model's own
@@ -2837,7 +3022,7 @@ _ENV_NEVER_RESTORE = {
 # a varlen capsule's chain `aten.mm` failed with
 # HIPBLAS_STATUS_INVALID_VALUE (no kernels for the device on the stock path).  Restored,
 # and named in the banner (via _RESTORED_OVERLAY across the re-exec).
-_OVERLAY_VARS = ("HIPBLASLT_TENSILE_LIBPATH", "TENSILE_LIBPATH")
+_OVERLAY_VARS = ("HIPBLASLT_TENSILE_LIBPATH", "TENSILE_LIBPATH", "AITER_ASM_DIR", "AITER_META_DIR")
 _RESTORED_OVERLAY = "_NAN_REPLAY_RESTORED_OVERLAY"
 
 
@@ -2952,10 +3137,22 @@ def env_banner(cap):
         return
     restored = bool(os.environ.get(_REEXEC))
     differs, missing, extra = env_delta(cap)
+    # Variables this replay sets through its OWN flags: an intended A/B, not a mismatch to fix
+    # (a --no-hipblaslt run printed "STILL DIFFERENT AFTER --restore-env").
+    own = {}
+    if args.no_hipblaslt:
+        own["TORCH_BLAS_PREFER_HIPBLASLT"] = "--no-hipblaslt"
+    if args.solution_index is not None or (_MUTATING and args.patch_solution_index is not None):
+        own["TENSILE_SOLUTION_INDEX"] = "--solution-index"
+    if args.emit_log:
+        own.update(HIPBLASLT_LOG_MASK="--emit-log", HIPBLASLT_LOG_FILE="--emit-log")
+    ab = [r for r in differs + missing + extra if r[0] in own]
+    differs, missing, extra = ([r for r in b if r[0] not in own] for b in (differs, missing, extra))
     rows = differs + missing + extra
     if not rows:
-        print("env:            matches capture (%d var(s)%s)"
-              % (len(rec), ", restored" if restored else ""))
+        print("env:            matches capture (%d var(s)%s)%s"
+              % (len(rec), ", restored" if restored else "",
+                 "  + %d A/B setting(s) of this replay's flags" % len(ab) if ab else ""))
     else:
         # Counted per bucket rather than as "N of M recorded": an `extra` is a
         # var the capture never recorded, so folding it into a fraction of the
@@ -2970,6 +3167,9 @@ def env_banner(cap):
             print("  %-32s capture=%s  here=%s" % (k, _abbrev(want), _abbrev(cur)))
         if len(rows) > 12:
             print("  ... and %d more" % (len(rows) - 12))
+    for k, want, cur in ab:
+        print("  A/B (%s):%s %s capture=%s  here=%s -- intended, not a mismatch"
+              % (own[k], " " * max(1, 14 - len(own[k])), k, _abbrev(want), _abbrev(cur)))
     # The two things a restore cannot fix, reported rather than left to be
     # inferred from a number that came out lower than expected.
     spec = env_spec(cap)
@@ -3112,7 +3312,18 @@ def contention_banner(cap):
         # Gate on the COMPUTED total, not on the raw fields: a launcher that
         # declares 1 container per GPU has not explained away a device holding
         # 48 GB for someone else, so that case has to warn too.
-        if (total or 1) <= 1 and ci["mem_used_by_others_bytes"] > 4e9:
+        world = int((cap.get("dist") or {}).get("world_size") or 1)
+        if (total or 1) <= 1 and ci["mem_used_by_others_bytes"] > 4e9 and world > 1:
+            # One rank per GPU under torchrun: the peer ranks' RCCL/IPC buffers and
+            # contexts are mapped on this device too (15.3 GB on a clean 8-rank qwen3
+            # MoE capture) -- expected, not an uncounted co-tenant.
+            print("  (world size %d: peer ranks' communication buffers and contexts sit on"
+                  " this device too --" % world)
+            print("   expected for a multi-rank job, not by itself a co-tenant; a"
+                  " co-tenant would show as")
+            print("   processes from another job on the node -- `rocm-smi --showpids`"
+                  " during the run)")
+        elif (total or 1) <= 1 and ci["mem_used_by_others_bytes"] > 4e9:
             print("  !! %.1f GB held by a process this capsule counted as"
                   " nobody." % (ci["mem_used_by_others_bytes"] / 1e9))
             print("     This capsule says %d process(es) on the device, but"
@@ -3152,6 +3363,31 @@ def _apply_written_operands(func, bound):
                 bound[i].normal_()
 
 
+def _restore_kept_uninit(cap, bound, kwb, dev):
+    """The terminal op's allocator-fresh operands, as the capture saw them: the chain re-runs
+    the allocator, which hands back whatever this process left there, but a small one keeps
+    its captured bytes (op_nan_capture._mark_uninit, uninit_kept) -- an op that reads
+    uninitialised memory makes its NaN from those bytes.  Copied in place, so the buffer the
+    chain allocated stays the one the op gets.  Unpacked once per device."""
+    kept = cap.get("_kept_uninit")
+    if kept is None or kept[0] != dev:
+        ts = {}
+        for i, p in enumerate(cap.get("args") or ()):
+            if isinstance(p, dict) and p.get("uninit_kept"):
+                ts[i] = unpack(p, dev)
+        for k, p in (cap.get("kwargs") or {}).items():
+            if isinstance(p, dict) and p.get("uninit_kept"):
+                ts[k] = unpack(p, dev)
+        kept = cap["_kept_uninit"] = (dev, ts)
+        if ts:
+            print("kept uninitialised operand(s) restored before the terminal op: %s"
+                  % ", ".join(("arg%d" % k) if isinstance(k, int) else k for k in ts))
+    for k, t in kept[1].items():
+        tgt = bound[k] if isinstance(k, int) and k < len(bound) else (kwb.get(k) if isinstance(k, str) else None)
+        if isinstance(tgt, torch.Tensor) and tgt.shape == t.shape and tgt.dtype == t.dtype:
+            tgt.copy_(t)
+
+
 def _bind(obj, env, pool=None, dev=None):
     """`obj` with every {_CHAIN_REF: key} replaced by the live tensor in `env`.
 
@@ -3175,6 +3411,8 @@ def _bind(obj, env, pool=None, dev=None):
         return tuple(_bind(o, env, pool, dev) for o in obj)
     if isinstance(obj, list):
         return [_bind(o, env, pool, dev) for o in obj]
+    if isinstance(obj, dict) and _MEMFMT_TAG in obj:
+        return unpack(obj, dev)          # a recorded torch.memory_format
     if isinstance(obj, dict):
         return dict((k, _bind(v, env, pool, dev)) for k, v in obj.items())
     return obj
@@ -3229,6 +3467,7 @@ def _run_chain_once(cap, dev, compare=True, record_geom=False, repeat=None, chec
         kwb = _bind(rec["kwargs"], env, pool, dev)
         bound = _chain_derive(cap, n, rec, func, bound, kwb, env)
         if n == last and rec["op"] == cap["op"]:
+            _restore_kept_uninit(cap, bound, kwb, dev)
             _apply_written_operands(func, bound)
         # Geometry is recorded here because this is the only place the op's real
         # operands exist -- but ONLY when asked, and the [C2] loop never asks.
@@ -3242,7 +3481,32 @@ def _run_chain_once(cap, dev, compare=True, record_geom=False, repeat=None, chec
                 _CHAIN_GEOM[rec["call_index"]] = hipblaslt_geometry(func, bound)
             except Exception:                          # noqa: BLE001 -- never fatal
                 _CHAIN_GEOM[rec["call_index"]] = None
-        out = func(*bound, **kwb)
+        if func is torch.ops.aten.detach_.default and getattr(bound[0], "_base", None) is not None:
+            # HF generate's KV cache (2026-11-20): `detach_` of a tensor the replay rebuilt as a
+            # view raises "Can't detach views in-place" and killed the whole chain.  It changes
+            # autograd metadata only -- the values are the operand's -- so the out-of-place
+            # detach stands in.
+            out = torch.ops.aten.detach.default(bound[0])
+        else:
+            # A rerun capsule (origin wrong_value, verify kind rerun): the terminal op runs
+            # twice per chain run, the second time on copies of its pre-call operands and the
+            # same generator state, and the run counts when the two disagree -- the capture's
+            # own check, op_nan_capture.rerun_diff.
+            rerun = (n == last and rec["op"] == cap["op"]
+                     and (cap.get("verify") or {}).get("kind") == "rerun")
+            if rerun:
+                from . import op_nan_capture as onc
+                ra, rk = onc.clone_operands(func, bound, kwb)
+                rng0 = onc._rng_states()
+            out = func(*bound, **kwb)
+            if rerun and ra is not None:
+                post = onc._rng_states()
+                onc._set_rng_states(rng0)
+                out2 = func(*ra, **rk)
+                onc._set_rng_states(post)
+                rer = onc.rerun_diff(func, bound, kwb, out, ra, rk, out2)
+                rerun_hit = (rer is not None and not rer.get("int")
+                             and rer["rel"] > rer["floor"])
         # tree_leaves, matching how the capture enumerated `produces`, so slot i
         # here is slot i there even for a nested return.
         live = [t for t in tree_leaves(out) if isinstance(t, torch.Tensor)]
@@ -3268,7 +3532,14 @@ def _run_chain_once(cap, dev, compare=True, record_geom=False, repeat=None, chec
         # unable to name it.  They are deliberately NOT compared against the pool
         # -- they are not in `produces`, and their pre-call contents are
         # uninitialised, so there is nothing honest to diverge against.
-        for _wi in sorted(op_writes(func)["idx"]):
+        # A fused op with a value check (math_refs.VALUE_CHECKS) is judged by it alone: its
+        # scratch outputs keep slots it never writes (a split-KV op's unused splits hold
+        # whatever the allocator had), so scanning them scores garbage, not the kernel.
+        rerun_row = n == last and (cap.get("verify") or {}).get("kind") == "rerun" \
+            and rec["op"] == cap["op"] and func is not torch.ops.aten.detach_.default
+        # a rerun capsule's terminal op is judged by the rerun alone (below)
+        vown = None if rerun_row else _value_owned(func, bound, kwb, out)
+        for _wi in sorted(op_writes(func)["idx"]) if vown is None and not rerun_row else ():
             if _wi < len(bound):
                 _wt = bound[_wi]
                 if (isinstance(_wt, torch.Tensor) and _wt.is_floating_point()
@@ -3276,7 +3547,18 @@ def _run_chain_once(cap, dev, compare=True, record_geom=False, repeat=None, chec
                     finite = False
         nonrep = changed = None
         if repeat is not None:
-            outs = [t for t in live if t.is_floating_point() and t.numel()]
+            # What the op produced: its returns AND its written float operands (an out-param op
+            # returns nothing -- before 2026-11-20 every such op read "repeated exactly"); a
+            # value-checked op is compared on what its consumer reads, since its raw scratch
+            # keeps slots it never writes (fresh garbage each run).
+            if vown is not None:
+                outs = _owned_got(rec["op"], func, bound, kwb, out)
+            else:
+                outs = [t for t in live if t.is_floating_point() and t.numel()]
+                outs += [bound[i] for i in sorted(op_writes(func)["idx"])
+                         if i < len(bound) and isinstance(bound[i], torch.Tensor)
+                         and bound[i].is_floating_point() and bound[i].numel()
+                         and not any(bound[i] is t for t in outs)]
             ci = rec["call_index"]
             ref, prev = repeat.setdefault("ref", {}), repeat.setdefault("prev", {})
             if ci not in ref:
@@ -3287,8 +3569,11 @@ def _run_chain_once(cap, dev, compare=True, record_geom=False, repeat=None, chec
                 changed = any(not _bits_equal(t, r)
                               for t, r in zip(outs, prev[ci]))
             prev[ci] = outs
+        if vown is not None and not math.isfinite(vown[0]):
+            finite = False
         for slot, (key, t) in enumerate(zip(rec["produces"], live)):
-            if t.is_floating_point() and not torch.isfinite(_scannable(t)).all().item():
+            if (vown is None and not rerun_row and t.is_floating_point()
+                    and not torch.isfinite(_scannable(t)).all().item()):
                 finite = False
             if key:
                 env[key] = t
@@ -3319,7 +3604,14 @@ def _run_chain_once(cap, dev, compare=True, record_geom=False, repeat=None, chec
         # output fails the same check again -- not when it goes non-finite.  Scored
         # as finite=False so every tally and verdict below counts it; `wrong` says why.
         wrong = None
-        if n == last and finite and cap.get("verify"):
+        if rerun_row:
+            if ra is not None and rerun_hit:
+                wrong, finite = rer["rel"], False
+        elif vown is not None and finite and (check_wrong or (n == last and cap.get("verify"))):
+            thr = ((cap.get("verify") or {}).get("threshold") if n == last else None) or vown[1]
+            if not vown[0] <= thr:
+                wrong, finite = vown[0], False
+        elif n == last and finite and cap.get("verify"):
             wrong = _wrong_value(cap["verify"], func, bound, kwb, live)
             if wrong is not None:
                 finite = False
@@ -3337,6 +3629,49 @@ def _run_chain_once(cap, dev, compare=True, record_geom=False, repeat=None, chec
 
 
 _CHECK_WRONG = [False]      # set when the [C1] walk found a wrong finite GEMM value
+
+
+_TWIN_ON = [False]          # the capsule was captured by the twin check (verify kind twin): judge by its twin
+
+
+def _twin_owned(func):
+    """The capsule's op is judged by its twin (twins.py): a twin capsule, no hand-written check for the op."""
+    from . import op_nan_capture as onc
+    return _TWIN_ON[0] and not onc._has_value_check(func) and onc._has_twin(func)
+
+
+def _has_value_check_op(func):
+    from . import op_nan_capture as onc
+    return onc._has_value_check(func) or _twin_owned(func)
+
+
+def _owned_rel_err(op_name, func, args, kwargs, out=None):
+    """(rel err, floor, where) from the op's hand-written value check or, for a twin capsule, its twin -- or None
+    when neither applies to this call.  A twin of an in-place op needs pre-call inputs the replay does not keep per
+    run: not modelled here (the finiteness scans apply)."""
+    from . import op_nan_capture as onc
+    if onc._has_value_check(func):
+        return math_refs.value_rel_err(op_name, func, args, kwargs)
+    if _twin_owned(func):
+        r = onc._twins.rel_err(op_name, func, args, kwargs, None, out)
+        return None if r is None else r[:3]
+    return None
+
+
+def _owned_got(op_name, func, args, kwargs, out=None):
+    """What a value-checked / twin-checked op's consumer reads (the repeat check compares that)."""
+    from . import op_nan_capture as onc
+    if onc._has_value_check(func):
+        return [math_refs.value_check(op_name, func, args, kwargs)["got"]]
+    return list(onc._twins.check(op_name, func, args, kwargs, None, out)["got"].values())
+
+
+def _value_owned(func, args, kwargs, out=None):
+    """(rel err, floor, where) from the op's math_refs value check (or its twin, for a twin capsule), or None when
+    it has none or does not model this call -- then the plain finiteness scans apply."""
+    return _owned_rel_err(str(func), func, args, kwargs, out)
+
+
 def _is_gemm(op):
     from . import op_nan_capture as onc
     return ".".join(op.split(".")[:2]) in onc._GEMM_OPS
@@ -3370,6 +3705,18 @@ def _wrong_value(v, func, args, kwargs, live):
     """The capsule's wrong-value check re-run on a replayed output: the bound ratio
     or the reference error when it fails again, else None."""
     from . import op_nan_capture as onc
+    if _has_value_check_op(func):
+        # A fused op whose result is in its written operands (math_refs.VALUE_CHECKS), or a twin capsule's op:
+        # `args` are the bound operands after the call, which is what the check reads.
+        got = _owned_rel_err(str(func), func, args, kwargs, live[0] if len(live) == 1 else live)
+        if got is None:
+            return None
+        err, floor, _where = got
+        thr = v.get("threshold") or floor
+        return err if not err <= thr else None
+    if v.get("kind") == "bound" and onc._op_names(func)[1] in onc._SOFTMAX_OPS | onc._SDPA_OPS:
+        bnd = onc._bound_ratio(func, args, kwargs, list(live))
+        return bnd[0] if bnd is not None and not bnd[0] <= 1.0 + v.get("slack", bnd[1]) else None
     outs = [t for t in live if t.is_floating_point() and t.numel()]
     if len(outs) != 1:
         return None
@@ -3379,7 +3726,30 @@ def _wrong_value(v, func, args, kwargs, live):
         return r if r is not None and not r <= 1.0 + v.get("slack", 0.02) else None
     err = onc._ref_rel_err(func, args, kwargs, c)
     thr = v.get("threshold") or onc._ref_floor(c.dtype)
-    return err if err is not None and not err <= thr else None
+    if err is None or err <= thr:
+        return None
+    _note_grouped_wrong(args, kwargs, c, thr)
+    return err
+
+
+_GROUPED_WRONG = []         # row counts of the wrong group(s) of a grouped GEMM, once known
+
+
+def _note_grouped_wrong(args, kwargs, c, thr):
+    """A grouped GEMM failed the value check: say which group(s), once per process.
+    The `GROUPED_WRONG_ROWS=` line is what the ladder's kernel step passes back as
+    --grouped-wrong-rows, so the kernel named is the wrong group's, not the first one."""
+    from . import op_nan_capture as onc
+    if _GROUPED_WRONG:
+        return
+    errs = onc._grouped_rel_errs(args, kwargs, c)
+    bad = [x for x in errs if x[2] > thr] or sorted(errs, key=lambda x: -x[2])[:1]
+    if not bad:
+        return
+    _GROUPED_WRONG.extend(sorted({r for _, r, _ in bad}))
+    print("  GROUPED_WRONG_ROWS=%s  (%d of %d groups: %s)"
+          % (",".join(map(str, _GROUPED_WRONG)), len(bad), len(errs),
+             "; ".join("group %d, %d rows, rel err %.3g" % x for x in bad[:4])), flush=True)
 
 
 def _cpu64(obj):
@@ -3572,6 +3942,11 @@ _MATH_REFERENCES = {
     "aten._scaled_dot_product_flash_attention_backward.default": _ref_sdpa_flash_backward,
     "aten._grouped_mm.default": _ref_grouped_mm,
 }
+# The fused norms / activations of aiter, sgl_kernel and vLLM's _C (math_refs.py, shared with the capture's
+# nan_origin): every tensor the op writes, from its inputs.
+from . import math_refs  # noqa: E402
+for _op in math_refs.REFERENCES:
+    _MATH_REFERENCES[_op] = (lambda op: lambda func, a, kw: math_refs.reference(op, func, a, kw))(_op)
 
 
 # ---- synthesized attention backward: out / softmax_lse derived from the forward ------
@@ -3810,15 +4185,65 @@ def _chain_derive(cap, n_row, rec, func, bound, kw, env, cpu64=False):
 def _reference_call(op_name, func, a, kw):
     """The fp64 CPU value of one op: its math reference if it has one, else the op
     itself on cpu64 operands.  Raises whatever the op raises."""
+    if op_name.startswith("inductor.") and op_name not in _MATH_REFERENCES:
+        # the kernel's own source promoted to fp64 (inductor_ref.py); returns the written arguments
+        from . import inductor_ref
+        if kw:
+            raise RuntimeError("an Inductor launch with keyword operands is not modelled")
+        if not set(func.desc["written"]) <= set(func.desc["outbuf"]):
+            raise RuntimeError("an Inductor kernel with in_out_ptr operands: pre-call values gone")
+        return inductor_ref.reference(func.desc, list(a))
+    if op_name.startswith("triton.") and op_name not in _MATH_REFERENCES:
+        raise RuntimeError("a Triton kernel has no CPU / fp64 implementation (no math reference "
+                           "for it): read its source -- step 7")
     a64, kw64 = _cpu64(a), _cpu64(kw)
     if op_name in _MATH_REFERENCES:
         return _MATH_REFERENCES[op_name](func, a64, kw64)
     return func(*a64, **kw64)
 
 
+_TERM_REF_OUT = [None]      # the last _terminal_reference's fp64 output, for the failure signature
+
+
+def _terminal_record(cap):
+    """The chain row of the op the capsule is named for -- the op whose fp64 reference and
+    output the terminal checks judge.
+
+    Not simply chain[-1]: a chain can end in view rows recorded after that op (an aten.t of
+    another tensor follows a weight-grad mm in a backward), and a reference of a view says
+    nothing about the op.  Every row carries the watched op's call index, so the op name picks
+    the row: the last row of the capsule's own op; else the last row that is not a view; else
+    the last row."""
+    chain = cap["chain"]
+    own = [r for r in chain if r.get("op") == cap.get("op")]
+    if own:
+        return own[-1]
+    return next((r for r in reversed(chain) if not r.get("is_view")), chain[-1])
+
+
+def _signature_line(cap, gpu_env):
+    """failure_signature.py's SIGNATURE line for the chain's last op: its replay output against the
+    terminal fp64 reference -- how the output is wrong, not only that it is (step7-rootcause.md)."""
+    try:
+        from .failure_signature import signature
+        rec = _terminal_record(cap)
+        got = [gpu_env.get(k) for k in rec.get("produces") or [] if k]
+        got = [t for t in got if isinstance(t, torch.Tensor) and t.is_floating_point()]
+        ref = [t for t in tree_leaves(_TERM_REF_OUT[0]) if isinstance(t, torch.Tensor) and t.is_floating_point()] \
+            if _TERM_REF_OUT[0] is not None else []
+        for i, g in enumerate(got):
+            if not torch.isfinite(g.float()).all() or (i < len(ref) and ref[i].shape == g.shape):
+                r = ref[i] if i < len(ref) and ref[i].shape == g.shape else None
+                return signature(g.detach().cpu(), r.cpu() if r is not None else None)["line"]
+    except Exception as e:                             # noqa: BLE001 - never fail the walk for it
+        return "SIGNATURE unavailable: %s: %s" % (type(e).__name__, str(e)[:80])
+    return None
+
+
 def _terminal_reference(cap, gpu_env):
-    """fp64 reference of the chain's LAST op on the operands the GPU replay actually
-    bound -> (status, why), or None when there is nothing to check.
+    """fp64 reference of the capsule's own op (_terminal_record, not a trailing view) on the
+    operands the GPU replay actually bound -> (status, why), or None when there is nothing
+    to check.
 
     The question the chain reference cannot answer on a deterministic walk: a
     wrong upstream op recomputes to the same wrong value, nothing diverges, and a
@@ -3832,9 +4257,32 @@ def _terminal_reference(cap, gpu_env):
     skipped -- unless a math reference models it, which reads inputs only."""
     if not cap["chain"]:
         return None
-    rec = cap["chain"][-1]
+    rec = _terminal_record(cap)
     func = resolve_op(rec["op"])
-    if op_writes(func)["idx"] and rec["op"] not in _MATH_REFERENCES:
+    if (cap.get("verify") or {}).get("kind") == "rerun":
+        return ("rerun", "the capsule's rerun check -- a run counts when the op gives different "
+                         "outputs on identical copies of its operands, which needs no reference")
+    if _has_value_check_op(func):
+        # A fused op with a value check (math_refs.VALUE_CHECKS): its reference is an
+        # fp32 recompute from the op's INPUTS, which the [C1] pass left intact -- so it
+        # answers here even though the op writes its operands.
+        try:
+            a = _bind(rec["args"], gpu_env, cap["pool"], None)
+            kw = _bind(rec["kwargs"], gpu_env, cap["pool"], None)
+            produced = [gpu_env.get(k) for k in rec.get("produces") or [] if k]
+            got = _owned_rel_err(rec["op"], func, a, kw, produced[0] if len(produced) == 1 else (produced or None))
+        except Exception as e:                         # noqa: BLE001
+            return ("unavailable", "value check: %s: %s" % (type(e).__name__, str(e)[:80]))
+        if got is None:
+            return ("unavailable", "value check: variant not modelled, or its reference is "
+                                   "non-finite")
+        return ("finite", "%s -- reference finite; this run's rel err %.3g, correct calls stay under %.3g"
+                % ("twin check (twins.py: the op's second implementation on its inputs)" if _twin_owned(func)
+                   else "value check (math_refs: fp32 from the op's inputs)", got[0], got[1]))
+    w = op_writes(func)
+    # An Inductor kernel's out_ptr* are written and never read (outbuf): its fp64 twin reads inputs only
+    pure_out = rec["op"].startswith("inductor.") and w["idx"] <= w.get("outbuf_idx", frozenset())
+    if w["idx"] and rec["op"] not in _MATH_REFERENCES and not pure_out:
         return ("unavailable", "ref: writes its operands (in-place); pre-call values gone")
     try:
         a = _bind(rec["args"], gpu_env, cap["pool"], None)
@@ -3843,6 +4291,7 @@ def _terminal_reference(cap, gpu_env):
     except Exception as e:                             # noqa: BLE001
         return ("unavailable", "ref: %s: %s"
                 % (type(e).__name__, str(e).splitlines()[0][:80] if str(e) else ""))
+    _TERM_REF_OUT[0] = out
     live = [t for t in tree_leaves(out) if isinstance(t, torch.Tensor)
             and t.is_floating_point()]
     if not all(torch.isfinite(t).all().item() for t in live):
@@ -3873,11 +4322,21 @@ def _chain_reference(cap, dev):
         env[k] = _cpu64(unpack(cap["pool"][k], "cpu"))
     for n, rec in enumerate(cap["chain"]):
         func = resolve_op(rec["op"])
+        if n == len(cap["chain"]) - 1 and (_has_value_check_op(func)
+                                           or (cap.get("verify") or {}).get("kind") == "rerun"):
+            # no fp64 kernel (an aiter asm op): its check is the value check or the capsule's
+            # rerun, on the GPU operands -- the terminal line below, not an AssertionError here
+            outcome.append(("-", "ref: the %s (terminal line)" % (
+                "rerun check" if (cap.get("verify") or {}).get("kind") == "rerun" else "value check")))
+            return outcome
         try:
             a = _bind(rec["args"], env, cap["pool"], "cpu")
             kw = _bind(rec["kwargs"], env, cap["pool"], "cpu")
             kw = _cpu64(kw)
             a = _chain_derive(cap, n, rec, func, _cpu64(a), kw, env, cpu64=True)
+            if rec["op"].startswith("inductor.") and n < len(cap["chain"]) - 1:
+                # its fp64 twin returns the written arguments, not values `produces` maps
+                raise RuntimeError("an upstream Inductor kernel: no chain reference")
             out = _reference_call(rec["op"], func, a, kw)
         except Exception as e:                         # noqa: BLE001
             outcome.append(("unavailable", "ref: %s: %s"
@@ -3994,11 +4453,16 @@ def replay_chain(cap, dev):
     if term_ref is not None:
         # Parsed by replay_verdict.py (TERMINAL): keep the leading words stable.
         print("\n  terminal fp64 ref on replay operands: %s  %s" % term_ref)
+        if rows and (not rows[-1]["finite"] or rows[-1].get("wrong") is not None):
+            sl = _signature_line(cap, gpu_env)
+            if sl:
+                print("  " + sl)
         if term_ref[0] == "finite" and rows and not rows[-1]["finite"]:
             print("  -> on the operands this replay handed it, the true result is finite"
                   " and fits the")
-            print("     output dtype, so the non-finite output is the op's own --"
-                  " whatever produced the operands.")
+            print("     output dtype, so the %s output is the op's own --"
+                  " whatever produced the operands."
+                  % ("wrong finite" if rows[-1].get("wrong") is not None else "non-finite"))
 
     # The first op that goes wrong is the finding.  Divergence outranks
     # non-finiteness: an op that returned a finite but wrong value corrupted
@@ -4008,9 +4472,17 @@ def replay_chain(cap, dev):
     kind = "DIVERGED"
     if culprit is None:
         culprit = next((r for r in rows if not r["finite"]), None)
-        kind = "NON_FINITE"
+        # a wrong-value capsule's culprit is a wrong FINITE output, not a NaN (2026-11-21)
+        kind = "WRONG_VALUE" if culprit is not None and culprit.get("wrong") is not None else "NON_FINITE"
 
-    if culprit is None:
+    if culprit is None and (args.chain_iters or 1) > 1:
+        # One walk run of an intermittent fault is clean most of the time; the [C2] loop
+        # below is the measurement.  A "[verdict] CHAIN_NOT_REPRODUCED" here, inside an
+        # attempt that then REPRODUCED, read as a contradiction (2026-11-20).
+        print("\n  -> this single walk run was clean -- expected for an intermittent fault;"
+              " the [C2] loop below counts the runs.")
+        rc = 1
+    elif culprit is None:
         print("\n  -> the whole chain replayed clean. The fault needs surrounding"
               " state (concurrency, allocator, a neighbouring kernel) that the"
               " chain does not carry.")
@@ -4288,11 +4760,11 @@ def chain_loop(cap, dev):
                   % ("%s (call #%d)" % (op, ci), n, 100.0 * n / ran))
         print("  -> the chain reproduces without the model. This, not the"
               " single-op capsule, is the reproducer to attach to a bug report.")
-    if repeat is not None and ran > 1:
+    if repeat is not None and ran > 1 and args.chain_repeat_check:
         _report_repeatability(nonrep, bad_nonrep, ran, bad)
     if repeat is not None and repeat.get("ref"):
         _save_or_compare_outputs(cap, repeat["ref"])
-    elif not load:
+    if not load and not bad:        # only a CLEAN solo loop is in doubt (2026-11-21: printed beside 5/100)
         ci, _ = capture_gpu_procs(cap)
         print("  -> clean, but this ran ALONE. The capture saw %s process(es) on"
               % (ci or "?"))
@@ -4334,6 +4806,7 @@ def main():
 
     _import_torch()
     cap = upgrade_capsule(torch.load(args.capsule, map_location="cpu", weights_only=False))
+    _TWIN_ON[0] = (cap.get("verify") or {}).get("kind") == "twin"
 
     if args.capture_procs:
         n, detail = capture_gpu_procs(cap)
@@ -4351,7 +4824,7 @@ def main():
         argv = [a for a in sys.argv if a != "--restore-env"]
         os.execve(sys.executable, [sys.executable] + argv, env)
 
-    g = cap.get("geometry")
+    g = cap.get("geometry") or packed_geometry(cap)
     if args.bench:
         if not g and cap["op"] == "aten._grouped_mm.default":
             lines = grouped_bench_cmds(cap)
@@ -4375,6 +4848,7 @@ def main():
 
     print("capsule:        %s  (format %d)" % (args.capsule, cap["format"]))
     _CAP_OP[0] = cap["op"]
+    _CAP[0] = cap
     print("op:             %s   (op call #%d in the run)"
           % (cap["op"], cap["op_call_index"]))
     # device_name lives in ["dist"] from format 2 on, in ["versions"] before that.
@@ -4564,7 +5038,8 @@ def main():
         print("      garbage in a buffer the kernel overwrites, not an inherited NaN.)")
 
     # ---- 2. is it just fp32 overflow? --------------------------------------
-    print("\n[2] fp64 CPU reference")
+    print("\n[2] fp64 %sreference" % ("GPU (the kernel's source promoted to fp64, inductor_ref.py) "
+                                      if cap["op"].startswith("inductor.") else "CPU "))
     if g and len(amaxes) >= 2:
         bound = amaxes[-1] * amaxes[-2] * g["K"]
         print("  worst-case |D| <= max|A|*max|B|*K = %.6g   (fp32 max 3.40e38)" % bound)
@@ -4588,12 +5063,19 @@ def main():
         except Exception as e:                     # e.g. _scaled_mm has no CPU fp64 path
             print("  reference unavailable: %s" % e)
             ref = None
+        if ref is not None and not any(isinstance(t, torch.Tensor) and t.is_floating_point()
+                                       for t in tree_leaves(ref)):
+            print("  reference unavailable: it returned no floating-point tensor")   # never 'finite'
+            ref = None
         if ref is not None:
             ref_status = "ok"
             # Over every tensor the op returned, not just the first: a backward
             # that is clean in grad_q and overflowing in grad_k is still an
             # overflow, and reading only one slot would call it a kernel bug.
-            _rts = [t for _, t in out_tensors(ref)]
+            # tree_leaves, as the chain's terminal reference reads it: a math reference returns a
+            # dict ({'return': t} / {out_name: t}), which out_tensors() drops -- an empty list read
+            # as 'finite', and a 0/0 RMSNorm row proposed as KERNEL_BUG (2026-11-21, op-only package)
+            _rts = [t for t in tree_leaves(ref) if isinstance(t, torch.Tensor) and t.is_floating_point()]
             rf = all(torch.isfinite(t).all().item() for t in _rts)
             _fin = [t[torch.isfinite(t)].abs().max().item()
                     for t in _rts if torch.isfinite(t).any()]
@@ -4655,13 +5137,51 @@ def main():
     bad = 0
     worst = None
     ran = 0
+    # A wrong-value capsule (origin wrong_value) counts a launch whose output fails the
+    # capsule's own check again, as the chain loop does -- finiteness alone reads a race
+    # that writes plausible numbers as 0/N.
+    verify = cap.get("verify")
+    if verify:
+        print("  [wrong-value capsule: a launch counts when the op fails its %s check again]"
+              % verify.get("kind"))
     t_replay = time.time()
+    rerun_cap = (verify or {}).get("kind") == "rerun"
+    if rerun_cap:
+        from . import op_nan_capture as onc
     for _ in range(args.iters):
+        if rerun_cap:               # the capture's rerun check: copies first, same generator
+            ra, rk = onc.clone_operands(func, a, kw)
+            rng0 = onc._rng_states()
         out = func(*a, **kw)
         ran += 1
+        if rerun_cap and ra is not None:
+            post = onc._rng_states()
+            onc._set_rng_states(rng0)
+            out2 = func(*ra, **rk)
+            onc._set_rng_states(post)
+            rer = onc.rerun_diff(func, a, kw, out, ra, rk, out2)
+            _fin = not (rer is not None and not rer.get("int") and rer["rel"] > rer["floor"])
+            if not _fin:
+                bad += 1
+                if worst is None:
+                    worst = [(rer["where"], rer["x"].clone())]
+                if args.stop_on_nan:
+                    break
+            if _loop_checkpoint(ran, bad):
+                break
+            continue
         # .all() syncs, so the loop is timed honestly rather than timing the enqueue.
         _scan = scan_targets(func, a, out)
-        if not all(torch.isfinite(t).all() for _, t in _scan):
+        _vown = _value_owned(func, a, kw, out)
+        if _vown is not None:       # judged by its value check alone (see _run_chain_once)
+            _fin = math.isfinite(_vown[0]) and (
+                not verify or _vown[0] <= (verify.get("threshold") or _vown[1]))
+        else:
+            _fin = all(torch.isfinite(t).all() for _, t in _scan)
+            if _fin and verify and _wrong_value(verify, func, a, kw,
+                                                [t for _, t in out_tensors(out)]) is not None:
+                _fin = False
+        if not _fin:
             bad += 1
             if worst is None:
                 worst = [(lbl, t.clone()) for lbl, t in _scan]
@@ -4753,15 +5273,17 @@ def main():
             print("     nothing for a mutation to remove, so every trial would come back")
             print("     CLEAN and none of it would mean anything. Pass --mutate-force to")
             print("     sweep regardless (useful when the fault is intermittent).")
-        # NOT_REPRODUCED is the verdict either way: the exit status reports the replay,
-        # not whether an enumeration printed, and child_verdict() parses the line above.
-        return 1
+        # NOT_REPRODUCED is the verdict either way, and child_verdict() parses the line above.
+        # The exit status: an enumeration asked for by itself (--list-mutations without --mutate)
+        # succeeded once it printed -- rc 1 made the enumeration job read FAILED (2026-11-23);
+        # a replay or a sweep that found nothing still exits 1.
+        return 0 if (args.list_mutations and not args.mutate) else 1
 
     # worst is one (index, tensor) per tensor the op returned.  Report each slot
     # separately: for a multi-output op "which operand went non-finite" is part of
     # the finding, and summing them into one count would hide that grad_q is bad
     # while grad_k and grad_v are clean.
-    _ref_by_i = ({"out[%d]" % i: t for i, t in out_tensors(ref)}
+    _ref_by_i = ({"out[%d]" % i: t for i, t in out_tensors(ref.get("return") if isinstance(ref, dict) else ref)}
                  if ref is not None else {})
     _multi = len(worst) > 1
     for i, o in worst:
@@ -4781,6 +5303,19 @@ def main():
             if m.any():
                 err = (o.cpu()[m].double() - r[m]).abs().max().item()
                 print("%smax |gpu-ref| over the finite entries: %.6g" % (label, err))
+    if rerun_cap:
+        # A rerun capsule needs no reference: different outputs on identical copies of the
+        # operands is wrong whatever the operands are (replay_verdict: terminal 'rerun').
+        print("\n  -> REPRODUCED standalone: the op gave different outputs on identical copies"
+              " of its operands (rerun check) -- no correct deterministic kernel does that,"
+              " whatever the operands; no reference needed.")
+        print("[verdict] KERNEL_BUG")
+        if _MUTATING:
+            try:
+                return run_mutations(g, kernel=disasm_kernel)
+            finally:
+                stop_contenders()
+        return 0
     # The overflow question (step 5b.2) is only ANSWERED when a reference ran.
     # Many fused kernels have no CPU implementation -- SDPA backward is CUDA-only
     # -- and reporting KERNEL_BUG off a reference that never executed claims an
@@ -4805,9 +5340,13 @@ def main():
                 stop_contenders()
         return 0
 
-    print("\n  -> REPRODUCED standalone. Next: pin solutions to find the bad one, e.g.")
-    print("     for s in <candidates>; do python3 %s %s --solution-index $s --iters 20; done"
-          % (os.path.basename(__file__), args.capsule))
+    if cap["op"].startswith(("inductor.", "triton.")):
+        print("\n  -> REPRODUCED standalone. Next: the kernel's Triton source and its lowering "
+              "(step7-rootcause.md, compiled kernels) -- no library solution to pin.")
+    else:
+        print("\n  -> REPRODUCED standalone. Next: pin solutions to find the bad one, e.g.")
+        print("     for s in <candidates>; do python3 %s %s --solution-index $s --iters 20; done"
+              % (os.path.basename(__file__), args.capsule))
     if g:
         print("     and the geometry-only check (expected to pass -- the fault is data-dependent):")
         print("     " + bench_cmd(g, solution=args.solution_index))

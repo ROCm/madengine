@@ -1,4 +1,4 @@
-"""torchtitan.train with debug-nan's op capture wired in, without editing torchtitan.
+"""torchtitan.train with debug-numeric's op capture wired in, without editing torchtitan.
 
     torchrun ... nan_doctor_rt.torchtitan_capture_train --module <m> --config <c> ...
 

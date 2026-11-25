@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Per-step gradient trajectory and a NaN signal for a training loop (debug-nan).
+"""Per-step gradient trajectory and a NaN signal for a training loop (debug-numeric).
 
 The op capture fires only on inf/NaN, so for EXPLODING values it catches the first
 op that overflows -- often a correct reduction (`_foreach_norm` over finite grads of
@@ -8,8 +8,7 @@ module's gradients grow, from which step, how fast, while the weights stay or mo
 
 In the model (one call per step, after backward, before clipping / optimizer):
 
-    sys.path.insert(0, os.environ["NAN_DOCTOR_ROOT"] + "/scripts/internal")
-    from .grad_trajectory import after_backward
+    from nan_doctor_rt.grad_trajectory import after_backward
     after_backward(model, loss, parts)      # parts: dict of scalar loss tensors, optional
 
 * `NAN_DOCTOR_GRADLOG=<file.jsonl>`: append one JSON line per step -- loss and parts,

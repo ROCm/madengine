@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replay a flash-attention VARLEN backward capsule on CONSISTENT operands (mad-debug-nan step 7/8).
+"""Replay a flash-attention VARLEN backward capsule on CONSISTENT operands (mad-debug-numeric step 7/8).
 
 A shapes-only capsule replayed with --synthesize draws every float operand from its
 own statistics, so `out` and `softmax_lse` do not belong to q/k/v -- a correct kernel

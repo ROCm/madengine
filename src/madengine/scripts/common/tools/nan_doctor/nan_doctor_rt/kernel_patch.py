@@ -66,7 +66,7 @@ import struct
 import sys
 
 # Absolute, from this file: the siblings have to resolve when the script is run
-# by path from an unrelated working directory, which is how the mad-debug-nan skill
+# by path from an unrelated working directory, which is how the mad-debug-numeric skill
 # invokes them.
 from . import replay_hipblaslt_log_with_nan as rnan  # noqa: E402
 
@@ -296,6 +296,51 @@ def lgkm_zeroed_word(word, arch):
         raise ValueError("0x%08X is not a GFX9 s_waitcnt (top half 0x%04X, expected 0x%04X)"
                          % (word, word >> 16, _SOPP_WAITCNT_HI))
     return word & ~_GFX9_LGKM_MASK & 0xFFFFFFFF
+
+
+# vmcnt, the vector-memory counter: split in two on GFX9, [3:0] low and [15:14] high (6
+# bits, 63 = "do not wait").  It is the counter that covers a global-to-LDS load
+# (`buffer_load_dword ... lds`): the data lands in LDS, but the load retires through the
+# VM queue, so `s_waitcnt lgkmcnt(0)` does not wait for it -- a kernel that reads such a
+# tile after a relaxed `vmcnt(N)` reads whatever the slot held before.  Same discipline
+# as lgkmcnt: N from the text, the field cleared in the instruction's own word.
+
+_VM_RE = re.compile(r"\bvmcnt\((\d+)\)")
+_GFX9_VM_MASK = 0xC00F
+
+
+def vm_text_count(insn):
+    """N from a printed `vmcnt(N)`, or None if this insn does not wait on vector memory."""
+    if insn.mnemonic != "s_waitcnt":
+        return None
+    m = _VM_RE.search(insn.text)
+    return int(m.group(1)) if m else None
+
+
+def vm_enc_count(word, arch):
+    """The vmcnt field as encoded ([15:14] high, [3:0] low), for the text cross-check."""
+    if not is_gfx9(arch):
+        raise ValueError("s_waitcnt vmcnt is only decoded for GFX9 here, not %r" % arch)
+    return ((word >> 14) & 0x3) << 4 | (word & 0xF)
+
+
+def vm_zeroed_word(word, arch):
+    """`word` with ONLY its vmcnt field (both halves) cleared; lgkmcnt and expcnt survive."""
+    if not is_gfx9(arch):
+        raise ValueError("s_waitcnt vmcnt is only encoded for GFX9 here, not %r -- GFX10 "
+                         "moved vmcnt and GFX12 split the instruction into s_wait_loadcnt "
+                         "/ s_wait_storecnt" % arch)
+    if (word >> 16) != _SOPP_WAITCNT_HI:
+        raise ValueError("0x%08X is not a GFX9 s_waitcnt (top half 0x%04X, expected 0x%04X)"
+                         % (word, word >> 16, _SOPP_WAITCNT_HI))
+    return word & ~_GFX9_VM_MASK & 0xFFFFFFFF
+
+
+def vm_set_word(word, n, arch):
+    """`word` with its vmcnt field set to `n` (0..62); lgkmcnt and expcnt survive."""
+    if not 0 <= n < 63:
+        raise ValueError("vmcnt %d out of range (63 means no wait)" % n)
+    return vm_zeroed_word(word, arch) | ((n >> 4) & 0x3) << 14 | (n & 0xF)
 
 
 # ======================================================================================
@@ -810,9 +855,127 @@ def select_nan_const(insns, arch, opts):
         for tok in ins.operands[1:]:
             v = operand_u32(tok)
             if is_f32_nan(v):
-                out.append(Site(i, ins, "src const %s = 0x%08X is f32 NaN" % (tok, v)))
+                if nan_const_role(insns, i) is None:
+                    out.append(Site(i, ins, "src const %s = 0x%08X is f32 NaN" % (tok, v)))
                 break
     return out
+
+
+_BITWISE = ("v_and_b32", "v_or_b32", "v_xor_b32", "v_bfi_b32", "v_and_or_b32", "v_or3_b32",
+            "v_perm_b32", "v_lshl_or_b32", "v_bitop3_b32", "v_bitop3_b16", "v_bfe_u32",
+            "v_alignbit_b32", "v_alignbyte_b32")
+
+
+_STORES = ("buffer_store", "global_store", "flat_store", "scratch_store", "ds_write",
+           "ds_store", "buffer_atomic", "global_atomic", "flat_atomic", "ds_add", "s_store",
+           "s_buffer_store", "exp")
+
+
+def nan_const_role(insns, i):
+    """Why the NaN-PATTERNED constant an untyped move loads at `i` is not a float, or None.
+
+    An aiter asm kernel's f32 -> bf16 conversion loads 0x7fff0000 (a quiet bf16 NaN in the
+    high half) and selects it with `v_cmp_u_f32 s, x, x` + v_cndmask -- NaN PROPAGATION,
+    not a planted NaN -- and 0xffff0000 as a bit mask (2026-11-20: 26 such sites in one aiter
+    kernel made the stock vLLM image read as "injected").  Decided by the first reader
+    of the destination: a bitwise op = a mask; a v_cndmask whose condition comes from an
+    is-NaN compare (v_cmp_u_*, v_cmp_class_*) = NaN propagation; a full overwrite before any
+    read = dead (that 0xffff0000 is replaced by a v_perm_b32 before the tile is stored -- a
+    planted NaN has to reach data to matter, and NOPing a dead load changes nothing; a read
+    across a loop back-edge is not followed).  Typed float ops are never
+    excused, and anything else (float arithmetic, a store) stays a site, as an injected
+    NaN's would.
+    """
+    ins = insns[i]
+    if base_mnemonic(ins.mnemonic) not in _UNTYPED_MOVES or not ins.operands:
+        return None
+    dst = rnan.regs(ins.operands[0])
+    if not dst:
+        return None
+    mine = set((dst[0], r) for r in dst[1])
+    for j in range(i + 1, len(insns)):
+        nxt = insns[j]
+        # A store has no destination: its first operand is the data it READS.
+        store = base_mnemonic(nxt.mnemonic or "").startswith(_STORES)
+        srcs = set()
+        for op in (nxt.operands if store else nxt.operands[1:]):
+            r = rnan.regs(op)
+            if r:
+                srcs.update((r[0], x) for x in r[1])
+        if not srcs & mine:
+            d = rnan.regs(nxt.operands[0]) if nxt.operands and not store else None
+            if d and mine <= set((d[0], x) for x in d[1]):
+                return "dead (overwritten before any read, in program order)"
+            continue
+        mn = base_mnemonic(nxt.mnemonic)
+        if mn in _BITWISE:
+            return "bit mask (%s)" % mn
+        if _buffer_address_use(nxt, mine):
+            return "buffer offset (the vaddr of %s at 0x%X)" % (mn, nxt.addr)
+        if mn.startswith("v_cndmask"):
+            cond = nxt.operands[-1].strip() if len(nxt.operands) > 3 else "vcc"
+            for k in range(j - 1, max(-1, j - 64), -1):
+                w = insns[k]
+                if w.operands and w.operands[0].strip() == cond:
+                    if base_mnemonic(w.mnemonic).startswith(("v_cmp_u_", "v_cmp_class_")):
+                        return "NaN propagation (%s selects it)" % base_mnemonic(w.mnemonic)
+                    break
+            return _oob_offset_role(insns, j)
+        return None
+    return "dead (never read after the load, in program order)"
+
+
+def _buffer_address_use(insn, regs_):
+    """True if `insn` is a buffer load/store/atomic that reads `regs_` as its VADDR only.
+
+    buffer_* is `<vdata>, <vaddr>, <srsrc>, <soffset>` for loads, stores and atomics
+    alike; an operand that is also the data (a store of the same register) is not
+    excused.
+    """
+    if not (insn.mnemonic or "").startswith("buffer_") or len(insn.operands) < 2:
+        return False
+    va = rnan.regs(insn.operands[1])
+    if not va or not regs_ & set((va[0], r) for r in va[1]):
+        return False
+    vd = rnan.regs(insn.operands[0])
+    return not (vd and regs_ & set((vd[0], r) for r in vd[1]))
+
+
+def _oob_offset_role(insns, j):
+    """Why the v_cndmask at `j` selecting a NaN-patterned constant is not a float, or None.
+
+    Tensile's edge guard: `v_mov_b32 v6, 0xfffff000` then, per output element,
+    `v_cndmask_b32 vA, v6, vA, s[cmp]` with s[cmp] an integer in-bounds compare, and vA
+    the vaddr of the `buffer_store ... offen` -- an out-of-range offset makes the buffer
+    resource drop the store.  0xfffff000 is an f32 NaN bit pattern, so it read as a
+    planted NaN: 2026-11-23, 25 such sites made a stock pip-built hipBLASLt kernel
+    (qwen3_moe gradient) report `injected: yes`.  Decided by the selected value's first
+    reader: the vaddr of a buffer op = an offset, not data.  Anything else stays a site.
+    """
+    sel = insns[j]
+    dst = rnan.regs(sel.operands[0]) if sel.operands else None
+    if not dst:
+        return None
+    mine = set((dst[0], r) for r in dst[1])
+    for k in range(j + 1, len(insns)):
+        nxt = insns[k]
+        store = base_mnemonic(nxt.mnemonic or "").startswith(_STORES)
+        srcs = set()
+        for op in (nxt.operands if store else nxt.operands[1:]):
+            r = rnan.regs(op)
+            if r:
+                srcs.update((r[0], x) for x in r[1])
+        if not srcs & mine:
+            d = rnan.regs(nxt.operands[0]) if nxt.operands and not store else None
+            if d and mine <= set((d[0], x) for x in d[1]):
+                return None                      # overwritten unread: not this pattern
+            continue
+        if _buffer_address_use(nxt, mine):
+            return ("out-of-range buffer offset (%s selects it into the vaddr of %s at "
+                    "0x%X)" % (base_mnemonic(sel.mnemonic), base_mnemonic(nxt.mnemonic),
+                               nxt.addr))
+        return None
+    return None
 
 
 @register_selector("store_slice")
@@ -889,6 +1052,34 @@ def select_lgkm_wait(insns, arch, opts):
         if n:                                    # None (no LGKM wait) and 0 both skip
             out.append(Site(i, ins, "waits lgkmcnt(%d), relaxable to 0" % n))
     return out
+
+
+@register_selector("vm_wait")
+def select_vm_wait(insns, arch, opts):
+    """s_waitcnt instructions that wait on a NON-ZERO vmcnt.
+
+    select_lgkm_wait's twin for the vector-memory counter, with the same argument for
+    ignoring is_unsafe(): the paired payload only strengthens a wait (N -> 0).  Sites are
+    exactly the instructions printing vmcnt(N) with N > 0 -- `s_waitcnt lgkmcnt(0)`
+    encodes vmcnt(63) and prints none, so it is not one.
+    """
+    out = []
+    for i, ins in enumerate(insns):
+        n = vm_text_count(ins)
+        if n:
+            out.append(Site(i, ins, "waits vmcnt(%d), relaxable to 0" % n))
+    return out
+
+
+def barrier_follows(insns, index):
+    """True if the instruction right after `index` is an s_barrier.
+
+    The census the vmcnt mutators print: a relaxed vmcnt wait that a barrier follows is
+    the shape of a cross-wave tile handoff (each wave waits for ITS loads, then the
+    workgroup meets), so draining it to vmcnt(0) already is "wait for every load, then
+    rendezvous" -- the shape a fix for a global-to-LDS race has.
+    """
+    return index + 1 < len(insns) and _lds_kind(insns[index + 1]) == "B"
 
 
 def _lds_kind(insn):
@@ -1100,6 +1291,53 @@ def payload_lgkmcnt0(ctx):
     return struct.pack("<I", lgkm_zeroed_word(word, ctx.arch))
 
 
+@register_payload("vmcnt0")
+def payload_vmcnt0(ctx):
+    """Rewrite this s_waitcnt to vmcnt(0), leaving lgkmcnt and expcnt exactly as they were.
+
+    payload_lgkmcnt0's twin: the instruction's own word with the vmcnt field cleared, and
+    the same text/encoding cross-check -- vmcnt is split across [15:14] and [3:0], so a
+    misread layout shows up as a mismatch here instead of a silently rewritten counter.
+    """
+    insn, site = ctx.insn, ctx.site
+    n = vm_text_count(insn)
+    if not n:
+        raise ValueError("%r does not wait on a non-zero vmcnt" % insn.text)
+    if site.enc is None or len(site.enc) != 4:
+        raise ValueError("s_waitcnt at 0x%X has %s encoding byte(s), expected 4"
+                         % (insn.addr, "no" if site.enc is None else len(site.enc)))
+    word = struct.unpack("<I", site.enc)[0]
+    enc_n = vm_enc_count(word, ctx.arch)
+    if enc_n != n:
+        raise ValueError("0x%X: text says vmcnt(%d) but encoding 0x%08X holds %d in "
+                         "[15:14]+[3:0] -- refusing to patch a field layout we evidently "
+                         "misread" % (insn.addr, n, word, enc_n))
+    return struct.pack("<I", vm_zeroed_word(word, ctx.arch))
+
+
+@register_payload("vmcnt_minus1")
+def payload_vmcnt_minus1(ctx):
+    """Tighten this s_waitcnt by ONE vector-memory op: vmcnt(N) -> vmcnt(N-1).
+
+    The smallest strengthening there is: it additionally waits for exactly the oldest load
+    vmcnt(N) let through.  After `vmcnt0_each` names the site, this asks whether that one load
+    is the late one -- and a CLEAN row is the minimal fix to ship.  Same cross-check
+    and slot width as payload_vmcnt0.
+    """
+    insn, site = ctx.insn, ctx.site
+    n = vm_text_count(insn)
+    if not n:
+        raise ValueError("%r does not wait on a non-zero vmcnt" % insn.text)
+    if site.enc is None or len(site.enc) != 4:
+        raise ValueError("s_waitcnt at 0x%X has %s encoding byte(s), expected 4"
+                         % (insn.addr, "no" if site.enc is None else len(site.enc)))
+    word = struct.unpack("<I", site.enc)[0]
+    if vm_enc_count(word, ctx.arch) != n:
+        raise ValueError("0x%X: text says vmcnt(%d) but encoding 0x%08X holds %d"
+                         % (insn.addr, n, word, vm_enc_count(word, ctx.arch)))
+    return struct.pack("<I", vm_set_word(word, n - 1, ctx.arch))
+
+
 def make_payload(kind, insn, site, arch):
     """Build the replacement bytes and enforce the length invariant."""
     fn = PAYLOADS.get(kind)
@@ -1201,13 +1439,69 @@ def region_lgkmcnt0_sbarrier(target, sites):
             raise PatchError(str(e))
         edits[s.index] = wait + bar
 
+    # May grow past the padding, like vmcnt0+sbarrier and sbarrier_before: a GrowthPatch
+    # then, which an aiter .co or the HSA shim rebuilds and the Tensile overlay refuses.
+    # This one used to be the only barrier payload pinned to the padding (2026-11-23:
+    # refused on a 0-byte-padding aiter MLA .co whose sbarrier_* rows rebuilt fine).
     blob = target.region_bytes()
     code_end = target.insns[-1].addr + target.insns[-1].size
     new, new_addr = relocate_region(target.insns, target.start, target.stop,
-                                    blob[code_end - target.start:], edits, target.arch)
+                                    blob[code_end - target.start:], edits, target.arch,
+                                    grow_ok=True)
     out = {target.file_offset(target.start): new}
     out.update(target.symbol_patches(new_addr))
-    return out
+    grew = len(new) - (target.stop - target.start)
+    if grew <= 0:
+        return out                                   # fitted in the padding
+    return GrowthPatch(out, grew, len(sites))
+
+
+@register_region_payload("vmcnt0+sbarrier", ("s_waitcnt", "s_barrier"))
+def region_vmcnt0_sbarrier(target, sites):
+    """Follow every relaxed VM wait with an s_barrier, draining it first.
+
+        s_waitcnt vmcnt(N) ...   ->   s_waitcnt vmcnt(0) ...
+                                      s_barrier
+
+    region_lgkmcnt0_sbarrier for the vector-memory counter.  `vmcnt0` makes each wave
+    wait for its own global-to-LDS loads; only a barrier after the drain orders those
+    loads against a SIBLING wave's ds_read of the same tile.  A site that a barrier
+    already follows gets a second, redundant one -- the pair stays comparable site for
+    site, and kernel_mutations says how many sites that is.
+
+    May grow past the padding (4 bytes per site), like sbarrier_before: a GrowthPatch
+    then, which an aiter .co or the HSA shim rebuilds and a Tensile library cannot.
+    Same divergence caveat as every barrier payload: a TIMEOUT row means "possibly
+    divergent", not "slow".
+    """
+    if not is_gfx9(target.arch):
+        raise PatchError(
+            "the s_waitcnt immediate layout and the s_barrier encoding are only known "
+            "for GFX9 here, not %s" % target.arch)
+    if not sites:
+        raise PatchError("no relaxed vmcnt wait to follow with an s_barrier")
+
+    bar = barrier_bytes(target.arch, target.insns)
+    edits = {}
+    for s in sites:
+        insn = target.insns[s.index]
+        try:
+            wait = payload_vmcnt0(PatchCtx(insn, s, target.arch))
+        except ValueError as e:
+            raise PatchError(str(e))
+        edits[s.index] = wait + bar
+
+    blob = target.region_bytes()
+    code_end = target.insns[-1].addr + target.insns[-1].size
+    new, new_addr = relocate_region(target.insns, target.start, target.stop,
+                                    blob[code_end - target.start:], edits, target.arch,
+                                    grow_ok=True)
+    out = {target.file_offset(target.start): new}
+    out.update(target.symbol_patches(new_addr))
+    grew = len(new) - (target.stop - target.start)
+    if grew <= 0:
+        return out
+    return GrowthPatch(out, grew, len(sites))
 
 
 class GrowthPatch:
@@ -1508,6 +1802,26 @@ def _refuse_growth(offsets, who):
             % (offsets.delta, offsets.sites, who))
 
 
+def tensile_libpath(overlay, arch=None):
+    """What HIPBLASLT_TENSILE_LIBPATH must name for a library overlay.  hipBLASLt does NOT append
+    the arch to a path given this way: with the per-arch layout of the pip ROCm SDK wheels
+    (library/gfx950/*.co) the variable must name <overlay>/<arch> -- naming the root, every GEMM
+    failed HIPBLAS_STATUS_INVALID_VALUE ("hipModuleLoad failed: <overlay>/Kernels.so-...",
+    2026-11-21).  A flat library: the overlay itself."""
+    if arch is None:
+        subs = [d for d in os.listdir(overlay) if d.startswith("gfx") and os.path.isdir(os.path.join(overlay, d))]
+        flat = any(f.endswith((".co", ".hsaco", ".dat", ".dat.zlib")) for f in os.listdir(overlay))
+        if len(subs) and not flat:
+            try:                                          # the device this process will run on
+                import torch
+                arch = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
+            except Exception:                             # noqa: BLE001
+                arch = subs[0] if len(subs) == 1 else None
+    if arch and os.path.isdir(os.path.join(overlay, arch)):
+        return os.path.join(overlay, arch)
+    return overlay
+
+
 class OverlayCache:
     """A shadow library dir built once; per trial only the patched .co is swapped.
 
@@ -1543,8 +1857,7 @@ class OverlayCache:
     def env(self, base=None):
         # `base or os.environ` would treat an empty dict as "use the whole environment".
         e = dict(os.environ if base is None else base)
-        e["HIPBLASLT_TENSILE_LIBPATH"] = self.overlay
-        e["TENSILE_LIBPATH"] = self.overlay
+        e["HIPBLASLT_TENSILE_LIBPATH"] = e["TENSILE_LIBPATH"] = tensile_libpath(self.overlay, self.target.arch)
         return e
 
     def disassemble(self):
@@ -1620,6 +1933,13 @@ class OverlayCache:
 
 _AITER_LOAD_RE = re.compile(
     r"^\[aiter\]\s+hipModuleLoad:\s+(?P<path>\S+)\s+GetFunction:\s+(?P<sym>\S+)")
+# amd-aiter 0.1.26+ (vllm/vllm-openai-rocm v0.33.0) logs the same load as
+#     [aiter] LoadKernel: <symbol> hsaco: /abs/.../aiter_meta/hsa//gfx950/mla/<name>.co
+# File-backed only when the path is absolute: a relative one is the embedded map's key.
+# Without this form discovery saw no aiter kernel at all and the ladder's kernel id fell
+# back to a hipBLASLt GEMM elsewhere in the chain (2026-11-20).
+_AITER_LOADKERNEL_RE = re.compile(
+    r"^\[aiter\]\s+LoadKernel:\s+(?P<sym>\S+)\s+hsaco:\s+(?P<path>/\S+)")
 
 
 def parse_aiter_loads(text):
@@ -1633,9 +1953,9 @@ def parse_aiter_loads(text):
     """
     out = []
     for line in text.splitlines():
-        m = _AITER_LOAD_RE.match(line.strip())
+        m = _AITER_LOAD_RE.match(line.strip()) or _AITER_LOADKERNEL_RE.match(line.strip())
         if m:
-            out.append((m.group("path"), m.group("sym")))
+            out.append((os.path.normpath(m.group("path")), m.group("sym")))
     return out
 
 
@@ -1646,9 +1966,9 @@ def trace_is_file_backed(text):
     aiter kernel at all returns None -- "no aiter here" and "aiter served the baked-in
     copy" are different answers and only the second one invalidates a sweep.
     """
-    if _AITER_LOAD_RE.search(text) or "[aiter] hipModuleLoad:" in text:
+    if parse_aiter_loads(text) or "[aiter] hipModuleLoad:" in text:
         return True
-    if "hipModuleLoad:" in text:
+    if "hipModuleLoad:" in text or "[aiter] LoadKernel:" in text:
         return False
     return None
 
@@ -1925,6 +2245,15 @@ def find_aiter_asm_dir(explicit=None):
     return None
 
 
+def aiter_meta_of(asm_root):
+    """The aiter_meta dir an asm root `<meta>/hsa` belongs to, or None (older layouts)."""
+    root = os.path.normpath(asm_root or "")
+    meta = os.path.dirname(root)
+    if os.path.basename(root) == "hsa" and os.path.isdir(os.path.join(meta, "csrc")):
+        return meta
+    return None
+
+
 def ensure_aiter_asm_dir(explicit=None, stream=None):
     """Put AITER_ASM_DIR in os.environ so the BASELINE is file-backed too.
 
@@ -2094,6 +2423,19 @@ class AiterOverlay:
     def __init__(self, target, work):
         self.target, self.work = target, work
         self.overlay = os.path.join(work, "aiter_asm")
+        # amd-aiter 0.1.26+ ignores AITER_ASM_DIR: `import aiter` rewrites it to
+        # $AITER_META_DIR/hsa/ (aiter/jit/core.py), so the overlay is served only through
+        # AITER_META_DIR -- a dir that must hold csrc/ as well.  When the asm root is
+        # <meta>/hsa, mirror the meta dir: the patched hsa/ farm plus links to the rest.
+        self.meta = aiter_meta_of(target.asm_root)
+        if self.meta:
+            mroot = os.path.join(work, "aiter_meta")
+            os.makedirs(mroot, exist_ok=True)
+            for e in os.listdir(self.meta):
+                if e != "hsa" and not os.path.lexists(os.path.join(mroot, e)):
+                    os.symlink(os.path.join(self.meta, e), os.path.join(mroot, e))
+            self.overlay = os.path.join(mroot, "hsa")
+            self.meta_overlay = mroot
         # How much the kernel grew in the CURRENT overlay, for disassemble(); 0 for a
         # same-size splice.  Set per apply(), because the trials alternate.
         self._grown_delta = 0
@@ -2144,6 +2486,9 @@ class AiterOverlay:
         # `base or os.environ` would treat an empty dict as "use the whole environment".
         e = dict(os.environ if base is None else base)
         e["AITER_ASM_DIR"] = self.overlay.rstrip("/") + "/"
+        e["AITER_LOG_LEVEL"] = "INFO"           # the served check reads aiter's load lines
+        if self.meta:
+            e["AITER_META_DIR"] = self.meta_overlay
         return e
 
     def disassemble(self):
@@ -2510,14 +2855,16 @@ def export_fix(cache, dest):
         co = os.path.join(dest, "patched", cache.rel)
         os.makedirs(os.path.dirname(co), exist_ok=True)
         shutil.copy2(cache.dst, co)
-        farm = os.path.join(dest, "aiter_asm")
-        env = ["# a symlink farm of the stock aiter tree with the patched .co in place",
-               'if [ ! -e %s ]; then' % os.path.join(farm, cache.rel),
-               "  mkdir -p %s && cp -as %s/. %s/" % (farm, cache.target.asm_root.rstrip("/"), farm),
-               "  rm -f %s && cp %s %s" % (os.path.join(farm, cache.rel), co,
-                                           os.path.join(farm, cache.rel)),
-               "fi",
-               "export AITER_ASM_DIR=%s/" % farm]
+        tool = os.path.join(dest, "aiter_overlay.sh")
+        shutil.copy2(os.path.join(os.path.dirname(os.path.abspath(__file__)), "aiter_overlay.sh"), tool)
+        # Relative to this directory and to the aiter of the image it is sourced in, so the
+        # kept fix can be copied into a fix package (2026-11-20: the absolute host paths here
+        # made every aiter fix a hand-built package).
+        env = ['_d=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)',
+               'eval "$(bash "$_d/aiter_overlay.sh" "$_d/patched/%s" "%s" "$_d/overlay")"'
+               % (cache.rel, cache.rel),
+               "# loaded = aiter's load log names $_d/overlay/... (AITER_LOG_LEVEL=INFO on 0.1.26+)"]
+        out += [tool]
         out.append(co)
     else:
         raise PatchError("export_fix: %s overlays are exported by fix_overlay.py"

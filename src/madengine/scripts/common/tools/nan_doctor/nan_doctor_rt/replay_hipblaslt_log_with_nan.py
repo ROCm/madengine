@@ -257,6 +257,16 @@ def tool(name, required=True):
                 found = cand
                 break
         found = found or shutil.which(name)
+        if not found:
+            # pip ROCm SDK wheels without ROCM_PATH or the tools on PATH (the torchtitan image,
+            # rocm-sdk-core 7.14: _rocm_sdk_core/lib/llvm/bin) -- 2026-11-21
+            for pat in ("/usr/local/lib/python3*/*-packages/_rocm_sdk_*/lib/llvm/bin/" + name,
+                        "/usr/lib/python3*/*-packages/_rocm_sdk_*/lib/llvm/bin/" + name,
+                        "/opt/rocm*/lib/llvm/bin/" + name):
+                hits = [h for h in sorted(glob.glob(pat)) if os.access(h, os.X_OK)]
+                if hits:
+                    found = hits[0]
+                    break
         _TOOL_CACHE[name] = found
     if required and not found:
         sys.exit(f"{name} not found (looked in {rocm_root()}/llvm/bin and $PATH)")
@@ -360,6 +370,29 @@ def rebundle(orig, dev_target, dev_elf, targets, workdir, out_path):
 # locating a kernel by name
 # ======================================================================================
 
+def read_dat(path):
+    """The bytes of a Tensile .dat, or of a zlib-compressed .dat.zlib (ROCm 7.x pip SDK wheels)."""
+    with open(path, "rb") as f:
+        blob = f.read()
+    if path.endswith(".zlib"):
+        import zlib
+        blob = zlib.decompress(blob)
+    return blob
+
+
+def dat_globs(root, arch):
+    """Every Tensile index under `root` for `arch`: *.dat and *.dat.zlib."""
+    out = []
+    for ext in (".dat", ".dat.zlib"):
+        out += glob.glob(os.path.join(root, "**", "*_%s%s" % (arch, ext)), recursive=True)
+    return sorted(out)
+
+
+def dat_sibling_co(dat):
+    """The code object a .dat / .dat.zlib indexes."""
+    return re.sub(r"\.dat(\.zlib)?$", ".co", dat)
+
+
 def find_library_dir(explicit):
     if explicit:
         if not os.path.isdir(explicit):
@@ -374,10 +407,18 @@ def find_library_dir(explicit):
     cands += sorted(glob.glob("/usr/lib/python3*/dist-packages/torch/lib/hipblaslt/library"))
     cands += sorted(glob.glob("/opt/conda/**/site-packages/torch/lib/hipblaslt/library",
                               recursive=True))
+    # pip ROCm SDK wheels (vllm/vllm-openai-rocm v0.33, the torchtitan image): the library sits in
+    # _rocm_sdk_libraries, and torch in /usr/local/lib/python3.x/{site,dist}-packages -- neither was
+    # searched, so a Tensile target there failed "cannot prepare" (2026-11-20/21)
+    for pre in ("/usr/local/lib", "/usr/lib"):
+        for pk in ("site-packages", "dist-packages"):
+            cands += sorted(glob.glob("%s/python3*/%s/_rocm_sdk_libraries*/lib/hipblaslt/library" % (pre, pk)))
+            cands += sorted(glob.glob("%s/python3*/%s/torch/lib/hipblaslt/library" % (pre, pk)))
     for c in cands:
-        if c and os.path.isdir(c) and (glob.glob(os.path.join(c, "*.co")) or
-                                       glob.glob(os.path.join(c, "*.hsaco")) or
-                                       glob.glob(os.path.join(c, "*.dat"))):
+        # files directly in it, or one level down in per-arch dirs (library/gfx950/*.co: the
+        # pip ROCm SDK layout; hipBLASLt appends the arch itself, so the parent is the libdir)
+        if c and os.path.isdir(c) and any(glob.glob(os.path.join(c, sub, pat))
+                                          for sub in ("", "*") for pat in ("*.co", "*.hsaco", "*.dat")):
             return c
     sys.exit("could not find the hipBLASLt Tensile library dir; pass --libdir")
 
@@ -412,17 +453,16 @@ def kernel_name_for_index(index, libdir=None, arch=None):
             "mapped to a kernel name" % (e, index))
 
     libdir = find_library_dir(libdir)
-    dats = sorted(glob.glob(os.path.join(libdir, "**", f"*_{arch}.dat"), recursive=True))
+    dats = dat_globs(libdir, arch)
     if not dats:
-        raise IndexLookupError(f"no *_{arch}.dat under {libdir}")
+        raise IndexLookupError(f"no *_{arch}.dat(.zlib) under {libdir}")
     for d in dats:
         # The lazy master carries the placeholder library and an empty solution list;
         # it is the one .dat that can never hold the answer.
         if "lazy" in os.path.basename(d):
             continue
         try:
-            with open(d, "rb") as f:
-                blob = msgpack.unpack(f, raw=False, strict_map_key=False)
+            blob = msgpack.unpackb(read_dat(d), raw=False, strict_map_key=False)
         except Exception:                             # noqa: BLE001 -- a bad .dat is not fatal
             continue
         for s in blob.get("solutions") or []:
@@ -463,24 +503,22 @@ class KernelFinder:
         if not names:
             self._indexed = True
             return
-        dats = sorted(glob.glob(os.path.join(self.libdir, "**", f"*_{self.arch}.dat"),
-                                recursive=True))
+        dats = dat_globs(self.libdir, self.arch)
         if not dats:
-            dats = sorted(glob.glob(os.path.join(self.libdir, "**", "*.dat"),
-                                    recursive=True))
+            dats = sorted(glob.glob(os.path.join(self.libdir, "**", "*.dat"), recursive=True)
+                          + glob.glob(os.path.join(self.libdir, "**", "*.dat.zlib"), recursive=True))
         needles = {n: n.encode() for n in names}
         left = set(names)
         for d in dats:
             if not left:
                 break
             try:
-                with open(d, "rb") as f:
-                    blob = f.read()
-            except OSError:
+                blob = read_dat(d)
+            except Exception:                         # noqa: BLE001 -- unreadable index: skip it
                 continue
             for n in list(left):
                 if needles[n] in blob:
-                    co = d[:-4] + ".co"
+                    co = dat_sibling_co(d)
                     if os.path.isfile(co):
                         self._lib_of[n] = co
                         left.discard(n)
@@ -941,7 +979,9 @@ def build_overlay(libdir, analyses, arch, work):
             shutil.copy2(patched_elf, out)
         patched[os.path.relpath(libfile, libdir)] = out
 
-    overlay = tempfile.mkdtemp(prefix="hipblaslt_nan_lib_")
+    # inside `work` when given: the caller swaps patched files in with os.replace, which cannot
+    # cross filesystems (2026-11-21: work on NFS, overlay in /tmp -> EXDEV)
+    overlay = tempfile.mkdtemp(prefix="hipblaslt_nan_lib_", dir=work if work and os.path.isdir(work) else None)
     # Symlink the top level, but never a directory that contains a patched object --
     # copying into a symlinked directory writes straight through into the real library.
     shadow = {rel.split(os.sep)[0] for rel in patched}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""mad-debug-nan step 8: the value and cost check of a library-overlay fix -- the capsule's
+"""mad-debug-numeric step 8: the value and cost check of a library-overlay fix -- the capsule's
 GEMM run with the stock library and with the overlay, each in a fresh process under
 the capture's restored environment, compared against an fp64 CPU reference.
 
@@ -20,7 +20,8 @@ checks values and cost; the NaN rate under load is the sweep harness's job
 from its statistics (seed 0, as replay_nan_op.py --synthesize), the same operands in
 both children and the fp64 reference.
     -> VALUES=OK|FAIL and a JSON report (finite, max_rel_err_vs_fp64 per mode,
-       patched_bitwise_equal_stock, ms_per_launch, slowdown, libpath)
+       patched_bitwise_equal_stock, ms_per_launch, time_ratio_patched_over_stock_1run (one run
+       per arm: not a cost measurement), libpath)
 """
 if not __package__:  # run by path: make the package importable so relative imports work
     import os as _os
@@ -98,7 +99,8 @@ def main():
     for mode in ("stock", "patched"):
         env = dict(base)
         if mode == "patched":
-            env["HIPBLASLT_TENSILE_LIBPATH"] = env["TENSILE_LIBPATH"] = args.overlay
+            from . import kernel_patch as kp      # per-arch layout: the arch dir, not the root
+            env["HIPBLASLT_TENSILE_LIBPATH"] = env["TENSILE_LIBPATH"] = kp.tensile_libpath(args.overlay)
         out_pt = os.path.join(work, "out_%s.pt" % mode)
         p = subprocess.run([sys.executable, os.path.abspath(__file__), args.capsule,
                             "--iters", str(args.iters), "--child-out", out_pt]
@@ -124,7 +126,10 @@ def main():
                                             if res[mode]["finite"] else None)
     report.update(res)
     report["patched_bitwise_equal_stock"] = torch.equal(outs["stock"], outs["patched"])
-    report["slowdown"] = res["patched"]["ms_per_launch"] / res["stock"]["ms_per_launch"]
+    # one timed run per arm, run back to back: a ratio, not a cost -- 0.67 ("faster") read as a
+    # measurement on 2026-11-20; quote a cost from a repeated A/B, not from this
+    report["time_ratio_patched_over_stock_1run"] = (res["patched"]["ms_per_launch"]
+                                                    / res["stock"]["ms_per_launch"])
     print(json.dumps(report, indent=1))
     if args.json:
         with open(args.json, "w") as f:

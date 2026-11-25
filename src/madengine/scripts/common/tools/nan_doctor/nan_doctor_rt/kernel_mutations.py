@@ -90,13 +90,20 @@ class MutationSpec:
     stop: object = None             # next symbol vaddr -- start..stop includes the
                                     # inter-kernel padding, which is the only space a
                                     # mutation that INSERTS instructions can grow into
+    can_grow: bool = False          # the object holds this one kernel (aiter .co, HSA
+                                    # dump), so a growth mutation past the padding is
+                                    # delivered by rebuilding it; False for a Tensile
+                                    # library, where the bytes after `stop` are another
+                                    # kernel's
 
     @classmethod
     def from_target(cls, target, solution_index=None):
-        """Derive the spec from a built kernel_patch.PatchTarget."""
+        """Derive the spec from a built kernel_patch target (PatchTarget, AiterTarget,
+        HsaTarget)."""
         return cls(kernel=target.kernel, arch=target.arch, libdir=target.libdir,
                    insns=target.insns, solution_index=solution_index,
-                   start=target.start, stop=target.stop)
+                   start=target.start, stop=target.stop,
+                   can_grow=isinstance(target, kernel_patch.ElfKernelTarget))
 
     def tail_padding(self):
         """Bytes between the last instruction and the next symbol, or None if unknown.
@@ -336,7 +343,8 @@ def mutate_lgkmcnt0_sbarrier(spec):
         after the first one moves, so every SOPP branch and every s_getpc_b64
         displacement is re-encoded -- see kernel_patch.relocate_region(), which also
         re-decodes what it wrote.  The growth comes out of the padding before the next
-        kernel symbol, checked here so a kernel with no room fails at enumeration.
+        kernel symbol; past it, a single-kernel object (aiter .co, HSA dump) is rebuilt
+        larger, and a Tensile kernel with no room fails here, at enumeration.
 
       * It is not the safe direction.  Extra lgkm waiting cannot deadlock; a barrier
         can.  If any of these sites sits in control flow some waves of the workgroup
@@ -361,11 +369,17 @@ def mutate_lgkmcnt0_sbarrier(spec):
 
     need = 4 * len(sites)
     pad = spec.tail_padding()
-    if pad is not None and need > pad:
+    grows = pad is not None and need > pad
+    if grows and not spec.can_grow:
         # Not truncated to what fits: a barrier behind SOME of the waits is a different
         # experiment, and one whose CLEAN row would be read as this one's. Measured on
         # the gfx950 libraries here, 45 of 72 kernels have the room and 11 do not -- the
         # ones that do not are the big tiles, with up to 240 relaxed waits.
+        #
+        # Only a Tensile library stops here.  A single-kernel object (aiter .co, HSA
+        # dump) is rebuilt at the larger size, the path the sbarrier_* mutators already
+        # took -- 2026-11-23 this refused a 0-byte-padding aiter MLA .co ("0 byte(s) of
+        # padding ... would move another kernel") whose sbarrier_* rows rebuilt fine.
         raise kernel_patch.PatchError(
             "%d site(s) need %d more byte(s) but only %d byte(s) of padding follow the "
             "last instruction before the next symbol at 0x%X -- growing past it would "
@@ -378,7 +392,8 @@ def mutate_lgkmcnt0_sbarrier(spec):
                      "drain all %d relaxed lgkmcnt wait(s) to 0 and follow each with "
                      "s_barrier (%s%s); kernel grows %dB%s"
                      % (len(sites), shown, " ..." if len(sites) > 8 else "", need,
-                        "" if pad is None else " into %dB of padding" % pad),
+                        " -- REBUILDS the code object (single-kernel object)" if grows
+                        else "" if pad is None else " into %dB of padding" % pad),
                      "lgkm_wait", "lgkmcnt0+sbarrier", {})]
 
 
@@ -477,6 +492,185 @@ def mutate_lgkmcnt0_each(spec):
                      "the others untouched" % (s.addr, s.text, k + 1, len(sites)),
                      "addrs", "lgkmcnt0", {"addrs": [s.addr]})
             for k, s in enumerate(sites) if not keep or s.addr in keep]
+
+
+@register_mutator("lgkmcnt0_subset")
+def mutate_lgkmcnt0_subset(spec):
+    """lgkmcnt0 on a SET of sites, and on the rest: two trials.
+
+    Sites from NAN_MUTATE_SUBSET_ADDRS="0x.. 0x.." -- a hazard scan's candidates, or the
+    `lgkmcnt0_each` sites whose first NaN came latest.  The question `lgkmcnt0_each`
+    cannot answer when every single site still NaNs but all-at-once is CLEAN: do these
+    sites together carry the bug?  `lgkmcnt0_subset@set` CLEAN with `@rest` NAN is
+    the minimal set step 8 ships (2026-11-20: 3 of 14 waits, 0/1.2M vs the other 11
+    157/800k -- that run had to borrow fix_overlay.py --addr; its sibling shipped all
+    14).  Same payload as lgkmcnt0: each row synchronises at least as much as stock.
+    """
+    if not kernel_patch.is_gfx9(spec.arch):
+        raise kernel_patch.PatchError(
+            "the s_waitcnt immediate layout is only encoded for GFX9 here, not %s"
+            % spec.arch)
+    sites = kernel_patch.select_lgkm_wait(spec.insns, spec.arch, {})
+    want = set(int(a, 16) for a in os.environ.get("NAN_MUTATE_SUBSET_ADDRS", "").split())
+    if not want:
+        raise kernel_patch.PatchError(
+            "lgkmcnt0_subset needs NAN_MUTATE_SUBSET_ADDRS=\"0x<addr> ...\" (sites of %d relaxed "
+            "lgkmcnt waits: --list-mutations lgkmcnt0_each)" % len(sites))
+    unknown = want - set(s.addr for s in sites)
+    if unknown:
+        raise kernel_patch.PatchError(
+            "NAN_MUTATE_SUBSET_ADDRS %s: not relaxed lgkmcnt waits of this kernel"
+            % " ".join("0x%X" % a for a in sorted(unknown)))
+    sub = [s.addr for s in sites if s.addr in want]
+    rest = [s.addr for s in sites if s.addr not in want]
+    out = [Mutation("lgkmcnt0_subset@set",
+                    "force the %d relaxed wait(s) %s to lgkmcnt(0), the other %d untouched"
+                    % (len(sub), " ".join("0x%X" % a for a in sub), len(rest)),
+                    "addrs", "lgkmcnt0", {"addrs": sub})]
+    if rest:
+        out.append(Mutation("lgkmcnt0_subset@rest",
+                            "force the other %d relaxed wait(s) to lgkmcnt(0), the subset %s untouched"
+                            % (len(rest), " ".join("0x%X" % a for a in sub)),
+                            "addrs", "lgkmcnt0", {"addrs": rest}))
+    return out
+
+
+# --------------------------------------------------------------------------------------
+# the vector-memory counter: global-to-LDS loads
+#
+# A `buffer_load_dword ... lds` writes LDS but retires through the VM queue, so the
+# lgkmcnt mutators above never wait for it.  A kernel that refills a double-buffered LDS
+# slot this way and reads it after a relaxed `vmcnt(N)` + `s_barrier` can read the
+# slot's previous tile.  Same four shapes as lgkmcnt0.
+# --------------------------------------------------------------------------------------
+
+def _vm_sites(spec, needs="the s_waitcnt immediate layout is"):
+    if not kernel_patch.is_gfx9(spec.arch):
+        raise kernel_patch.PatchError(
+            "%s only encoded for GFX9 here, not %s -- GFX12 split s_waitcnt into "
+            "s_wait_loadcnt/s_wait_storecnt" % (needs, spec.arch))
+    sites = kernel_patch.select_vm_wait(spec.insns, spec.arch, {})
+    if not sites:
+        raise kernel_patch.PatchError(
+            "no s_waitcnt waits on a non-zero vmcnt (0 of %d instructions) -- every VM "
+            "wait in this kernel already drains" % len(spec.insns))
+    return sites
+
+
+def _vm_census(spec, sites):
+    """How many sites a barrier already follows, and how many global-to-LDS loads the
+    kernel issues: what a vmcnt0 row means depends on both (barrier_follows)."""
+    barred = sum(kernel_patch.barrier_follows(spec.insns, s.index) for s in sites)
+    lds_loads = sum(1 for i in spec.insns
+                    if "_load_lds" in (i.mnemonic or "")            # global_load_lds_dword
+                    or ("_load_" in (i.mnemonic or "") and i.text.rstrip().endswith(" lds")))
+    return ("; %d of %d followed by s_barrier; kernel issues %d global-to-LDS load(s)"
+            % (barred, len(sites), lds_loads))
+
+
+@register_mutator("vmcnt0")
+def mutate_vmcnt0(spec):
+    """Force every relaxed VM wait to vmcnt(0), all at once.
+
+    lgkmcnt0's twin for vector memory, read the same way: the mutated kernel waits at
+    least as long as the original everywhere, so NAN rules the relaxed vmcnt waits out
+    and CLEAN says the fault depends on them.  Where a barrier follows each site (the
+    census in the description), CLEAN is already the shape of the fix: drain the tile's
+    global-to-LDS loads, then rendezvous.  Same slot width -- six bits cleared.
+    """
+    sites = _vm_sites(spec)
+    shown = " ".join("0x%X" % s.addr for s in sites[:8])
+    return [Mutation("vmcnt0",
+                     "force all %d relaxed vmcnt wait(s) to vmcnt(0) at once (%s%s)%s"
+                     % (len(sites), shown, " ..." if len(sites) > 8 else "",
+                        _vm_census(spec, sites)),
+                     "vm_wait", "vmcnt0", {})]
+
+
+@register_mutator("vmcnt0+sbarrier")
+def mutate_vmcnt0_sbarrier(spec):
+    """Drain every relaxed VM wait AND rendezvous the workgroup there.
+
+    The stronger sibling of `vmcnt0` (same sites): `vmcnt0` NAN with this CLEAN says the
+    loads must be ordered against the OTHER waves' reads, not just retired.  Where the
+    census says a barrier already follows every site, this row adds nothing and its
+    weaker sibling's verdict carries over.  Grows 4 bytes per site -- an aiter .co or
+    the HSA shim rebuilds the object; a Tensile kernel without the padding cannot.
+    """
+    sites = _vm_sites(spec, "the s_waitcnt immediate layout and the s_barrier encoding are")
+    need = 4 * len(sites)
+    pad = spec.tail_padding()
+    grows = pad is None or need > pad
+    shown = " ".join("0x%X" % s.addr for s in sites[:8])
+    return [Mutation("vmcnt0+sbarrier",
+                     "drain all %d relaxed vmcnt wait(s) to 0 and follow each with "
+                     "s_barrier (%s%s)%s; kernel grows %dB%s"
+                     % (len(sites), shown, " ..." if len(sites) > 8 else "",
+                        _vm_census(spec, sites), need,
+                        " -- REBUILDS the code object (aiter .co or HSA shim; a Tensile "
+                        "kernel cannot grow)" if grows else " into %dB of padding" % pad),
+                     "vm_wait", "vmcnt0+sbarrier", {})]
+
+
+@register_mutator("vmcnt0_each")
+def mutate_vmcnt0_each(spec):
+    """vmcnt0 one site at a time -- lgkmcnt0_each's localisation step, after a powered
+    CLEAN `vmcnt0`.  NAN_MUTATE_EACH_ADDRS restricts it to those sites (one GPU each)."""
+    sites = _vm_sites(spec)
+    keep = set(int(a, 16) for a in os.environ.get("NAN_MUTATE_EACH_ADDRS", "").split())
+    return [Mutation("vmcnt0_each@0x%X" % s.addr,
+                     "force the relaxed wait at 0x%X (%s, site %d of %d%s) to vmcnt(0), "
+                     "the others untouched"
+                     % (s.addr, s.text, k + 1, len(sites),
+                        ", s_barrier follows" if kernel_patch.barrier_follows(spec.insns, s.index)
+                        else ""),
+                     "addrs", "vmcnt0", {"addrs": [s.addr]})
+            for k, s in enumerate(sites) if not keep or s.addr in keep]
+
+
+@register_mutator("vmcnt_minus1_each")
+def mutate_vmcnt_minus1_each(spec):
+    """vmcnt(N) -> vmcnt(N-1) at one site: the minimal fix after `vmcnt0_each` localised a
+    site (CLEAN there).  CLEAN here = waiting for that one more load suffices -- ship this,
+    not the drain; NAN = the late load is older, the drain (or N-2, ... by hand) is needed.
+    NAN_MUTATE_EACH_ADDRS restricts it to the localised site(s)."""
+    sites = _vm_sites(spec)
+    keep = set(int(a, 16) for a in os.environ.get("NAN_MUTATE_EACH_ADDRS", "").split())
+    return [Mutation("vmcnt_minus1_each@0x%X" % s.addr,
+                     "tighten the wait at 0x%X (%s) by one load: vmcnt(%d) -> vmcnt(%d)"
+                     % (s.addr, s.text, kernel_patch.vm_text_count(s),
+                        kernel_patch.vm_text_count(s) - 1),
+                     "addrs", "vmcnt_minus1", {"addrs": [s.addr]})
+            for s in sites if not keep or s.addr in keep]
+
+
+@register_mutator("vmcnt0_subset")
+def mutate_vmcnt0_subset(spec):
+    """vmcnt0 on a SET of sites (NAN_MUTATE_SUBSET_ADDRS), and on the rest: lgkmcnt0_subset's
+    question for the VM waits -- `@set` CLEAN with `@rest` NAN is the minimal set to ship."""
+    sites = _vm_sites(spec)
+    want = set(int(a, 16) for a in os.environ.get("NAN_MUTATE_SUBSET_ADDRS", "").split())
+    if not want:
+        raise kernel_patch.PatchError(
+            "vmcnt0_subset needs NAN_MUTATE_SUBSET_ADDRS=\"0x<addr> ...\" (sites of %d relaxed "
+            "vmcnt waits: --list-mutations vmcnt0_each)" % len(sites))
+    unknown = want - set(s.addr for s in sites)
+    if unknown:
+        raise kernel_patch.PatchError(
+            "NAN_MUTATE_SUBSET_ADDRS %s: not relaxed vmcnt waits of this kernel"
+            % " ".join("0x%X" % a for a in sorted(unknown)))
+    sub = [s.addr for s in sites if s.addr in want]
+    rest = [s.addr for s in sites if s.addr not in want]
+    out = [Mutation("vmcnt0_subset@set",
+                    "force the %d relaxed wait(s) %s to vmcnt(0), the other %d untouched"
+                    % (len(sub), " ".join("0x%X" % a for a in sub), len(rest)),
+                    "addrs", "vmcnt0", {"addrs": sub})]
+    if rest:
+        out.append(Mutation("vmcnt0_subset@rest",
+                            "force the other %d relaxed wait(s) to vmcnt(0), the subset %s untouched"
+                            % (len(rest), " ".join("0x%X" % a for a in sub)),
+                            "addrs", "vmcnt0", {"addrs": rest}))
+    return out
 
 
 @register_mutator("sbarrier_ds_read_write")
@@ -650,6 +844,10 @@ def add_mutate_args(ap):
     g.add_argument("--list-mutations", action="store_true",
                    help="enumerate the mutations and their site counts, then exit -- no "
                         "GPU and no child processes; with --patch-kernel, no torch either")
+    g.add_argument("--grouped-wrong-rows", default=None, metavar="ROWS[,ROWS]",
+                   help="aten._grouped_mm: the row count(s) of the wrong group(s) (the replay's "
+                        "GROUPED_WRONG_ROWS= line). Kernel discovery then names THAT group's "
+                        "solution -- each group is its own GEMM, often its own solution")
     g.add_argument("--mutate-timeout", type=float, default=None, metavar="SECS",
                    help="per-trial wall clock before the child is killed. Default: "
                         "derived from the baseline replay as 2x (setup + per-launch x "

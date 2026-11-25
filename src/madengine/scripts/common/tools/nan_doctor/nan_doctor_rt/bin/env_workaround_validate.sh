@@ -1,8 +1,11 @@
 #!/bin/bash
-# mad-debug-nan step 8: validate env-setting workarounds on the step-6 reproducer -- stock first
+# mad-debug-numeric step 8: validate env-setting workarounds on the step-6 reproducer -- stock first
 # (the control: it must reproduce), then each "VAR=VALUE" arm, every arm in its own process,
 # the chain loop at the same iteration count.  No --restore-env: it would put the capture's
 # environment back, i.e. UNSET the TENSILE_* / HIPBLASLT_* variable under test.
+#
+# Op-only capsules (the capture job's default package) replay the op itself (--chain-fallback);
+# an arm whose replay printed no result says so with the replay's last lines -- never an empty arm.
 #
 #   bash env_workaround_validate.sh <capsule.pt> "TENSILE_FIXED_WGMXCC=1 TENSILE_STREAMK_DYNAMIC_GRID=0" [iters] [-- extra replay args]
 #
@@ -18,8 +21,13 @@ for arm in STOCK=1 $ARMS; do
   echo "== ARM $arm"
   env "$arm" python3 -c 'import os; print("ARM_ENV", {k: v for k, v in os.environ.items()
       if k.startswith(("TENSILE_", "HIPBLASLT_", "TORCH_BLAS", "TORCH_ROCM", "HSA_"))})'
-  env "$arm" python3 -m replay_nan_op "$CAP" --chain --chain-iters "$ITERS" --seconds 600 "$@" 2>&1 |
-    grep -E 'WRONG VALUE|non-finite on|terminal fp64|first op to go|^\[verdict\]' | head -8
+  # --chain-fallback: the capture job ships an op-only capsule by default, and --chain alone died on
+  # it ("no chain") with the grep below hiding the error -- a validate.sh that printed no counts (2026-11-23)
+  out=$(env "$arm" python3 -m replay_nan_op "$CAP" --chain --chain-fallback --chain-iters "$ITERS" \
+          --iters "$ITERS" --seconds 600 "$@" 2>&1); rc=$?
+  sel=$(grep -E 'WRONG VALUE|non-finite on|terminal fp64|first op to go|^\[verdict\]' <<<"$out" | head -8)
+  if [ -n "$sel" ]; then echo "$sel"
+  else echo "!! ARM $arm: the replay printed no result line (rc=$rc) -- its last lines:"; tail -8 <<<"$out"; fi
   [ -n "${PERF_CMD:-}" ] && env "$arm" bash -c "$PERF_CMD" 2>&1 | tail -3
 done
 echo ENV_VALIDATE_DONE

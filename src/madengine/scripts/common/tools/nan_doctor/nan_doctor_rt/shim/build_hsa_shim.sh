@@ -15,7 +15,7 @@ set -euo pipefail
 
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SRC="$HERE/hsa_patch_shim.c"
-OUT=${1:-${NAN_DOCTOR_HSA_SHIM_OUT:-/tmp/nan_doctor_hsa_shim.so}}
+OUT=${1:-${NAN_DOCTOR_HSA_SHIM_OUT:-/tmp/numeric_doctor_hsa_shim.so}}
 
 [ -r "$SRC" ] || { echo "missing $SRC" >&2; exit 1; }
 

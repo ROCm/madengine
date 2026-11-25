@@ -146,8 +146,8 @@ goes on.  "Existed before the step" is judged by storage: every storage a non-vi
 op allocated during the step is "born" this step, and a view of a parameter
 shares the parameter's storage, so it does not count as new.
 
-Each candidate also gets a nan_origin, from re-running a pointwise op in fp64 on
-the same operands: `math` (fp64 is non-finite there too: 0/0, sqrt(-1), log(0)
+Each candidate also gets a nan_origin, from re-running a pointwise op -- or a fused
+norm / activation with a math reference (math_refs.py) -- in fp64 on the same operands: `math` (fp64 is non-finite there too: 0/0, sqrt(-1), log(0)
 -- every correct kernel agrees), `overflow` (fp64 finite but beyond the dtype's
 range), `unexplained` (fp64 finite and in range: a NaN no correct kernel makes),
 `propagated` (an input was already non-finite) or `no_reference` (not pointwise,
@@ -157,7 +157,13 @@ other origin is written to <capsule>.masked-<n> -- no `.pt` suffix, so nothing
 treats it as a capsule -- because "masked" is not "benign": a model's own
 nan_to_num masks a real kernel NaN just as well.
 
-What it cannot do: tell WHICH pending candidate a surviving NaN came from.  When
+Which candidate survives: every non-finite output downstream of a pending candidate
+inherits that candidate's site as its root (a taint by storage, through every operand --
+aiter declares all of its arguments mutable), and a surviving NaN writes its root, whatever
+its origin but `uninitialized` -- a `math` root (0 * rsqrt(0)) is a model's NaN, not a mask.
+No taint: the earliest candidate not of a soft origin.
+
+What it cannot do otherwise: tell WHICH pending candidate a surviving NaN came from.  When
 several are pending, the earliest non-`math` one is written; the capsule's
 `settle` record names the op where survival was seen, so a misattribution is
 visible.  And ops outside the dispatcher (compiled regions) are invisible to the
@@ -177,6 +183,7 @@ import multiprocessing.util
 import collections
 import contextlib
 import hashlib
+import io
 import math
 import os
 import pickle
@@ -204,6 +211,14 @@ except ImportError:                    # pre-2.1 torch: chain capture refuses to
 
 _TENSOR_TAG = "__op_nan_tensor__"
 _CHAIN_REF = "__op_nan_ref__"       # {_CHAIN_REF: key} stands in for a chain tensor
+# {_MEMFMT_TAG: "contiguous_format"} stands in for a torch.memory_format: pickle.dumps
+# takes one, torch.save refuses it ("cannot pickle 'module' object") and the capsule
+# was lost -- a clone(memory_format=...) in a qwen-tf32 chain.
+_MEMFMT_TAG = "__op_nan_memory_format__"
+
+
+def _encode_memfmt(obj):
+    return {_MEMFMT_TAG: str(obj).rsplit(".", 1)[-1]}
 # Capsules written before the tool was renamed from gemm_nan_capture carry these
 # keys; upgrade_capsule() maps them onto the current ones at load.
 _LEGACY_KEYS = {"__gemm_nan_tensor__": _TENSOR_TAG, "__gemm_nan_ref__": _CHAIN_REF,
@@ -315,6 +330,21 @@ def _is_collective(func):
     return c
 
 
+# Synchronous collectives: a framework's own all-reduce / all-gather custom ops (vLLM's
+# torch.ops.vllm.all_reduce(tensor, group_name) -> QuickReduce / custom all-reduce / RCCL).
+# Unlike async c10d they return their result in stream order, so the capture CAN check the
+# output like any op's: a non-finite output from finite inputs is captured at the collective
+# itself, on every member rank, each capsule holding that rank's input -- together they are
+# the R3 record (collective_r3.py check / replay).  They are still counted per group (seq)
+# for arrivals, and end the chain walk (the other ranks' inputs are not this rank's ops).
+_SYNC_COLLECTIVE_OPS = frozenset(("vllm.all_reduce", "vllm.all_gather", "vllm.reduce_scatter",
+                                  "vllm.all_reduce_symmetric_with_copy"))
+
+
+def _sync_collective(func):
+    return _op_names(func)[1] in _SYNC_COLLECTIVE_OPS
+
+
 def _matches(names, wanted):
     """True if any of (overload, packet, namespace) is in the filter set."""
     return any(n in wanted for n in names)
@@ -378,19 +408,39 @@ def _cpu_copy(obj):
 
 
 def _parse_record_collectives(spec):
-    """'group:seq[:step],...' -> [(group, seq, step or None)]."""
+    """'group:seq[:step],...' -> [(group, seq, step or None)].  A group name holding ':'
+    (vLLM's tp:0) is written group@seq[@step]."""
     out = []
     for item in (spec or "").split(","):
-        parts = item.strip().split(":")
+        item = item.strip()
+        parts = item.split("@") if "@" in item else item.split(":")
         if len(parts) >= 2 and parts[0]:
             out.append((parts[0], int(parts[1]), int(parts[2]) if len(parts) > 2 and parts[2] else None))
     return out
+
+
+def _file_group(name):
+    """A group name as it appears in a file name (vLLM's tp:0 -> tp_0)."""
+    return str(name).replace(":", "_").replace("/", "_")
+
+
+def _vllm_group(name):
+    """vLLM's GroupCoordinator registry (tp:0, pp:0, ...): its device group, or None."""
+    try:
+        from vllm.distributed import parallel_state
+        ref = parallel_state._groups.get(name)
+        coord = ref() if ref is not None else None
+        return getattr(coord, "device_group", None)
+    except Exception:                                   # noqa: BLE001 - no vLLM
+        return None
 
 
 def _collective_group(func, args, kwargs):
     """(group name, process group or None) for a collective call; (None, None) for
     one without a group argument (wait_tensor)."""
     for a in list(args) + list(kwargs.values()):
+        if isinstance(a, str) and _sync_collective(func):
+            return a, _vllm_group(a)
         if isinstance(a, str) and _op_names(func)[2] != "c10d":
             try:
                 from torch.distributed.distributed_c10d import _resolve_process_group
@@ -559,6 +609,370 @@ def op_writes(func):
 
 
 # --------------------------------------------------------------------------- #
+# Triton launches
+#
+# A @triton.jit kernel launched from Python -- kernel[grid](...) -- never reaches
+# the dispatcher.  aiter's MLA decode runs its split-K reduce that way: the reduce
+# wrote the NaN, and the capture blamed the ASM op before it for allocator garbage
+# in an out-buffer that op never writes (2026-11-21, blind run 5; the replay of
+# that capsule was clean).  So while a capture is active JITFunction.run is
+# wrapped, and each launch goes through __torch_dispatch__ as a pseudo-op,
+# TritonOp, named triton.<kernel>.<variant>: the snapshot, scan, settle, taint
+# and capsule paths are the ones every op gets.
+#
+# Triton declares nothing about what a kernel stores to, so every tensor argument
+# is taken as written -- except one over NAN_CAPTURE_TRITON_WRITE_MAX_BYTES
+# (512 MiB), taken as read-only: weights and KV pools, whose copy and scan per
+# launch is the cost to avoid.  The variant names the written arguments (w0_2_5),
+# so each (kernel, written set) is its own op for the per-op caches.  A capsule
+# carries triton_kernels, the descriptor replay rebuilds the op from
+# (register_triton_kernels, called by upgrade_capsule; triton_op_for).
+#
+# Not covered: Inductor's generated kernels (CompiledKernel launchers, not
+# JITFunction.run -- step5n-compiled.md), launches during CUDA-graph capture or
+# dynamo tracing, and warmup (compile-only) calls.
+# --------------------------------------------------------------------------- #
+
+_TRITON_WRITE_MAX_BYTES = int(float(os.environ.get("NAN_CAPTURE_TRITON_WRITE_MAX_BYTES",
+                                                   str(512 << 20))))
+_TRITON_RUN = None          # JITFunction.run as Triton defined it, once wrapped
+_TRITON_OPS = {}            # (JITFunction, written idx) -> TritonOp
+_TRITON_DESCS = {}          # op name -> descriptor, for capsules and replay
+_TRITON_WARNED = set()
+
+
+class _TritonAlias(object):
+    is_write = True
+
+
+class _TritonArg(object):
+    """One schema argument, as _compute_op_writes reads it."""
+    __slots__ = ("name", "alias_info", "kwarg_only")
+
+    def __init__(self, name, written, outbuf=False):
+        self.name = name
+        self.alias_info = _TritonAlias() if written else None
+        # op_writes reads kwarg_only as "an out-buffer: written, not read" -- what an
+        # Inductor out_ptr is
+        self.kwarg_only = bool(outbuf)
+
+    @staticmethod
+    def has_default_value():
+        return False            # every parameter is passed: _triton_bind fills defaults
+
+
+class _TritonSchema(object):
+    def __init__(self, names, written, outbuf=()):
+        self.arguments = [_TritonArg(n, i in written, i in outbuf) for i, n in enumerate(names)]
+        self.returns = []           # nothing returned: not a view (is_view)
+
+
+def _jit_of(obj):
+    """The JITFunction under an Autotuner / Heuristics wrapper (each has .fn)."""
+    seen = 0
+    while obj is not None and not hasattr(obj, "arg_names") and seen < 8:
+        obj = getattr(obj, "fn", None)
+        seen += 1
+    return obj
+
+
+class TritonOp(object):
+    """A Triton kernel launch as an op: called as op(*params, grid=..., **launch
+    options), positional in the kernel's parameter order."""
+    tags = ()
+
+    def __init__(self, jit, written, desc=None):
+        self.jit = jit
+        self.written = frozenset(written)
+        fn = getattr(jit, "fn", None)
+        names = list(jit.arg_names)
+        self.kernel = getattr(fn, "__name__", None) or getattr(jit, "__name__", "kernel")
+        self.module = getattr(fn, "__module__", None) or getattr(jit, "__module__", None)
+        variant = ("w" + "_".join(str(i) for i in sorted(self.written))) if self.written else "w"
+        self.name = "triton.%s.%s" % (self.kernel, variant)
+        self._schema = _TritonSchema(names, self.written)
+        if desc is None:
+            src = getattr(jit, "src", None) or ""
+            desc = {"module": self.module, "kernel": self.kernel, "arg_names": names,
+                    "written": sorted(self.written), "src": src,
+                    "src_sha": hashlib.sha256(src.encode()).hexdigest()[:16],
+                    "file": getattr(getattr(fn, "__code__", None), "co_filename", None),
+                    "do_not_specialize": [int(i) if not isinstance(i, str) else i
+                                          for i in (getattr(jit, "do_not_specialize", None) or ())]}
+        self.desc = desc
+
+    def __call__(self, *args, **kwargs):
+        kw = dict(kwargs)
+        grid = kw.pop("grid")
+        run = _TRITON_RUN or type(self.jit).run
+        return run(self.jit, *args, grid=tuple(grid), warmup=False, **kw)
+
+    def __str__(self):
+        return self.name
+
+    __repr__ = __str__
+
+
+def _triton_op(jit, written):
+    op = _TRITON_OPS.get((jit, written))
+    if op is None:
+        op = _TRITON_OPS[(jit, written)] = TritonOp(jit, written)
+        _TRITON_DESCS[op.name] = op.desc
+    return op
+
+
+def _triton_bind(jit, args, grid, kwargs):
+    """(op, params as a positional tuple, launch kwargs with the grid resolved)."""
+    params = jit.params
+    kw = dict(kwargs)
+    if len(args) > len(params):
+        raise TypeError("%d arguments for %d parameters" % (len(args), len(params)))
+    bound = list(args)
+    for p in params[len(args):]:
+        if p.name in kw:
+            bound.append(kw.pop(p.name))
+        elif p.has_default:
+            bound.append(p.default)
+        else:
+            raise TypeError("missing parameter %s" % p.name)
+    if callable(grid):
+        grid = grid(dict(zip(jit.arg_names, bound)))
+    kw["grid"] = tuple(int(g) for g in grid)
+    written = frozenset(i for i, v in enumerate(bound) if isinstance(v, torch.Tensor)
+                        and v.numel() * v.element_size() <= _TRITON_WRITE_MAX_BYTES)
+    return _triton_op(jit, written), tuple(bound), kw
+
+
+_SUSPENDED_CAPS = []        # captures popped by a suspend_capture_in wrapper, innermost last
+_QUIET = [0]                # depth of quiet suspensions: nothing at all is watched inside
+
+
+def _active_capture(flag="triton"):
+    """The OpNanCapture that watches kernel launches of this kind (`flag`: its
+    attribute, triton / inductor), or None: the one on the dispatch-mode stack, else the
+    one a suspend_capture_in wrapper popped -- a compiled region the capture cannot
+    trace through still launches its kernels from Python."""
+    try:
+        if torch.compiler.is_compiling():
+            return None
+    except AttributeError:
+        pass
+    try:
+        from torch.utils._python_dispatch import _get_current_dispatch_mode_stack
+        stack = _get_current_dispatch_mode_stack()
+    except Exception:                                   # noqa: BLE001
+        return None
+    m = next((x for x in reversed(stack) if isinstance(x, OpNanCapture)), None)
+    if _QUIET[0]:
+        return None
+    if m is None and _SUSPENDED_CAPS:
+        m = _SUSPENDED_CAPS[-1]
+    if m is None or m.captured or not getattr(m, flag, False):
+        return None
+    if torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
+        return None
+    return m
+
+
+# torch.cuda.is_current_stream_capturing() per dispatched op: off (=0) only to measure its cost
+_GRAPH_CAPTURE_CHECK = os.environ.get("NAN_CAPTURE_SKIP_GRAPH_CAPTURE", "1") != "0" and torch.cuda.is_available()
+
+
+def _triton_run(self, *args, grid, warmup, **kwargs):
+    cap = None if warmup else _active_capture()
+    if cap is None:
+        return _TRITON_RUN(self, *args, grid=grid, warmup=warmup, **kwargs)
+    try:
+        op, a, kw = _triton_bind(self, args, grid, kwargs)
+    except Exception as e:                              # noqa: BLE001
+        k = getattr(getattr(self, "fn", None), "__name__", "?")
+        if k not in _TRITON_WARNED:
+            _TRITON_WARNED.add(k)
+            print("[op-nan] Triton kernel %s launched unwatched (%s: %s)"
+                  % (k, type(e).__name__, str(e)[:160]), flush=True)
+        return _TRITON_RUN(self, *args, grid=grid, warmup=warmup, **kwargs)
+    # The mode is on the stack here (a plain Python call, not a dispatch): pop it,
+    # as the dispatcher does around __torch_dispatch__, or the capture's own clones
+    # and checks would be dispatched to it.
+    with _disable_current_modes():
+        return cap.__torch_dispatch__(op, (), a, kw)
+
+
+def install_triton_hook():
+    """Wrap JITFunction.run (once per process).  False if Triton is not importable."""
+    global _TRITON_RUN
+    if _TRITON_RUN is not None:
+        return True
+    try:
+        from triton.runtime.jit import JITFunction
+    except Exception:                                   # noqa: BLE001
+        return False
+    _TRITON_RUN = JITFunction.run
+    JITFunction.run = _triton_run
+    return True
+
+
+# --------------------------------------------------------------------------- #
+# Inductor launches
+#
+# torch.compile's generated kernels are launched by the compiled wrapper through
+# CachingAutotuner.run(*args, stream=...), never through the dispatcher -- the
+# capture saw only the first eager op after a compiled region, PROPAGATED, and the
+# kernel had to be found by a separate nan_asserts arm (step5n-compiled.md C1).  So
+# that call is wrapped as well: each launch is an op named
+# inductor.<kernel>.s<source hash> (kernel names such as triton_poi_fused_add_0 repeat
+# across graphs).  Inductor names what each pointer is: in_ptr* read, out_ptr* written
+# and not read (an out-buffer), in_out_ptr* both -- exact, unlike a plain Triton kernel.
+# Replay rebuilds the kernel from its recorded module source with Inductor's own
+# AsyncCompile (same torch / triton: the model's image).  Not covered: CUDA-graph replay
+# and the C++ wrapper (cpp_wrapper / AOTInductor) -- C1 stays for those.
+# --------------------------------------------------------------------------- #
+
+_INDUCTOR_RUN = None        # CachingAutotuner.run as torch defined it, once wrapped
+_INDUCTOR_OPS = {}          # CachingAutotuner -> InductorOp
+_INDUCTOR_WARNED = set()
+
+
+def _raw_stream(device_index):
+    from torch._C import _cuda_getCurrentRawStream
+    return _cuda_getCurrentRawStream(device_index)
+
+
+class InductorOp(object):
+    """An Inductor kernel launch as an op: op(*args) launches it on the current stream."""
+    tags = ()
+
+    def __init__(self, tuner, desc):
+        self.tuner = tuner
+        self.desc = desc
+        self.name = "inductor.%s.s%s" % (desc["kernel"], desc["src_sha"][:10])
+        self._schema = _TritonSchema(desc["arg_names"], frozenset(desc["written"]),
+                                     frozenset(desc["outbuf"]))
+
+    def __call__(self, *args, **kwargs):
+        dev = next((a.device.index for a in args if isinstance(a, torch.Tensor)), None)
+        run = _INDUCTOR_RUN or type(self.tuner).run
+        return run(self.tuner, *args, stream=_raw_stream(
+            torch.cuda.current_device() if dev is None else dev))
+
+    def __str__(self):
+        return self.name
+
+    __repr__ = __str__
+
+
+def _inductor_desc(tuner, nargs):
+    jit = tuner.fn
+    fn = getattr(jit, "fn", None)
+    # The generated module's file: tuner.filename (a kernel loaded from Inductor's cache
+    # has no Python function behind its JITFunction, jit.fn is None), else the function's.
+    path = getattr(tuner, "filename", None) \
+        or getattr(getattr(fn, "__code__", None), "co_filename", None)
+    src = open(path).read() if path and os.path.exists(path) else ""
+    names = list(jit.arg_names)[:nargs]
+    written = [i for i, n in enumerate(names) if n.startswith(("out_ptr", "in_out_ptr"))]
+    outbuf = [i for i, n in enumerate(names) if n.startswith("out_ptr")]
+    kname = (getattr(tuner, "inductor_meta", None) or {}).get("kernel_name") \
+        or getattr(fn, "__name__", None) or getattr(jit, "__name__", "kernel")
+    return {"kind": "inductor", "kernel": kname,
+            "arg_names": names, "written": written, "outbuf": outbuf, "src": src,
+            "src_sha": hashlib.sha256(src.encode()).hexdigest()[:16], "file": path}
+
+
+def _inductor_op(tuner, nargs):
+    op = _INDUCTOR_OPS.get(tuner)
+    if op is None or len(op.desc["arg_names"]) != nargs:
+        d = _inductor_desc(tuner, nargs)
+        if not d["src"]:
+            raise RuntimeError("no kernel source at %s" % d["file"])
+        op = _INDUCTOR_OPS[tuner] = InductorOp(tuner, d)
+        _TRITON_DESCS[op.name] = d
+    return op
+
+
+def _inductor_run(self, *args, stream, benchmark_run=False, **kwargs):
+    cap = None if (benchmark_run or kwargs) else _active_capture("inductor")
+    if cap is None:
+        return _INDUCTOR_RUN(self, *args, stream=stream, benchmark_run=benchmark_run, **kwargs)
+    try:
+        op = _inductor_op(self, len(args))
+        dev = next((a.device.index for a in args if isinstance(a, torch.Tensor)), None)
+        if dev is None or stream != _raw_stream(dev):
+            raise RuntimeError("launched on a stream other than the current one")
+    except Exception as e:                              # noqa: BLE001
+        k = getattr(getattr(self, "fn", None), "__name__", "?")
+        if k not in _INDUCTOR_WARNED:
+            _INDUCTOR_WARNED.add(k)
+            print("[op-nan] Inductor kernel %s launched unwatched (%s: %s)"
+                  % (k, type(e).__name__, str(e)[:160]), flush=True)
+        return _INDUCTOR_RUN(self, *args, stream=stream, benchmark_run=benchmark_run, **kwargs)
+    with _disable_current_modes():
+        return cap.__torch_dispatch__(op, (), args, {})
+
+
+def install_inductor_hook():
+    """Wrap CachingAutotuner.run (once per process).  False if Inductor is not importable."""
+    global _INDUCTOR_RUN
+    if _INDUCTOR_RUN is not None:
+        return True
+    try:
+        from torch._inductor.runtime.triton_heuristics import CachingAutotuner
+    except Exception:                                   # noqa: BLE001
+        return False
+    _INDUCTOR_RUN = CachingAutotuner.run
+    CachingAutotuner.run = _inductor_run
+    return True
+
+
+def _inductor_op_for(name, d):
+    from torch._inductor.async_compile import AsyncCompile
+    k = AsyncCompile().triton(d["kernel"], d["src"], device_str="cuda")
+    k = k.result() if hasattr(k, "result") else k
+    op = InductorOp(k, d)
+    _INDUCTOR_OPS[k] = op
+    return op
+
+
+def register_triton_kernels(descs):
+    """Make a capsule's Triton kernels resolvable by name (triton_op_for)."""
+    for name, d in (descs or {}).items():
+        _TRITON_DESCS.setdefault(name, d)
+
+
+def triton_op_for(name):
+    """The TritonOp a capsule names, rebuilt from its descriptor: the kernel imported
+    from its module (source checked against the capture's), else re-jitted from the
+    recorded source in that module's namespace."""
+    op = next((o for o in list(_TRITON_OPS.values()) + list(_INDUCTOR_OPS.values())
+               if o.name == name), None)
+    if op is not None:
+        return op
+    d = _TRITON_DESCS.get(name)
+    if d is None:
+        raise KeyError("no descriptor for Triton op %s (capsule without triton_kernels)" % name)
+    if d.get("kind") == "inductor":
+        return _inductor_op_for(name, d)
+    import importlib
+    import triton
+    mod = importlib.import_module(d["module"])
+    jit = _jit_of(getattr(mod, d["kernel"], None))
+    src = getattr(jit, "src", None) if jit is not None else None
+    if jit is None or src is None \
+            or hashlib.sha256(src.encode()).hexdigest()[:16] != d["src_sha"]:
+        print("[op-nan] Triton kernel %s.%s: %s; re-jitting the captured source"
+              % (d["module"], d["kernel"], "not found" if jit is None else
+                 "source differs from the capture's"), flush=True)
+        ns = dict(vars(mod))
+        ns.setdefault("triton", triton)
+        ns.setdefault("tl", triton.language)
+        exec(compile(d["src"], "<captured %s.%s>" % (d["module"], d["kernel"]), "exec"), ns)
+        jit = triton.jit(ns[d["kernel"]], do_not_specialize=d.get("do_not_specialize") or None)
+    op = TritonOp(jit, frozenset(d["written"]), desc=d)
+    _TRITON_OPS[(jit, op.written)] = op
+    return op
+
+
+# --------------------------------------------------------------------------- #
 # op introspection for the chain walk
 #
 # Same rule as op_writes above, and for the same reason: read it off the schema
@@ -634,7 +1048,7 @@ def breaks_chain(func):
     """
     if "data_dependent_output" in _tag_names(func):
         return "data_dependent"
-    if _op_names(func)[2] in ("c10d", "_c10d_functional", "c10d_functional"):
+    if _op_names(func)[2] in ("c10d", "_c10d_functional", "c10d_functional") or _sync_collective(func):
         return "collective"
     return None
 
@@ -830,6 +1244,39 @@ def _nonfinite(t):
                 and t.numel() > 0 and not _finite_all(t))
 
 
+def _unchanged_nonfinite(bad, before):
+    """True if `bad` has a non-finite element and every one of them holds the same bits
+    as in `before`, its pre-call copy (same shape/dtype/device)."""
+    if not isinstance(before, torch.Tensor) or before.shape != bad.shape \
+            or before.dtype != bad.dtype or before.device != bad.device:
+        return False
+    idt = {1: torch.int8, 2: torch.int16, 4: torch.int32, 8: torch.int64}.get(bad.element_size())
+    if idt is None or not bad.is_floating_point():
+        return False
+    with _disable_current_modes():
+        x = bad.float() if _needs_promote(bad.dtype) else bad
+        nf = ~torch.isfinite(x)
+        if not bool(nf.any()):
+            return False
+        return bool(((bad.view(idt) == before.view(idt)) | ~nf).all())
+
+
+def _same_bits(t, before):
+    """True if `t` holds exactly the bits of `before`, its pre-call copy (any dtype, NaN
+    patterns included: compared as integers).  False when it cannot tell."""
+    if not isinstance(before, torch.Tensor) or before.shape != t.shape \
+            or before.dtype != t.dtype or before.device != t.device:
+        return False
+    idt = {1: torch.int8, 2: torch.int16, 4: torch.int32, 8: torch.int64}.get(t.element_size())
+    if idt is None:
+        return False
+    try:
+        with _disable_current_modes():
+            return bool(torch.equal(t.view(idt), before.view(idt)))
+    except Exception:                                   # noqa: BLE001
+        return False
+
+
 def _nonfinite_report(items):
     """[{operand, shape, dtype, nan, inf}, ...] for the non-finite leaves of
     `items`, a sequence of (label, object) pairs.
@@ -858,6 +1305,26 @@ def _nonfinite_report(items):
 # --------------------------------------------------------------------------- #
 
 _BENIGN_ORIGINS = frozenset(("math",))
+try:                    # fp64 references of fused ops with no fp64 kernel (aiter / sgl_kernel / vLLM _C)
+    from . import math_refs as _math_refs
+except ImportError:     # a copy of this file without its sibling: pointwise ops only
+    _math_refs = None
+
+
+def _has_value_check(func):
+    """True if math_refs has a wrong-value check for this fused op (VALUE_CHECKS)."""
+    return _math_refs is not None and str(func) in getattr(_math_refs, "VALUE_CHECKS", ())
+
+
+try:                    # second implementations of fused ops as wrong-value references (twins.py)
+    from . import twins as _twins
+except ImportError:
+    _twins = None
+
+
+def _has_twin(func):
+    """True if twins.py has a second implementation registered for this op."""
+    return _twins is not None and _twins.has(str(func))
 # Never the capsule while a candidate of any other origin is pending, and never
 # written at exit on its own: allocator garbage that a NaN check happened to read.
 # Unlike `math` it is still saved once per site (<capsule>.masked-<n>).
@@ -877,23 +1344,40 @@ def _nan_origin(func, args, kwargs, bad, where, inputs_finite):
     if inputs_finite is False:
         res["class"], res["note"] = "propagated", "a read-only input was already non-finite"
         return res
-    if "pointwise" not in _tag_names(func) or needs_rng(func):
+    if _sync_collective(func):
+        res["class"] = "collective"
+        res["note"] = ("a collective's output: its reference is the reduction of EVERY member rank's "
+                       "input (collective_r3.py check on the member ranks' capsules)")
+        return res
+    # A non-finite scalar literal (where(mask, -inf, x), masked_fill(-inf), full(-inf)) is
+    # masking the program does on purpose -- Hugging Face's logits processors on every
+    # generate() step.  Such ops are re-run in fp64 even when not tagged pointwise: the
+    # literal makes fp64 non-finite at the same positions -> `math`, never the capsule.
+    literal = any(isinstance(x, float) and not math.isfinite(x)
+                  for x in tree_leaves((tuple(args), dict(kwargs))))
+    fused = _math_refs is not None and str(func) in _math_refs.REFERENCES
+    if not fused and (("pointwise" not in _tag_names(func) and not literal) or needs_rng(func)):
         res["class"], res["note"] = "no_reference", "not a pointwise op (or seeded): no fp64 re-run"
         return res
+    if fused:
+        res["note"] = "fp64 math reference (math_refs.py)"
+    if literal:
+        res["note"] = "non-finite scalar literal argument (deliberate masking)"
     try:
         def up(x):
             if isinstance(x, torch.Tensor) and x.is_floating_point():
                 return x.to(torch.float64, copy=True)   # copy: in-place ops write it
             return x
         a64, k64 = tree_map(up, tuple(args)), tree_map(up, dict(kwargs))
-        r = func(*a64, **k64)
-        if where == "return":
-            ref = next((x for x in tree_leaves(r) if isinstance(x, torch.Tensor)
+        if fused:
+            ref = _math_refs.pick(_math_refs.reference(str(func), func, a64, k64), func, where)
+        elif where == "return":
+            ref = next((x for x in tree_leaves(func(*a64, **k64)) if isinstance(x, torch.Tensor)
                         and x.shape == bad.shape), None)
-        elif where.startswith("arg"):
-            ref = a64[int(where[3:])]
-        else:
-            ref = k64.get(where.split(":", 1)[1])
+        else:                   # the op wrote `where`: run it, read the fp64 copy it wrote
+            func(*a64, **k64)
+            ref = (a64[int(where[3:])] if where.startswith("arg")
+                   else k64.get(where.split(":", 1)[1]))
         if not isinstance(ref, torch.Tensor) or ref.shape != bad.shape:
             raise ValueError("no fp64 output matching %s" % where)
         bad_m = ~torch.isfinite(_scannable(bad))
@@ -938,6 +1422,11 @@ def _origin_text(o):
 #              50x the median error the site showed so far, whichever is larger.
 #              Sampled: every verify_every-th call of each site.  _grouped_mm has a
 #              per-group fallback where no fp32 kernel exists.
+#
+# The reference check also covers fused ops with a math_refs.VALUE_CHECKS entry (an
+# fp32 recompute of what the op's consumer reads, e.g. a split-KV attention stage merged
+# over its splits): a kernel race that reads a stale LDS tile writes plausible finite
+# numbers on a non-GEMM op too.
 # --------------------------------------------------------------------------- #
 
 _BOUND_SLACK = {torch.bfloat16: 0.02, torch.float16: 0.005, torch.float32: 0.01}
@@ -979,14 +1468,90 @@ def _gemm_bound_ratio(func, args, kwargs, c):
             return None
         if not all(isinstance(t, torch.Tensor) for t in (a, b)) or c.dim() not in (2, 3):
             return None
-        rn = torch.linalg.vector_norm(a.float(), dim=-1)          # (..., M)
-        cn = torch.linalg.vector_norm(b.float(), dim=-2)          # (..., N)
+        # fp64: in fp32 a row of subnormal-sized values (|x| < ~1e-19) squares to 0, its norm
+        # reads 0 and any nonzero output looks unbounded -- 2026-11-21, a model with subnormal
+        # softmax probabilities: ratio 1.7e9 on a correct aten.mm
+        rn = torch.linalg.vector_norm(a.double(), dim=-1)         # (..., M)
+        cn = torch.linalg.vector_norm(b.double(), dim=-2)         # (..., N)
         bound = abs(float(alpha)) * rn.unsqueeze(-1) * cn.unsqueeze(-2)
-        num = c.float().abs()
+        num = c.double().abs()
         if bias is not None and float(beta) != 0:
-            num = (num - abs(float(beta)) * bias.float().abs().expand_as(num)).clamp_min(0)
+            num = (num - abs(float(beta)) * bias.double().abs().expand_as(num)).clamp_min(0)
         return float((num / bound.clamp_min(_TINY)).amax())
 
+
+
+# Invariants beyond the GEMM family (NAN_CAPTURE_BOUNDS): true for ANY correct
+# implementation, so a violation is a wrong result with no reference and no tolerance
+# beyond rounding.  They catch what the rerun check cannot -- a kernel wrong the same
+# way every time.
+#
+#   softmax    every row sums to 1 and every value lies in [0, 1]
+#   attention  softmax weights are a convex combination, so each output value lies in
+#              [min, max] of its V column over the keys (all keys: a mask only narrows
+#              the set, so the full range stays a valid bound); 0 is allowed too (a fully
+#              masked row).  Not with dropout (it rescales by 1/(1-p)).
+_SOFTMAX_OPS = frozenset(["aten._softmax", "aten.softmax"])
+_SDPA_OPS = frozenset(["aten._scaled_dot_product_flash_attention",
+                       "aten._scaled_dot_product_efficient_attention",
+                       "aten._scaled_dot_product_cudnn_attention",
+                       "aten._scaled_dot_product_flash_attention_for_cpu"])
+_BOUND_OPS = _SOFTMAX_OPS | _SDPA_OPS
+
+
+def _schema_arg(func, args, kwargs, name, default=None):
+    names = [a.name for a in func._schema.arguments]
+    if name not in names:
+        return default
+    i = names.index(name)
+    return args[i] if i < len(args) else kwargs.get(name, default)
+
+
+def _bound_ratio(func, args, kwargs, out):
+    """(ratio, slack, output tensor) of the op's invariant -- ratio <= 1 + slack for a
+    correct result -- or None for an op with no invariant here (or a variant it does not
+    cover).  The GEMM family's is _gemm_bound_ratio (Cauchy-Schwarz)."""
+    op = _op_names(func)[1]
+    outs = [t for t in (_tensors(out) if not isinstance(out, list) else out)
+            if isinstance(t, torch.Tensor)]
+    if not outs or not outs[0].is_floating_point() or outs[0].dtype not in _BOUND_SLACK:
+        return None
+    c = outs[0]
+    slack = _BOUND_SLACK[c.dtype]
+    with torch.no_grad():
+        if op in _GEMM_OPS:
+            if len(outs) != 1:
+                return None
+            r = _gemm_bound_ratio(func, args, kwargs, c)
+            return None if r is None else (r, slack, c)
+        if op in _SOFTMAX_OPS:
+            dim = _schema_arg(func, args, kwargs, "dim")
+            if dim is None:
+                return None
+            x = c.float()
+            sums = x.sum(int(dim))
+            viol = max(float((sums - 1).abs().amax()), float((-x).clamp_min(0).amax()),
+                       float((x - 1).clamp_min(0).amax()))
+            return 1.0 + viol, slack, c
+        if op in _SDPA_OPS:
+            if float(_schema_arg(func, args, kwargs, "dropout_p", 0.0) or 0.0) != 0.0:
+                return None
+            v = _schema_arg(func, args, kwargs, "value")
+            if not isinstance(v, torch.Tensor) or v.dim() != 4 or c.dim() != 4 \
+                    or v.shape[0] != c.shape[0] or v.shape[-1] != c.shape[-1]:
+                return None
+            hq, hkv = c.shape[1], v.shape[1]
+            if hq % hkv:
+                return None
+            hi = v.float().amax(2, keepdim=True).clamp_min(0)       # (B, Hkv, 1, Dv)
+            lo = v.float().amin(2, keepdim=True).clamp_max(0)
+            if hq != hkv:                                           # grouped-query attention
+                hi, lo = hi.repeat_interleave(hq // hkv, 1), lo.repeat_interleave(hq // hkv, 1)
+            o = c.float()
+            scale = max(float(v.float().abs().amax()), _TINY)
+            viol = float(torch.maximum((o - hi).clamp_min(0), (lo - o).clamp_min(0)).amax())
+            return 1.0 + viol / scale, slack, c
+    return None
 
 def _grouped_mm_ref(args, kwargs, dt):
     """(reference, valid-region slice) for aten._grouped_mm in dtype `dt`, one plain
@@ -1018,6 +1583,36 @@ def _grouped_mm_ref(args, kwargs, dt):
                 r[:, s:e] = a[g] @ b[:, s:e]
         return r, (slice(None), slice(0, ends[-1] if ends else 0))
     return None
+
+
+def _grouped_rel_errs(args, kwargs, c):
+    """[(group, rows, err)] for a rows-grouped aten._grouped_mm ((T,K) x (G,K,N)): each
+    group's max|c - ref| over its own rows, on the whole output's scale (so the wrong
+    group's err is the op's err).  [] for another layout or no usable reference.  Each
+    group is its own GEMM, often its own Tensile solution: this says which one was wrong."""
+    a, b = args[0], args[1]
+    offs = _arg(args, kwargs, 2, "offs")
+    if offs is None or a.dim() != 2 or b.dim() != 3:
+        return []
+    dt = torch.float64 if c.dtype == torch.float32 else torch.float32
+    with torch.no_grad():
+        try:
+            got = _grouped_mm_ref(args, kwargs, dt)
+            if got is None:
+                return []
+            ref, region = got
+            ref, cc = ref[region], c[region].to(dt)
+            scale = float(ref.abs().amax()) if ref.numel() else 0.0
+            if not math.isfinite(scale):
+                return []
+            ends = [int(e) for e in offs.tolist()]
+            out = []
+            for g, (s, e) in enumerate(zip([0] + ends[:-1], ends)):
+                if e > s:
+                    out.append((g, e - s, float((cc[s:e] - ref[s:e]).abs().amax()) / max(scale, _TINY)))
+            return out
+        except Exception:                               # noqa: BLE001
+            return []
 
 
 def _ref_rel_err(func, args, kwargs, c):
@@ -1053,6 +1648,121 @@ def _ref_rel_err(func, args, kwargs, c):
             return None
 
 
+# --------------------------------------------------------------------------- #
+# the rerun check (opt-in: NAN_CAPTURE_RERUN_EVERY)
+#
+# The reference checks above need a reference: an fp64 kernel, or a math_refs entry
+# written per fused op.  A race needs none.  Run the op a second time on identical
+# copies of its pre-call operands and compare: a correct deterministic kernel gives
+# the same bits, a kernel that races gives a different answer.  Library-agnostic --
+# it captures a race in an aiter asm kernel (2026-11-20) with no value check for
+# that op.  Blind spots: a kernel that is wrong the same way every time, and a race
+# that only fires under the load the original call had (the rerun runs right after
+# it, alone).  Ops torch tags nondeterministic_bitwise (atomics: index_add,
+# scatter_add, ...) differ by rounding: a difference counts only above a per-dtype
+# floor of max|output|, and smaller ones are listed at close(), never captured.
+# --------------------------------------------------------------------------- #
+
+_RERUN_FLOOR = {torch.bfloat16: 2e-2, torch.float16: 5e-3, torch.float32: 1e-4,
+                torch.float64: 1e-9}
+
+
+def clone_operands(func, args, kwargs, pre=None):
+    """(args, kwargs) to re-run `func` on: every tensor operand copied -- written ones
+    from the pre-call snapshot `pre` when the op already ran (its post-call values are
+    its own output), the rest as they are, copied anyway so an op that writes an
+    argument its schema does not declare cannot touch live state.  (None, None) when a
+    written operand has no pre-call value."""
+    w = op_writes(func)
+    a, k = list(args), dict(kwargs)
+    for i, x in enumerate(args):
+        if not _tensors(x):
+            continue
+        if pre is not None and i in w["idx"]:
+            if i not in pre["args"]:
+                return None, None
+            x = pre["args"][i]
+        c = _snap_value(x)
+        if c is None:
+            return None, None
+        a[i] = c
+    for nm, x in kwargs.items():
+        if not _tensors(x):
+            continue
+        if pre is not None and nm in w["names"]:
+            if nm not in pre["kwargs"]:
+                return None, None
+            x = pre["kwargs"][nm]
+        c = _snap_value(x)
+        if c is None:
+            return None, None
+        k[nm] = c
+    return tuple(a), k
+
+
+def _rerun_pairs(func, args, kwargs, out, args2, kwargs2, out2):
+    """[(where, first run's tensor, rerun's tensor)]: returns, then written operands."""
+    pairs = [("return", x, y) for x, y in zip(_tensors(out), _tensors(out2))]
+    w = op_writes(func)
+    for i in sorted(w["idx"]):
+        if i < len(args):
+            pairs += [("arg%d" % i, x, y) for x, y in zip(_tensors(args[i]), _tensors(args2[i]))]
+    for nm in sorted(w["names"]):
+        pairs += [("kwarg:%s" % nm, x, y)
+                  for x, y in zip(_tensors(kwargs.get(nm)), _tensors(kwargs2.get(nm)))]
+    return pairs
+
+
+def rerun_diff(func, args, kwargs, out, args2, kwargs2, out2):
+    """How far a rerun's outputs are from the first run's, on identical operands.
+
+    None when every output is bit-identical.  Else the worst float output as
+    {"where", "x", "rel", "floor", "nonfinite"}: rel = max|x - y| / max|x| over positions
+    finite in both (inf when the runs disagree on WHICH positions are finite), floor its
+    dtype's _RERUN_FLOOR -- rel <= floor is rounding-order noise, not a hit.  An integer
+    output that differs is reported as {"where", "int": True} only when no float one does.
+    """
+    worst, ints = None, None
+    with torch.no_grad():
+        for where, x, y in _rerun_pairs(func, args, kwargs, out, args2, kwargs2, out2):
+            if not (isinstance(x, torch.Tensor) and isinstance(y, torch.Tensor)) \
+                    or x.shape != y.shape or not x.numel():
+                continue
+            if not x.is_floating_point():
+                if ints is None and not torch.equal(x, y):
+                    ints = {"where": where, "x": x, "int": True}
+                continue
+            same = (x == y) | (torch.isnan(x) & torch.isnan(y))
+            if bool(same.all()):
+                continue
+            fx, fy = torch.isfinite(x), torch.isfinite(y)
+            floor = _RERUN_FLOOR.get(x.dtype, 1e-4)
+            if not torch.equal(fx, fy):
+                d = {"where": where, "x": x, "rel": float("inf"), "floor": floor, "nonfinite": True}
+            else:
+                both = fx & fy
+                xs, ys = x[both].double(), y[both].double()
+                scale = float(xs.abs().amax()) if xs.numel() else 0.0
+                rel = float((xs - ys).abs().amax()) / max(scale, _TINY) if xs.numel() else 0.0
+                d = {"where": where, "x": x, "rel": rel, "floor": floor, "nonfinite": False}
+            if worst is None or d["rel"] / d["floor"] > worst["rel"] / worst["floor"]:
+                worst = d
+    return worst or ints
+
+
+def _rng_states():
+    st = {"cpu": torch.get_rng_state()}
+    if torch.cuda.is_available():
+        st["cuda"] = torch.cuda.get_rng_state()
+    return st
+
+
+def _set_rng_states(st):
+    torch.set_rng_state(st["cpu"])
+    if "cuda" in st:
+        torch.cuda.set_rng_state(st["cuda"])
+
+
 _HOST_READ_OPS = frozenset(("aten._local_scalar_dense.default",))
 
 
@@ -1085,6 +1795,11 @@ def _storage_ptr(t):
 
 
 _TORCH_DIR = os.path.dirname(os.path.abspath(torch.__file__))
+try:        # Triton's launcher frames (kernel[grid] -> jit.py) are not the call site either
+    import importlib.util as _ilu
+    _TRITON_DIR = os.path.dirname(os.path.abspath(_ilu.find_spec("triton").origin))
+except Exception:                                       # noqa: BLE001
+    _TRITON_DIR = None
 _STDLIB_DIR = os.path.dirname(os.path.abspath(os.__file__))
 _THIS_FILE = os.path.abspath(__file__)
 
@@ -1132,7 +1847,8 @@ def _call_site(func, where, ctx=None):
             frames = [(fr.filename, fr.lineno) for fr in reversed(traceback.extract_stack())]
         for fn, ln in frames:
             f = os.path.abspath(fn)
-            if not (f.startswith(_TORCH_DIR) or f.startswith(_STDLIB_DIR) or f == _THIS_FILE):
+            if not (f.startswith(_TORCH_DIR) or f.startswith(_STDLIB_DIR) or f == _THIS_FILE
+                    or (_TRITON_DIR and f.startswith(_TRITON_DIR))):
                 place = "%s:%d" % (f, ln)
                 break
     return (_op_names(func)[0], place, where)
@@ -1279,6 +1995,39 @@ def _launcher_ancestors(scan=None):
     return out
 
 
+def _ppid(pid):
+    try:
+        with open("/proc/%d/stat" % pid) as f:
+            return int(f.read().rsplit(")", 1)[1].split()[1])
+    except Exception:                                  # noqa: BLE001
+        return None
+
+
+def _sibling_ranks_on_other_gpus():
+    """pids of the other local ranks of this torchrun job when each rank has its own GPU.
+    Every rank holds /dev/kfd whichever device it uses, so the scan counts all of them;
+    with LOCAL_WORLD_SIZE <= the visible devices they are on OTHER GPUs and are not
+    contention (qwen3 MoE, 8 ranks: gpu_procs=8 and a 5b ladder at c9)."""
+    try:
+        lws = int(os.environ.get("LOCAL_WORLD_SIZE", "1"))
+    except ValueError:
+        return set()
+    if lws <= 1:
+        return set()
+    try:
+        import torch
+        if torch.cuda.device_count() < lws:          # ranks share GPUs: they ARE co-tenants
+            return set()
+    except Exception:                                  # noqa: BLE001
+        return set()
+    me, parent = os.getpid(), _ppid(os.getpid())
+    out = set()
+    for pid in os.listdir("/proc"):
+        if pid.isdigit() and int(pid) != me and parent and _ppid(int(pid)) == parent:
+            out.add(int(pid))
+    return out
+
+
 def _gpu_procs():
     """How many processes have the GPU open for COMPUTE, by /proc fd scan.
 
@@ -1294,6 +2043,8 @@ def _gpu_procs():
         return None
     launchers = set(_launcher_ancestors(scan))           # a torchrun parent is not contention
     scan = [p for p in scan if p[0] not in launchers and not _is_compile_helper(p[2])] or scan
+    sib = _sibling_ranks_on_other_gpus()                 # torchrun, one rank per GPU
+    scan = [p for p in scan if p[0] not in sib] or scan
     kfd = [p for p in scan if p[1]]
     return len(kfd) if kfd else len(scan)
 
@@ -1369,6 +2120,9 @@ ENV_PREFIXES = (
     "HIPBLAS", "HIP_", "ROCBLAS_", "ROCR_", "ROCM_", "TENSILE_",
     "AMD_", "AMDGPU_", "HSA_", "MIOPEN_", "AITER_", "CK_", "TRITON_",
     "TORCH", "PYTORCH_", "NCCL_", "RCCL_", "OMP_", "GOMP_", "GPU_", "MKL_",
+    # serving frameworks: their env selects kernels and collectives (2026-11-21: a vLLM TP2 replay
+    # needs the VLLM_* env the model ran with to take the same all-reduce implementation)
+    "VLLM_", "SGLANG_",
 )
 ENV_EXACT = ("LD_PRELOAD", "LD_LIBRARY_PATH")
 
@@ -1388,7 +2142,7 @@ ENV_EXACT = ("LD_PRELOAD", "LD_LIBRARY_PATH")
 #     differ, the two environments are different images and that is the finding.
 #   * diagnostic logging.  A per-call library log is host work between launches
 #     -- it changes the timing a race depends on -- and every replay copy would
-#     append to the capture's own log file.  The mad-debug-nan skill turns the
+#     append to the capture's own log file.  The mad-debug-numeric skill turns the
 #     hipBLASLt log on for one capture trial; restored into 32 replay copies it
 #     slowed them severalfold and wrote 341k replay calls into the model's log.
 ENV_NO_RESTORE = ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES",
@@ -1465,7 +2219,13 @@ def build_info():
         with open("/opt/rocm/.info/version") as fh:
             info["rocm_version"] = fh.read().strip()
     except Exception:                                  # noqa: BLE001
-        pass
+        # no /opt/rocm: a pip-wheel ROCm (libraries inside torch/lib) -- its HIP version
+        try:
+            import torch
+            if getattr(torch.version, "hip", None):
+                info["rocm_version"] = "wheel, hip %s" % torch.version.hip
+        except Exception:                              # noqa: BLE001
+            pass
     try:
         with open("/etc/os-release") as fh:
             for line in fh:
@@ -1784,7 +2544,70 @@ def _pack(obj, max_bytes, record_data=True):
         return [_pack(o, max_bytes, record_data) for o in obj]
     if isinstance(obj, dict):
         return dict((k, _pack(v, max_bytes, record_data)) for k, v in obj.items())
+    if isinstance(obj, torch.memory_format):
+        return _encode_memfmt(obj)
     return obj                     # int / float / bool / None / str / ScalarType
+
+
+def _packed_tensors(obj):
+    """Every packed-tensor dict inside `obj` (a capsule or part of one)."""
+    if isinstance(obj, dict):
+        if obj.get(_TENSOR_TAG):
+            yield obj
+            return
+        for v in obj.values():
+            yield from _packed_tensors(v)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            yield from _packed_tensors(v)
+
+
+_UNINIT_KEEP_BYTES = int(float(os.environ.get("NAN_CAPTURE_UNINIT_KEEP_BYTES", str(1 << 20))))
+
+
+def _mark_uninit(p):
+    """A packed tensor whose bytes are allocator garbage (empty_like & co., written by nobody
+    before the op): keep its layout, drop its bytes.  unpack() allocates it -- what the chain
+    replay already does by re-running the allocator (2026-11-21: the 134 MB splitData
+    out-buffer of an aiter MLA capsule).
+
+    Up to NAN_CAPTURE_UNINIT_KEEP_BYTES (1 MiB) the bytes are kept (uninit_kept): an op that
+    READS such memory makes its NaN from those very bytes -- aiter's MLA reduce read a split
+    count from a torch.empty no kernel wrote, and 0 there is 0/0 (2026-11-21, blind run 5) --
+    and a replay on fresh garbage then reproduces only by luck.  The chain replay copies
+    them into its re-allocated buffer before the terminal op (replay_nan_op)."""
+    if not (isinstance(p, dict) and p.get(_TENSOR_TAG)) or p.get("base") is None:
+        return 0
+    n = p["base"].numel() * p["base"].element_size()
+    p["base_numel"] = p["base"].numel()
+    if n <= _UNINIT_KEEP_BYTES:
+        p["uninit"], p["uninit_kept"] = True, True
+        return 0
+    p["base"], p["sha"], p["uninit"] = None, None, True
+    return n
+
+
+def _share_bases(capsule):
+    """Store each distinct buffer once: packed tensors with byte-identical `base` share one CPU
+    tensor, which torch.save writes once.  Every view in a chain packs its own copy of its
+    storage, and a pre-call snapshot repeats the pool entry it came from (2026-11-21, aiter
+    MLA: 1.99 GB of which 1.05 GB distinct -- the KV cache three times, a bmm output four).
+    Returns the bytes saved.  unpack() copies, so sharing never aliases two operands."""
+    seen, saved = {}, 0
+    for p in _packed_tensors(capsule):
+        b = p.get("base")
+        if not isinstance(b, torch.Tensor) or b.numel() * b.element_size() < (1 << 20):
+            continue
+        key = (b.dtype, b.numel(), p.get("offset"), p.get("sha"))
+        for other in seen.setdefault(key, []):
+            if other is b or torch.equal(other, b):
+                if other is not b:
+                    saved += b.numel() * b.element_size()
+                    p["base"] = other
+                break
+        else:
+            seen[key].append(b)
+    return saved
 
 
 def _picklable(obj, path, bad):
@@ -1792,21 +2615,82 @@ def _picklable(obj, path, bad):
     dict ({"unpicklable": type, "repr": ...}); each replaced leaf's path is
     appended to `bad`.  _pack and _refs pass unknown argument types through
     verbatim, and one that holds a module (or a lock, a code object, ...) makes
-    torch.save fail and the capsule be lost."""
+    torch.save fail and the capsule be lost.  A tensor pickles its subclass, its
+    Python attributes and its hooks too: one with any of those is test-saved and,
+    if it fails, kept as a plain tensor over the same values.  Dict keys are
+    checked as well (a qwen-tf32 capture lost 6/6 capsules with 0 leaves replaced
+    when only non-tensor values were checked)."""
     if isinstance(obj, torch.Tensor):
-        return obj
+        if (type(obj) is torch.Tensor and not getattr(obj, "__dict__", None)
+                and not getattr(obj, "_backward_hooks", None)):
+            return obj
+        try:
+            torch.save(obj, io.BytesIO())
+            return obj
+        except Exception as e:
+            bad.append("%s: %s (%s: %s) -> plain tensor"
+                       % (path, type(obj).__name__, type(e).__name__, e))
+            return obj.detach().as_subclass(torch.Tensor)
     if isinstance(obj, tuple):
         return tuple(_picklable(o, "%s[%d]" % (path, i), bad) for i, o in enumerate(obj))
     if isinstance(obj, list):
         return [_picklable(o, "%s[%d]" % (path, i), bad) for i, o in enumerate(obj)]
     if isinstance(obj, dict):
-        return dict((k, _picklable(v, "%s[%r]" % (path, k), bad)) for k, v in obj.items())
+        out = {}
+        for k, v in obj.items():
+            try:
+                pickle.dumps(k)
+            except Exception:
+                bad.append("%s key %r: %s" % (path, k, type(k).__name__))
+                k = repr(k)[:200]
+            out[k] = _picklable(v, "%s[%r]" % (path, k), bad)
+        return out
     try:
         pickle.dumps(obj)
         return obj
     except Exception:
         bad.append("%s: %s" % (path, type(obj).__name__))
         return {"unpicklable": type(obj).__name__, "repr": repr(obj)[:200]}
+
+
+class _NullSink(io.RawIOBase):
+    """A write-only file that keeps nothing: a trial torch.save costs no memory."""
+    def writable(self):
+        return True
+
+    def write(self, b):
+        return len(b)
+
+
+def _saves(obj):
+    try:
+        torch.save(obj, _NullSink())
+        return None
+    except Exception as e:                       # noqa: BLE001
+        return e
+
+
+def _unsaveable_replaced(obj, path, bad):
+    """`obj` with the deepest parts torch.save refuses replaced by markers, each
+    named in `bad` -- _emit's last resort when _picklable's leaf-wise check let
+    something through.  Descends only into parts that fail to save."""
+    err = _saves(obj)
+    if err is None:
+        return obj
+    if isinstance(obj, (tuple, list)):
+        items = [_unsaveable_replaced(o, "%s[%d]" % (path, i), bad) for i, o in enumerate(obj)]
+        return tuple(items) if isinstance(obj, tuple) else items
+    if isinstance(obj, dict):
+        return dict((k, _unsaveable_replaced(v, "%s[%r]" % (path, k), bad)) for k, v in obj.items())
+    if isinstance(obj, torch.Tensor):
+        plain = obj.detach().as_subclass(torch.Tensor)
+        if _saves(plain) is None:
+            bad.append("%s: %s (%s: %s) -> plain tensor" % (path, type(obj).__name__, type(err).__name__, err))
+            return plain
+    detail = ", ".join("%s=%s" % (a, type(v).__name__) for a, v in list(vars(obj).items())[:8]) \
+        if hasattr(obj, "__dict__") else ""
+    bad.append("%s: %s{%s} (%s: %s)" % (path, type(obj).__name__, detail, type(err).__name__, err))
+    return {"unpicklable": type(obj).__name__, "repr": repr(obj)[:200], "attrs": detail}
 
 
 SHAPES_ONLY_MSG = ("capsule was recorded without tensor data (shapes only, the "
@@ -1890,8 +2774,11 @@ def _synth_float(n, s, g):
 
 
 def upgrade_capsule(obj):
-    """Rename a loaded capsule's pre-rename keys (_LEGACY_KEYS) in place; returns it."""
+    """Rename a loaded capsule's pre-rename keys (_LEGACY_KEYS) in place; returns it.
+    Registers the capsule's Triton kernels too, so every loader can resolve them."""
     if isinstance(obj, dict):
+        if isinstance(obj.get("triton_kernels"), dict):
+            register_triton_kernels(obj["triton_kernels"])
         for old, new in _LEGACY_KEYS.items():
             if old in obj:
                 obj[new] = obj.pop(old)
@@ -1906,13 +2793,20 @@ def upgrade_capsule(obj):
 def unpack(obj, device):
     """Inverse of _pack.  Used by the replay scripts."""
     if isinstance(obj, dict) and obj.get(_TENSOR_TAG):
+        if obj.get("uninit") and obj.get("base") is None:   # garbage, not kept: allocate, as the model did
+            base = torch.empty(obj["base_numel"], dtype=obj["dtype"], device=device)
+            return torch.as_strided(base, obj["size"], obj["stride"], obj["offset"])
         if obj["base"] is None and synthesizing():
             base = _synth_base(obj).to(device)
             return torch.as_strided(base, obj["size"], obj["stride"], obj["offset"])
         if obj["base"] is None:
             raise RuntimeError(SHAPES_ONLY_MSG)
-        base = obj["base"].to(device)
+        # copy=True: bases may be shared between packed tensors (_share_bases), and on the CPU
+        # .to() would hand back the capsule's own buffer to every operand that shares it
+        base = obj["base"].to(device, copy=True)
         return torch.as_strided(base, obj["size"], obj["stride"], obj["offset"])
+    if isinstance(obj, dict) and _MEMFMT_TAG in obj:
+        return getattr(torch, obj[_MEMFMT_TAG])
     if isinstance(obj, tuple):
         return tuple(unpack(o, device) for o in obj)
     if isinstance(obj, list):
@@ -1942,12 +2836,32 @@ def hipblaslt_geometry(func, args):
     product is the column-major product of the transposes).  trans/ld then follow
     from which dimension of each operand is unit-stride.
 
+    linear(input[..., q], W[r, q], bias) is mm(input flattened to [p, q], W.T): the
+    leading dims fold into p (a view when their strides allow it, else the copy torch
+    makes is contiguous), W.T is a view.  A 1-D bias (linear's, or addmm's self) is
+    hipBLASLt's bias epilogue: "bias" in the result.  Operands only need .shape,
+    .stride(i) and .dim() -- real tensors at capture, _Meta for packed capsule args.
+
     Returns None for ops this mapping does not cover.
     """
+    bias = None
     if func is torch.ops.aten.mm.default:
         X, Y = args[0], args[1]
     elif func is torch.ops.aten.addmm.default:
-        X, Y = args[1], args[2]
+        X, Y, bias = args[1], args[2], args[0]
+    elif func is torch.ops.aten.linear.default:
+        inp, W = args[0], args[1]
+        bias = args[2] if len(args) > 2 else None
+        if inp.dim() < 2 or W.dim() != 2:
+            return None
+        lead = inp.shape[:-1]
+        p, q = math.prod(lead), inp.shape[-1]
+        if all(inp.shape[i] == 1 or inp.stride(i) == inp.stride(i + 1) * inp.shape[i + 1]
+               for i in range(inp.dim() - 2)):
+            X = _Meta((p, q), (inp.stride(inp.dim() - 2), inp.stride(inp.dim() - 1)))
+        else:
+            X = _Meta((p, q), (q, 1))
+        Y = _Meta((W.shape[1], W.shape[0]), (W.stride(1), W.stride(0)))
     else:
         return None
     if X.dim() != 2 or Y.dim() != 2:
@@ -1973,8 +2887,24 @@ def hipblaslt_geometry(func, args):
     else:
         return None
 
-    return {"M": M, "N": N, "K": K, "lda": lda, "ldb": ldb, "ldc": M, "ldd": M,
-            "transA": transA, "transB": transB, "batch_count": 1}
+    g = {"M": M, "N": N, "K": K, "lda": lda, "ldb": ldb, "ldc": M, "ldd": M,
+         "transA": transA, "transB": transB, "batch_count": 1}
+    if bias is not None and getattr(bias, "dim", lambda: 0)() == 1:
+        g["bias"] = True
+    return g
+
+
+class _Meta:
+    """Shape and strides only, for hipblaslt_geometry (a view, a packed capsule arg)."""
+
+    def __init__(self, size, stride):
+        self.shape, self._stride = tuple(size), tuple(stride)
+
+    def stride(self, i):
+        return self._stride[i]
+
+    def dim(self):
+        return len(self.shape)
 
 
 def geometry_key(g):
@@ -2147,6 +3077,8 @@ class _ChainTracker:
             return [self._refs(o, keys) for o in obj]
         if isinstance(obj, dict):
             return dict((k, self._refs(v, keys)) for k, v in obj.items())
+        if isinstance(obj, torch.memory_format):
+            return _encode_memfmt(obj)
         return obj
 
     # -- recording ----------------------------------------------------------
@@ -2229,9 +3161,10 @@ class _ChainTracker:
             # (key, tensor-holding-that-key's-value).  torch's _version is kept
             # alongside purely as a tamper check: if it moves between here and
             # capture, something mutated a tensor we are holding and the recorded
-            # value is no longer what this op saw.
+            # value is no longer what this op saw.  Inference tensors (made under
+            # torch.inference_mode) have no version counter: None, "cannot tell".
             "held": held,
-            "versions": [t._version for _, t in held],
+            "versions": [None if t.is_inference() else t._version for _, t in held],
             "bytes": sum(_storage_bytes(t) for _, t in held),
             # Pre-call, and only for ops that actually draw (torch tags those for
             # us).  A few bytes each, so recording per-op costs nothing and lets
@@ -2348,12 +3281,15 @@ class _ChainTracker:
         """
         if not rec["values"]:
             return None
-        return not any(self.moved(rec))
+        if any(self.moved(rec)):
+            return False
+        return None if None in rec["versions"] else True
 
     @staticmethod
     def moved(rec):
-        """Per held tensor: was it mutated between this record and now?"""
-        return [t._version != ver
+        """Per held tensor: was it mutated between this record and now?  An
+        inference tensor (version None) cannot tell, and is reported unmoved."""
+        return [ver is not None and t._version != ver
                 for (_, t), ver in zip(rec["held"], rec["versions"])]
 
 
@@ -2459,6 +3395,13 @@ class OpNanCapture(TorchDispatchMode):
                   settles as MASKED.  1 (default) covers a NaN that reaches the
                   parameters through an optimizer outside the dispatcher: the
                   next forward reads it.
+
+    triton        also watch Triton kernels launched from Python (kernel[grid](...)),
+                  each as an op named triton.<kernel>.<variant> (see "Triton
+                  launches" above).  Default True; NAN_CAPTURE_TRITON=0 turns it off.
+    inductor      also watch torch.compile's generated kernels, each as an op named
+                  inductor.<kernel>.s<hash> ("Inductor launches").  Default True;
+                  NAN_CAPTURE_INDUCTOR=0 turns it off.
     """
 
     def __init__(self, out="nan_capsule.rank{rank}.pt", max_bytes=2 << 30,
@@ -2470,8 +3413,13 @@ class OpNanCapture(TorchDispatchMode):
                  chain_value_bytes=8 << 30, chain_store_intermediates=True,
                  chain_track_only=None, settle=False, settle_steps=1, check_batch=0,
                  late_norms=False, record_data=False, verify_every=0, bounds=False,
-                 record_collectives=None):
+                 record_collectives=None, rerun_every=0, rerun_max_bytes=4 << 30, rerun_ops=None,
+                 triton=True, inductor=True, twin_every=0, twin_ops=None, twin_max_bytes=1 << 30):
         self.rank, self.world, self.local_rank, _ = rank_info()
+        # Triton launches as ops (see "Triton launches" above); the hook is installed
+        # on __enter__.
+        self.triton = bool(triton)
+        self.inductor = bool(inductor)
         self.out = _rank_path(out, self.rank)
         _check_outfile(self.out)
         self.record_data = bool(record_data)
@@ -2511,10 +3459,12 @@ class OpNanCapture(TorchDispatchMode):
         self.captured = False
         self._considers_cache = {}      # func -> considers(func); the filters never change
         self.check_batch = int(check_batch or 0)
+        self.graph_skipped = 0      # ops dispatched while a CUDA/HIP graph was being recorded
         self.late_norms = bool(late_norms)
         self._queue = []            # deferred checks, oldest first (see _enqueue)
         self._qptrs = set()         # storages the queue holds
         self._ctx = None            # the queued op being handled, during _flush
+        self._last_sync_coll = None  # _note_collective's record of the last synchronous collective
         self.flushes = 0
         self.flush_why = {}         # reason -> count, for tuning check_batch
 
@@ -2541,6 +3491,7 @@ class OpNanCapture(TorchDispatchMode):
         self._emitted = None        # summary of the capsule written, for the manifest
         self._nan_step = False      # a non-finite output was seen this step
         self._pending = []          # [{site, step, capsule, origin}], oldest first
+        self._taint = {}            # storage ptr -> site of the earliest pending candidate it descends from
         self._sites = {}            # site -> census entry (see _census)
         self._masked_files = 0
         self._finished = False
@@ -2565,7 +3516,30 @@ class OpNanCapture(TorchDispatchMode):
         # Wrong finite values (see "wrong FINITE values" above): the GEMM family only.
         self.verify_every = int(verify_every or 0)
         self.bounds = bool(bounds)
+        # ... and fused ops with a second implementation (twins.py): every twin_every-th call of each site,
+        # judged like a value check; a hand-written value check (math_refs) wins over a twin for the same op
+        self.twin_every = int(twin_every or 0)
+        self.twin_ops = (tuple(x.strip() for x in twin_ops.split(",") if x.strip())
+                         if isinstance(twin_ops, str) else twin_ops)
+        self.twin_max_bytes = int(twin_max_bytes)
+        self.twin_median_x = float(os.environ.get("NAN_CAPTURE_TWIN_MEDIAN_X", "5"))
+        self._twin_skips = {}       # op -> {reason: count}: calls no twin judged (not modelled, twin failed)
         self._vsites = {}           # (op, dtype, N) -> {calls, checked, errs, max_err}
+        self.rerun_every = int(rerun_every or 0)
+        self.rerun_max_bytes = int(rerun_max_bytes)
+        self._rsites = {}           # op -> {calls, checked, skipped, noise, ints}
+        # Its own population, NOT the NaN scan's op filter: a capture narrowed to the GEMM
+        # family for speed (NAN_CAPTURE_OP_CLASSES=gemm, the MoE example's setup) left the
+        # rerun with 2 op types (2026-11-21).  None = every op; classes / namespaces / names
+        # as for include_only_ops.
+        toks = _parse_name_list(rerun_ops, "rerun_ops") or frozenset()
+        cls = _expand_op_classes(",".join(t for t in toks if t in _OP_CLASSES), "rerun_ops")
+        self.rerun_ops = (frozenset(t for t in toks if t not in _OP_CLASSES) | (cls or frozenset())
+                          if toks else None)
+        if self.verbose and self.rerun_every:
+            print("[op-nan][rank %d] rerun check on: every %d call(s) per op, re-run on copies "
+                  "of the pre-call operands (<= %.1f GiB) and compared"
+                  % (self.rank, self.rerun_every, self.rerun_max_bytes / 2**30), flush=True)
         if self.verbose and (self.verify_every or self.bounds):
             print("[op-nan][rank %d] wrong-value checks on the GEMM family: bounds=%s "
                   "reference=%s" % (self.rank, self.bounds,
@@ -2620,6 +3594,16 @@ class OpNanCapture(TorchDispatchMode):
         kwargs = kwargs or {}
         if isinstance(func, _HOP):
             return func(*args, **kwargs)
+        if _GRAPH_CAPTURE_CHECK and torch.cuda.is_current_stream_capturing():
+            # A CUDA/HIP graph is being recorded: the op's kernels are only recorded, not run, so
+            # its outputs hold whatever the buffers held -- and a host read (a check, a flush) is
+            # illegal here.  vLLM records its piecewise graphs inside the model's steps: the
+            # capture judged an all-reduce's never-computed output (4 NaN rows of a 112-row
+            # capture size) and stopped there, at request 0, while the model's real overflow came
+            # at request 9 (2026-11-23).  Triton / Inductor launches already stand aside
+            # (_active_capture); every other op now does too.
+            self.graph_skipped += 1
+            return func(*args, **kwargs)
         sub = _subclass_kind(types)
         if sub == "nodata" or _has_nodata_arg(args, kwargs):
             return func(*args, **kwargs)
@@ -2673,11 +3657,29 @@ class OpNanCapture(TorchDispatchMode):
         # copy) for every non-mutating op, which is all of aten's matmul family.
         pre = (self._snapshot_writes(func, args, kwargs)
                if (watching or tracking) else None)
+        if pre is None and watching and _sync_collective(func):
+            # Its input is a dead buffer once the call returns: a compiled graph's Triton
+            # kernels (invisible here) reuse it in place before the deferred check reads it
+            # (2026-11-21, vLLM TP2: the capsule's all-reduce input held the output's Inf).
+            # A pre-call copy is what the member ranks' replay needs.
+            pre = {"args": dict((i, _snap_value(a)) for i, a in enumerate(args)
+                                if isinstance(a, torch.Tensor)), "kwargs": {}}
+        # The rerun check decides BEFORE the call: a rerun needs the pre-call values of
+        # what the op overwrites and, for a seeded op, the generator state it drew from.
+        rr = (self.rerun_every and not self.captured
+              and (self.rerun_ops is None or _matches(_op_names(func), self.rerun_ops))
+              and self._rerun_due(func, args, kwargs))
+        rr_pre = rr_rng = None
+        if rr:
+            rr_pre = pre if pre is not None else self._rerun_snapshot(func, args, kwargs)
+            rr_rng = _rng_states() if needs_rng(func) else None
         # Likewise the last moment the generator still holds what this op will
         # draw from.  Gated on the tag so the cost is paid only by seeded ops.
         rng_pre = (self.chain._rng_state()
                    if (tracking and needs_rng(func)) else None)
         out = func(*args, **kwargs)
+        if self._coll_out is not None and not self.captured and _sync_collective(func):
+            self._last_sync_coll = self._note_collective(func, args, kwargs, out)
         if tracking:
             self.chain.record(func, args, kwargs, out, pre, self.n + 1, rng_pre)
         if settling:
@@ -2689,6 +3691,13 @@ class OpNanCapture(TorchDispatchMode):
                 self._guarded(self._check_escape, func, args, kwargs, out, "host")
         if self.captured:
             return out
+        # A fused op with a value check (math_refs.VALUE_CHECKS) owns its outputs while the
+        # checks are on: its scratch outputs hold slots the op never writes (a split-KV op's
+        # unused KV splits: Inf/NaN garbage), which the scan below would flag on every call.
+        vcheck = (watching and not self.captured
+                  and ((self.verify_every and _has_value_check(func))
+                       or (self.twin_every and _has_twin(func)
+                           and (self.twin_ops is None or _matches(_op_names(func), self.twin_ops)))))
         if watching:
             self.n += 1
             # A view (every return aliases an argument, nothing written) computes
@@ -2696,36 +3705,148 @@ class OpNanCapture(TorchDispatchMode):
             # written.  Skipping it saves a check kernel per view op, which is
             # what the check costs under co-tenancy.  check_views=True restores
             # it (e.g. for a tensor that was already NaN before arming).
-            if self.check_views or not is_view(func):
-                cands = self._out_cands(func, args, kwargs, out)
-                dev = cands[0][0].device if cands else None
-                if (self.check_batch > 1 and dev is not None and dev.type != "cpu"
-                        and all(t.device == dev for t, _ in cands)
-                        and _norm_propagates_nan(dev)):
-                    self._enqueue(func, args, kwargs, pre, cands, tracking)
-                else:
-                    # CPU (or mixed-device) outputs: checking them stalls no GPU.
-                    bad, where = _first_bad(cands)
-                    if bad is not None:
-                        if self._queue:
-                            self._flush()       # earlier ops first, in program order
-                        if not self.captured:
-                            self._guarded(self._settle_hit if self.settle else self._capture,
-                                          func, args, kwargs, bad, pre, where)
-        if (watching and (self.verify_every or self.bounds) and not self.captured
-                and _op_names(func)[1] in _GEMM_OPS):
+            if (self.check_views or not is_view(func)) and not vcheck:
+                self._scan_outputs(func, args, kwargs, out, pre, tracking)
+        if vcheck:
+            self._guarded(self._verify_value, func, args, kwargs, out, pre, tracking)
+        elif (watching and (self.verify_every or self.bounds) and not self.captured
+                and (_op_names(func)[1] in _GEMM_OPS
+                     or (self.bounds and _op_names(func)[1] in _BOUND_OPS))):
             self._guarded(self._verify, func, args, kwargs, out, pre)
+        if rr and not self.captured:
+            self._guarded(self._rerun, func, args, kwargs, out, rr_pre, pre, rr_rng)
         if settling:
             # After the check, which judged against the state BEFORE this op; what
             # the check itself just marked as garbage is this op's verdict, kept.
-            self._note_raw(func, args, kwargs, out)
+            self._note_raw(func, args, kwargs, out, pre=pre)
             self._just_marked = ()
         return out
+
+    # -- the rerun check ----------------------------------------------------
+    def _rerun_due(self, func, args, kwargs):
+        """Is this call sampled for a rerun (and could it be re-run at all)?"""
+        key = str(func)
+        s = self._rsites.get(key)
+        if s is None:
+            if (is_view(func) or _op_names(func)[0] in _ALLOC_OPS
+                    or _op_names(func)[0] in _HOST_READ_OPS
+                    or _collective_group(func, args, kwargs)[0] is not None
+                    or not any(t.device.type != "cpu" for t in _tensors((args, kwargs)))):
+                s = self._rsites[key] = None          # never: no computation, or a side effect
+            else:
+                s = self._rsites[key] = {"calls": 0, "checked": 0, "skipped": 0, "noise": 0.0,
+                                         "ints": 0, "bitwise": "nondeterministic_bitwise"
+                                         in _tag_names(func)}
+        if s is None:
+            return False
+        s["calls"] += 1
+        if (s["calls"] - 1) % self.rerun_every:
+            return False
+        if sum(_snap_bytes(x) for x in list(args) + list(kwargs.values())) > self.rerun_max_bytes:
+            s["skipped"] += 1
+            return False
+        return True
+
+    def _rerun_snapshot(self, func, args, kwargs):
+        """Pre-call copies of what the op writes, when the capture's own snapshot is off."""
+        w = op_writes(func)
+        if not w["any"]:
+            return None
+        a = dict((i, _snap_value(args[i])) for i in w["idx"] if i < len(args))
+        k = dict((n, _snap_value(kwargs[n])) for n in w["names"] if n in kwargs)
+        return {"args": a, "kwargs": k}
+
+    def _rerun(self, func, args, kwargs, out, rr_pre, pre, rng):
+        """Re-run one call on copies of its pre-call operands; capture it when the
+        outputs differ beyond rounding noise (origin wrong_value, verify kind rerun)."""
+        s = self._rsites[str(func)]
+        # A device transfer is not a kernel to re-run: a non_blocking copy to the host is read
+        # before it lands, and differs by construction (aten._to_copy, 2026-11-21: integer
+        # outputs "differed" in 19 of 3255 reruns of a correct MoE step).
+        if kwargs.get("non_blocking") or any(t.device.type == "cpu" for t in _tensors(out)):
+            s["skipped"] += 1
+            return
+        a2, k2 = clone_operands(func, args, kwargs, rr_pre if op_writes(func)["any"] else None)
+        if a2 is None:
+            s["skipped"] += 1
+            return
+        if rng is not None:
+            post = _rng_states()
+            _set_rng_states(rng)
+        try:
+            out2 = func(*a2, **k2)
+        finally:
+            if rng is not None:
+                _set_rng_states(post)      # the model's random stream is untouched
+        d = rerun_diff(func, args, kwargs, out, a2, k2, out2)
+        s["checked"] += 1
+        if d is None:
+            return
+        if d.get("int"):
+            s["ints"] += 1
+            return
+        if not d["rel"] > d["floor"]:
+            s["noise"] = max(s["noise"], d["rel"])
+            return
+        if self._queue:
+            self._flush()           # an earlier queued NaN comes first, in program order
+            if self.captured:
+                return
+        hit = {"kind": "rerun", "rel_err": d["rel"], "threshold": d["floor"],
+               "where": d["where"], "nonfinite": d["nonfinite"], "site": str(func),
+               "site_calls": s["calls"], "site_checked": s["checked"],
+               "bitwise_tag": s["bitwise"], "step": getattr(self, "_step", None)}
+        if self.verbose:
+            print("[op-nan][rank %d] WRONG VALUE at %s (call %d of the op): a rerun on identical "
+                  "operands differs at %s, %s" % (self.rank, func, s["calls"], d["where"],
+                  "non-finite in one run only" if d["nonfinite"] else
+                  "rel diff %.3g > %.3g" % (d["rel"], d["floor"])), flush=True)
+        origin = {"class": "wrong_value", "nonfinite": 0, "math": None, "overflow": None,
+                  "unexplained": None,
+                  "note": "output not repeatable: a rerun on identical operands differs"}
+        self._capture(func, args, kwargs, d["x"], pre if pre is not None else rr_pre,
+                      d["where"], extra={"verify": hit, "nan_origin": origin})
+
+    def _scan_outputs(self, func, args, kwargs, out, pre, tracking):
+        """The non-finite check of one op's outputs (batched on the device, or at once)."""
+        cands = self._out_cands(func, args, kwargs, out)
+        dev = cands[0][0].device if cands else None
+        if (self.check_batch > 1 and dev is not None and dev.type != "cpu"
+                and all(t.device == dev for t, _ in cands)
+                and _norm_propagates_nan(dev)):
+            self._enqueue(func, args, kwargs, pre, cands, tracking)
+        else:
+            # CPU (or mixed-device) outputs: checking them stalls no GPU.
+            bad, where = _first_bad(cands)
+            if bad is not None:
+                if self._queue:
+                    self._flush()       # earlier ops first, in program order
+                if not self.captured:
+                    self._guarded(self._settle_hit if self.settle else self._capture,
+                                  func, args, kwargs, bad, pre, where)
 
     def _verify(self, func, args, kwargs, out, pre):
         """Bounds and sampled reference check of one GEMM-family call; captures the
         op at once on a wrong value (no settling: a wrong finite value is not
-        something a later where() masks)."""
+        something a later where() masks).  Softmax and attention ops get their
+        invariant only (_bound_ratio)."""
+        if _op_names(func)[1] not in _GEMM_OPS:
+            b = _bound_ratio(func, args, kwargs, out)
+            if b is None or not math.isfinite(float(_maxabs32(b[2]))):
+                return              # no invariant for this variant; non-finite: the NaN path
+            c = b[2]
+            key = (str(func), str(c.dtype).replace("torch.", ""), tuple(c.shape[-1:]))
+            s = self._vsites.get(key)
+            if s is None:
+                s = self._vsites[key] = {"calls": 0, "checked": 0, "errs": [], "max_err": 0.0}
+            s["calls"] += 1
+            s["checked"] += 1
+            if b[0] <= 1.0 + b[1]:
+                s["max_err"] = max(s["max_err"], b[0] - 1.0)
+                return
+            self._wrong_value_hit(func, args, kwargs, pre, c, "return", key, s,
+                                  {"kind": "bound", "ratio": b[0], "slack": b[1]})
+            return
         outs = [t for t in _tensors(out) if _checkable(t)]
         if len(outs) != 1 or outs[0].dtype not in _REF_FLOOR:
             return
@@ -2745,20 +3866,118 @@ class OpNanCapture(TorchDispatchMode):
         if hit is None and self.verify_every and (s["calls"] - 1) % self.verify_every == 0:
             err = _ref_rel_err(func, args, kwargs, c)
             if err is not None:
-                s["checked"] += 1
-                errs = s["errs"]
-                med = sorted(errs)[len(errs) // 2] if len(errs) >= 16 else None
-                floor = _ref_floor(c.dtype)
-                thr = max(floor, 50.0 * med) if med else floor
-                if not err <= thr:
-                    hit = {"kind": "reference", "rel_err": err, "threshold": thr,
-                           "site_median": med}
-                else:
-                    if len(errs) < 256:
-                        errs.append(err)
-                    s["max_err"] = max(s["max_err"], err)
+                hit = self._judge_ref(s, err, _ref_floor(c.dtype))
         if hit is None:
             return
+        self._wrong_value_hit(func, args, kwargs, pre, c, "return", key, s, hit)
+
+    @staticmethod
+    def _judge_ref(s, err, floor, median_x=50.0):
+        """The reference check's verdict for one sampled call of site `s`: a hit dict,
+        or None (and the error joins the site's history).  median_x: how far past the
+        site's median error a call may go -- 50 for a higher-precision recompute (its
+        noise is the kernel's rounding alone), less for a twin (twin_median_x)."""
+        s["checked"] += 1
+        errs = s["errs"]
+        med = sorted(errs)[len(errs) // 2] if len(errs) >= 16 else None
+        thr = max(floor, median_x * med) if med else floor
+        if not err <= thr:
+            return {"kind": "reference", "rel_err": err, "threshold": thr,
+                    "site_median": med}
+        if len(errs) < 256:
+            errs.append(err)
+        s["max_err"] = max(s["max_err"], err)
+        return None
+
+    def _verify_value(self, func, args, kwargs, out, pre, tracking):
+        """The sampled value check of a fused op (math_refs.VALUE_CHECKS), on its
+        post-call arguments: what its consumer reads vs an fp32 recompute from its
+        inputs.  A call it does not sample or does not model gets the plain
+        non-finite scan instead; a non-finite result is a hit here, the check's
+        result being what the consumer reads (the raw outputs hold garbage).
+
+        Without a hand-written check (or with verify_every off) the op's twin
+        (twins.py) is the reference: its second implementation on the op's pre-call
+        inputs, every twin_every-th call; a twin that does not apply (framework absent,
+        variant not modelled, twin non-finite where the kernel is finite) leaves the
+        call to the plain scan and is counted in the census, never judged."""
+        use_vc = bool(self.verify_every and _has_value_check(func))
+        key = (str(func), "value" if use_vc else "twin", "-")
+        s = self._vsites.get(key)
+        if s is None:
+            s = self._vsites[key] = {"calls": 0, "checked": 0, "errs": [], "max_err": 0.0}
+        s["calls"] += 1
+        got, src = None, None
+        if use_vc:
+            if not (s["calls"] - 1) % self.verify_every:
+                got = _math_refs.value_rel_err(str(func), func, args, kwargs)
+        elif not (s["calls"] - 1) % self.twin_every:
+            if sum(_snap_bytes(x) for x in list(args) + list(kwargs.values())) > self.twin_max_bytes:
+                self._twin_skip(func, "operands > twin_max_bytes")
+            else:
+                # the twin runs unseen: no dispatch mode, and its own Triton / Inductor launches past the hooks --
+                # seen, the fp64 twin's kernels were "checked" by the capture itself (RecursionError, fp64 norms
+                # rejected; 2026-11-24, every Inductor site 0 checked)
+                _QUIET[0] += 1
+                try:
+                    with _disable_current_modes():
+                        r = _twins.rel_err(str(func), func, args, kwargs, pre, out)
+                except Exception as e:                 # noqa: BLE001 - a twin never breaks the run
+                    r = None
+                    self._twin_skip(func, "%s: %s" % (type(e).__name__, str(e)[:60]))
+                    _twins.clear_device_error()
+                finally:
+                    _QUIET[0] -= 1
+                if r is None:
+                    self._twin_skip(func, "not applicable / twin non-finite")
+                else:
+                    err, floor, name, source, tkind = r
+                    got, src = (err, floor, name), (source, tkind)
+        if got is None:             # not sampled, or a variant the check does not model
+            if self.check_views or not is_view(func):
+                self._scan_outputs(func, args, kwargs, out, pre, tracking)
+            return
+        err, floor, name = got
+        if src is not None and not _twins.owns_outputs(str(func)) and (self.check_views or not is_view(func)):
+            # a twin compares finite positions only: the NaN path still scans what the op wrote
+            self._scan_outputs(func, args, kwargs, out, pre, tracking)
+            if self.captured:
+                return
+        if math.isfinite(err):
+            # a twin's gap on correct calls is both implementations' rounding (~1e-2 for an MLA decode vs aiter's
+            # Triton one): 50x its median (0.48) would hide a race's 0.14-0.20 -- 5x keeps correct calls under
+            # (max 0.024 over 2540 calls, 2026-11-24) and the race over
+            hit = self._judge_ref(s, err, floor, self.twin_median_x if src is not None else 50.0)
+        else:
+            s["checked"] += 1
+            hit = {"kind": "reference", "rel_err": err, "threshold": floor,
+                   "site_median": None, "nonfinite": True}
+        if hit is None:
+            return
+        if src is not None:
+            hit.update(kind="twin", twin_source=src[0], twin_kind=src[1], output=name)
+        names = [a.name for a in func._schema.arguments]
+        if name in names:
+            i = names.index(name)
+            where = "arg%d" % i if i < len(args) else "kwarg:%s" % name
+            c = args[i] if i < len(args) else kwargs[name]
+        else:                       # a returned tensor ("return", "return<i>") or a kernel parameter name
+            outs = list(_tensors(out))
+            j = int(name[6:]) if name.startswith("return") and name[6:].isdigit() else 0
+            if name.startswith("return") and outs:
+                where, c = "return", outs[min(j, len(outs) - 1)]
+            else:                   # an Inductor kernel's written parameter: its position in the launch
+                an = list((getattr(func, "desc", None) or {}).get("arg_names") or [])
+                i = an.index(name) if name in an else 0
+                where, c = "arg%d" % i, args[i]
+        self._wrong_value_hit(func, args, kwargs, pre, c, where, key, s, hit)
+
+    def _twin_skip(self, func, why):
+        d = self._twin_skips.setdefault(str(func), {})
+        d[why] = d.get(why, 0) + 1
+
+    def _wrong_value_hit(self, func, args, kwargs, pre, c, where, key, s, hit):
+        """Capture a wrong-value hit (bound or reference) of site `key`."""
         if self._queue:
             self._flush()           # an earlier queued NaN comes first, in program order
             if self.captured:
@@ -2769,20 +3988,32 @@ class OpNanCapture(TorchDispatchMode):
             print("[op-nan][rank %d] WRONG VALUE at %s (call %d of the site): %s"
                   % (self.rank, hit["site"], s["calls"],
                      "bound ratio %.3g" % hit["ratio"] if hit["kind"] == "bound" else
-                     "rel err %.3g > %.3g" % (hit["rel_err"], hit["threshold"])), flush=True)
+                     "rel err %.3g > %.3g%s" % (hit["rel_err"], hit["threshold"],
+                                                ", twin: %s" % hit["twin_source"] if hit.get("twin_source") else "")),
+                  flush=True)
         origin = {"class": "wrong_value", "nonfinite": 0, "math": None, "overflow": None,
                   "unexplained": None,
-                  "note": "finite output failed the %s check" % hit["kind"]}
-        self._capture(func, args, kwargs, c, pre, "return",
+                  "note": ("the value check's result is non-finite" if hit.get("nonfinite")
+                           else "finite output failed the %s check" % hit["kind"])}
+        self._capture(func, args, kwargs, c, pre, where,
                       extra={"verify": hit, "nan_origin": origin})
 
-    def _note_raw(self, func, args, kwargs, out, collective=False):
+    def _note_raw(self, func, args, kwargs, out, collective=False, pre=None):
         """Keep _raw/_garbage current (settle mode; see __init__).
 
         An allocator op's outputs become raw.  A write that spans a whole storage --
         or any write by a collective, whose data is real -- makes it initialized.
         A non-view op returning a tensor in a storage none of its inputs held made a
         fresh allocation at that address: whatever was marked there is gone.
+
+        Except a declared write that left a small raw buffer bit for bit as it was
+        (`pre`, the pre-call snapshot): the op did not store there, and the buffer
+        is still allocator garbage.  aiter's MLA stage 1 declares every tensor
+        written (`Tensor(a!)`, returns ()) and on gfx950 never writes the
+        valid_split_count its Triton reduce then reads from a torch.empty; taking
+        the declaration at its word lost the uninit mark, and the capsule named the
+        dummy Final_lse instead (2026-11-23, deepseek_sparse_mla_aiter_uninit_nan).
+        Small only (_UNINIT_KEEP_BYTES): the comparison is a host read per buffer.
         """
         raw, garbage = self._raw, self._garbage
         if _op_names(func)[0] in _ALLOC_OPS:
@@ -2795,13 +4026,16 @@ class OpNanCapture(TorchDispatchMode):
         if not (raw or garbage) or is_view(func):
             return
         w = op_writes(func)
-        written = []
+        written, unchanged = [], set()
         if w["any"]:
+            pa, pk = (pre or {}).get("args") or {}, (pre or {}).get("kwargs") or {}
             for i in w["idx"]:
                 if i < len(args):
                     written.extend(_tensors(args[i]))
+                    unchanged |= self._unchanged_raw(args[i], pa.get(i))
             for nm in w["names"]:
                 written.extend(_tensors(kwargs.get(nm)))
+                unchanged |= self._unchanged_raw(kwargs.get(nm), pk.get(nm))
         ins = set(_storage_ptr(t) for t in _tensors((args, kwargs)))
         if collective and garbage and ins & garbage:
             # Communication of garbage is garbage: FSDP2's all-gather hands every
@@ -2812,17 +4046,63 @@ class OpNanCapture(TorchDispatchMode):
                 if p is not None:
                     garbage.add(p)
             return
+        keep = frozenset(self._just_marked) | unchanged
         for t in written:
             if collective or _covers_storage(t):
                 p = _storage_ptr(t)
+                if p in keep:
+                    continue        # declared written, left as it was (_unwritten)
                 raw.discard(p)
                 garbage.discard(p)
-        keep = self._just_marked
         for t in _tensors(out):
             p = _storage_ptr(t)
             if (collective or p not in ins) and p not in keep:
                 raw.discard(p)
                 garbage.discard(p)
+
+    def _unchanged_raw(self, val, before):
+        """Storage pointers of the raw tensors in `val` (a written operand; a tensor or a
+        TensorList) that still hold the bits of `before`, their pre-call snapshot."""
+        if before is None or not self._raw:
+            return set()
+        ts, bs = _tensors(val), _tensors(before)
+        if len(ts) != len(bs):
+            return set()
+        out = set()
+        for t, b in zip(ts, bs):
+            p = _storage_ptr(t)
+            if p in self._raw and _storage_bytes(t) <= _UNINIT_KEEP_BYTES and _same_bits(t, b):
+                out.add(p)
+        return out
+
+    def _raw_operands(self, args, kwargs, packed_args, packed_kwargs):
+        """Mark the op's small operands that live in raw storage -- an allocator's, never
+        written since (settle mode's _raw, as of this op) -- as kept uninitialised.  The
+        chain (_uninit_operands) sees an allocation only inside its window and takes a
+        declared write as a write; this is what catches the buffer allocated earlier and
+        handed through an op that declared it written but left it alone (_note_raw).
+        Kept only (never dropped): what it holds is what the op read."""
+        if not self.settle:
+            return
+        snap = self._ctx.get("raw") if self._ctx is not None else self._raw
+        if not snap:
+            return
+
+        def walk(live, packed):
+            if isinstance(live, torch.Tensor):
+                if isinstance(packed, dict) and packed.get(_TENSOR_TAG) \
+                        and not packed.get("uninit") and packed.get("base") is not None \
+                        and _storage_ptr(live) in snap \
+                        and packed["base"].numel() * packed["base"].element_size() <= _UNINIT_KEEP_BYTES:
+                    _mark_uninit(packed)
+            elif isinstance(live, (list, tuple)) and isinstance(packed, (list, tuple)) \
+                    and len(live) == len(packed):
+                for x, p in zip(live, packed):
+                    walk(x, p)
+        walk(tuple(args), packed_args)
+        for k, v in (kwargs or {}).items():
+            if isinstance(packed_kwargs, dict) and k in packed_kwargs:
+                walk(v, packed_kwargs[k])
 
     def _note_collective(self, func, args, kwargs, out):
         """Count this collective in its group and remember the storages it wrote."""
@@ -2833,6 +4113,8 @@ class OpNanCapture(TorchDispatchMode):
             self._groups[name] = _group_ranks(pg) if pg is not None else None
         seq = self._coll_seq[name] = self._coll_seq.get(name, 0) + 1
         info = {"group": name, "seq": seq, "op": str(func), "step": self._step}
+        if _sync_collective(func):
+            info["group_ranks"] = self._groups.get(name)
         w = op_writes(func)
         written = list(_tensors(out))
         for i in w["idx"]:
@@ -2845,6 +4127,7 @@ class OpNanCapture(TorchDispatchMode):
                 self._coll_out[t.untyped_storage()] = info
             except Exception:                           # noqa: BLE001
                 pass
+        return info
 
     # -- R3: record one collective on every member rank --------------------------
     def _record_collective_pre(self, func, args, kwargs):
@@ -2870,7 +4153,7 @@ class OpNanCapture(TorchDispatchMode):
             for x in (out if isinstance(out, (tuple, list)) else [out]):
                 if isinstance(x, torch.ScriptObject) and hasattr(x, "wait"):
                     x.wait()                            # c10d Work: the data has to land
-            if _op_names(func)[2] != "c10d":
+            if _op_names(func)[2] != "c10d" and not _sync_collective(func):
                 for t in _tensors(out):
                     torch.ops._c10d_functional.wait_tensor(t)
             if torch.cuda.is_available():
@@ -2878,7 +4161,8 @@ class OpNanCapture(TorchDispatchMode):
             rec["out_post"] = _cpu_copy(out)
             rec["args_post"] = _cpu_copy(args)
             d = os.path.dirname(self.out)
-            path = os.path.join(d, "collective_g%s_s%d.rank%d.pt" % (rec["group"], rec["seq"], self.rank))
+            path = os.path.join(d, "collective_g%s_s%d.rank%d.pt" % (_file_group(rec["group"]), rec["seq"],
+                                                                    self.rank))
             torch.save(rec, path)
             print("[op-nan][rank %d] recorded collective %s #%d of group %s -> %s"
                   % (self.rank, rec["op"], rec["seq"], rec["group"], path), flush=True)
@@ -2936,12 +4220,15 @@ class OpNanCapture(TorchDispatchMode):
              "rid": self.chain._next_rec - 1 if tracking else None,
              "frames": _grab_frames(sys._getframe(1)),
              "node": _node_name() if self.settle else None,
+             "coll": self._last_sync_coll if _sync_collective(func) else None,
              "uninit": None}
         if self.settle and (self._raw or self._garbage):
             u = self._raw | self._garbage
             e["uninit"] = frozenset(p for p in (_storage_ptr(t) for t in
                                                 _tensors((args, kwargs, [c for c, _ in cands])))
                                     if p in u)
+            # raw alone, for _raw_operands: garbage is computed from garbage, not allocated
+            e["raw"] = frozenset(p for p in e["uninit"] if p in self._raw)
         self._queue.append(e)
         qp = self._qptrs
         for t in _tensors((args, kwargs)):
@@ -3031,6 +4318,19 @@ class OpNanCapture(TorchDispatchMode):
         # trio has recorded gpu_procs=2.  capture_gpu_procs() takes the larger.
         if getattr(self, "_gpu_procs_at_arm", None) is None:
             self._gpu_procs_at_arm = _gpu_procs()
+        if self.triton and _TRITON_RUN is None:
+            ok = install_triton_hook()
+            if self.verbose:
+                print("[op-nan][rank %d] Triton launches: %s" % (
+                    self.rank, "watched as triton.<kernel> ops (tensors <= %d MiB taken as "
+                    "written)" % (_TRITON_WRITE_MAX_BYTES >> 20) if ok
+                    else "not watched (Triton not importable)"), flush=True)
+        if self.inductor and _INDUCTOR_RUN is None:
+            ok = install_inductor_hook()
+            if self.verbose:
+                print("[op-nan][rank %d] Inductor (torch.compile) kernels: %s" % (
+                    self.rank, "watched as inductor.<kernel> ops" if ok
+                    else "not watched (Inductor not importable)"), flush=True)
         return super().__enter__()
 
     def __exit__(self, exc_type, exc, tb):
@@ -3296,6 +4596,23 @@ class OpNanCapture(TorchDispatchMode):
                             "with no NaN made by any op -- a reduction or placement bug, not "
                             "a kernel (step 5N, multi-rank)" % (div["tensor"], div["group_ranks"],
                                                                  div["step"])}
+        # A synchronous collective (vllm.all_reduce) that returned non-finite from finite
+        # inputs is captured on EVERY member rank at the same (group, seq): one event, the
+        # collective itself -- not N ranks that each made a NaN.
+        coll = {}
+        for r in ranks:
+            c = (r.get("capsule") or {}).get("collective") if r["rank"] in made else None
+            if c:
+                coll.setdefault((c["group"], c["seq"], c["op"]), []).append(r["rank"])
+        if made and len(coll) == 1 and sum(len(v) for v in coll.values()) == len(made):
+            (g, seq, op), cr = next(iter(coll.items()))
+            return {"origin_ranks": made,
+                    "collective_origin": {"group": g, "seq": seq, "op": op, "ranks": sorted(cr)},
+                    "arrivals": [{"step": a[0], "group": a[1], "seq": a[2], "rank": a[3]}
+                                 for a in arrived],
+                    "note": "COLLECTIVE: %s #%d of group %s returned non-finite from finite inputs "
+                            "on rank(s) %s -- the collective itself made the NaN (collective_r3.py "
+                            "check / replay on those ranks' capsules)" % (op, seq, g, sorted(cr))}
         if made:
             note = "origin: rank(s) %s made the NaN locally" % made
         elif arrived:
@@ -3341,6 +4658,29 @@ class OpNanCapture(TorchDispatchMode):
             print("[op-nan] !! manifest write failed (%s: %s)" % (type(e).__name__, e), flush=True)
 
     # -- chain --------------------------------------------------------------
+    @staticmethod
+    def _uninit_operands(chain, call_index, packed_args, packed_kwargs):
+        """Drop the bytes of the op's operands that the chain shows came straight from an
+        allocator, unwritten since (the key is versioned: an in-place write in between gives it
+        a new one).  Returns the bytes dropped.  Without a chain nothing says where an operand
+        came from, and it keeps its bytes.  An allocation older than the window, or one passed
+        through an op that only declared a write, is _raw_operands' to find."""
+        if not chain or not chain["chain"] or chain["chain"][-1]["call_index"] != call_index:
+            return 0
+        alloc = {k for c in chain["chain"] if c["op"] in _ALLOC_OPS for k in c["produces"] if k}
+        term = chain["chain"][-1]
+
+        def walk(ref, packed):
+            if isinstance(ref, dict) and _CHAIN_REF in ref:
+                return _mark_uninit(packed) if ref[_CHAIN_REF] in alloc else 0
+            if isinstance(ref, (list, tuple)) and isinstance(packed, (list, tuple)) \
+                    and len(ref) == len(packed):
+                return sum(walk(r, p) for r, p in zip(ref, packed))
+            if isinstance(ref, dict) and isinstance(packed, dict):
+                return sum(walk(v, packed[k]) for k, v in ref.items() if k in packed)
+            return 0
+        return walk(term["args"], packed_args) + walk(term["kwargs"], packed_kwargs)
+
     def _chain_payload(self, terminal_rid=None):
         """The format-3 keys, or None when there is no chain to report.
 
@@ -3369,6 +4709,10 @@ class OpNanCapture(TorchDispatchMode):
         for rec in ordered:
             produced.update(k for k in rec["out_keys"]
                             if k and k not in rec["in_keys"])
+        # An allocator's output is garbage the replay re-allocates and never compares
+        # (replay_nan_op: "allocator: uninitialised"); its value -- often what the
+        # terminal op later wrote into it, packed after the fact -- is never packed.
+        uninit = {k for rec in ordered if rec["op"] in _ALLOC_OPS for k in rec["out_keys"] if k}
 
         pool, rng, chain = {}, None, []
         for rec in ordered:
@@ -3378,7 +4722,7 @@ class OpNanCapture(TorchDispatchMode):
             # replay cannot recompute it, so it must be packed by value.  An
             # intermediate is packed only to let the replay detect divergence.
             for (key, t), was_moved in zip(rec["held"] or [], moved):
-                if not key or key in pool:
+                if not key or key in pool or key in uninit:
                     continue
                 if was_moved:
                     # This tensor no longer holds what this op saw -- something
@@ -3439,6 +4783,8 @@ class OpNanCapture(TorchDispatchMode):
 
     # -- capture ------------------------------------------------------------
     def _capture(self, func, args, kwargs, bad, pre=None, where="return", extra=None):
+        if extra is None and self._unwritten(func, bad, pre, where):
+            return
         self.captured = True        # before the dump: a failure in here must not re-enter
         capsule, cap_args, cap_kwargs = self._build_capsule(func, args, kwargs, bad, pre, where)
         if self.settle:
@@ -3448,8 +4794,9 @@ class OpNanCapture(TorchDispatchMode):
             capsule.update(extra)
         self._emit(capsule)
         if self.raise_on_nan:
-            raise RuntimeError("%s non-finite op output captured to %s"
-                               % ("[op-nan]", self.out))
+            raise RuntimeError("%s %s op output captured to %s"
+                               % ("[op-nan]", "wrong-value" if (extra or {}).get("verify")
+                                  else "non-finite", self.out))
 
     @staticmethod
     def _pre_call_operands(args, kwargs, pre):
@@ -3550,6 +4897,9 @@ class OpNanCapture(TorchDispatchMode):
         geom = hipblaslt_geometry(func, cap_args)
 
         chain = self._chain_payload(ctx["rid"] if ctx else None)
+        packed_kwargs = _pack(cap_kwargs, self.max_bytes, self.record_data)
+        uninit_bytes = self._uninit_operands(chain, call_index, packed_args, packed_kwargs)
+        self._raw_operands(args, kwargs, packed_args, packed_kwargs)
 
         capsule = {
             # 3 adds the chain keys below and changes nothing else: every field a
@@ -3562,7 +4912,8 @@ class OpNanCapture(TorchDispatchMode):
             # base=None and sha=None; "values" = replayable.  Absent = "values".
             "data": "values" if self.record_data else "shapes",
             "args": packed_args,
-            "kwargs": _pack(cap_kwargs, self.max_bytes, self.record_data),
+            "kwargs": packed_kwargs,
+            "uninit_bytes": uninit_bytes,
             "op_call_index": call_index,
             # What op_call_index counted.  None/None means "every aten op".
             "op_filter": {
@@ -3648,6 +4999,10 @@ class OpNanCapture(TorchDispatchMode):
             "suspended": sorted(_SUSPENDED),
             # Cross-rank causality: collectives issued per group so far, whether this
             # op's non-finite input came from one, and this rank's first such read.
+            # A synchronous collective's capsule (vllm.all_reduce): which call of which group,
+            # so the member ranks' capsules of the same call pair up (5a, collective_r3.py).
+            "collective": ((ctx.get("coll") if ctx else self._last_sync_coll)
+                           if _sync_collective(func) else None),
             "dist_causality": {
                 "coll_seq": dict(self._coll_seq),
                 "groups": dict(self._groups),
@@ -3658,12 +5013,24 @@ class OpNanCapture(TorchDispatchMode):
         }
         if chain:
             capsule.update(chain)
+        if _TRITON_DESCS:
+            # The Triton kernels this capsule names -- the terminal op, chain nodes: replay
+            # rebuilds them from their descriptors (source included).
+            names = {str(func)} | {r.get("op") for r in (capsule.get("chain") or ())}
+            tk = dict((n, _TRITON_DESCS[n]) for n in names if n in _TRITON_DESCS)
+            if tk:
+                capsule["triton_kernels"] = tk
         return capsule, cap_args, cap_kwargs
 
     def _emit(self, capsule, path=None):
         """Write `capsule` (atomically) to `path` (default: self.out) and report it."""
         path = path or self.out
         tmp = path + ".tmp"
+        try:
+            capsule["shared_bytes"] = _share_bases(capsule)
+        except Exception as e:                          # noqa: BLE001  a bigger capsule, not none
+            print("[op-nan][rank %d] buffer dedup skipped (%s: %s)" % (self.rank, type(e).__name__, e),
+                  flush=True)
         try:
             torch.save(capsule, tmp)
         except (TypeError, AttributeError, pickle.PicklingError) as e:
@@ -3674,7 +5041,19 @@ class OpNanCapture(TorchDispatchMode):
             capsule["unpicklable"] = bad
             print("[op-nan][rank %d] capsule not picklable (%s: %s); replaced %d leaf(s): %s"
                   % (self.rank, type(e).__name__, e, len(bad), "; ".join(bad)), flush=True)
-            torch.save(capsule, tmp)
+            try:
+                torch.save(capsule, tmp)
+            except Exception as e2:
+                # Last resort: something pickle.dumps accepts leaf by leaf but torch.save
+                # refuses (seen: inside the chain of a qwen-tf32 capture).  Replace only the
+                # deepest objects torch.save itself refuses, name them, save the rest.
+                deep = []
+                capsule = _unsaveable_replaced(capsule, "capsule", deep)
+                capsule["unpicklable"] = bad + deep
+                print("[op-nan][rank %d] capsule still not picklable (%s: %s); replaced %d "
+                      "object(s) torch.save refuses: %s" % (self.rank, type(e2).__name__, e2,
+                                                           len(deep), "; ".join(deep)), flush=True)
+                torch.save(capsule, tmp)
         os.replace(tmp, path)       # atomic: a reader never sees a half-written capsule
         if path == self.out:
             dc = capsule.get("dist_causality") or {}
@@ -3682,6 +5061,7 @@ class OpNanCapture(TorchDispatchMode):
                              "inputs_finite": capsule["inputs_finite"],
                              "origin": (capsule.get("nan_origin") or {}).get("class"),
                              "arrived_via": dc.get("arrived_via"),
+                             "collective": capsule.get("collective"),
                              "settle": (capsule.get("settle") or {}).get("result")}
 
         where, mut = capsule["nan_found_in"], capsule["mutation"]
@@ -3702,7 +5082,9 @@ class OpNanCapture(TorchDispatchMode):
                        "args captured AFTER the call; the operands in this capsule "
                        "are the kernel's own output, not its input"), flush=True)
             nfo = capsule["nonfinite_operands"] or {}
-            if inputs_finite:
+            if inputs_finite and capsule.get("verify"):
+                why = "this op returned the WRONG VALUE from finite inputs"
+            elif inputs_finite:
                 why = "this op CREATED the NaN"
             elif inputs_finite is False:
                 why = "NaN arrived on the inputs; walk further up"
@@ -3750,8 +5132,10 @@ class OpNanCapture(TorchDispatchMode):
                           " case that never fails. Use --contend." % p, flush=True)
             if chain:
                 n_int = len(chain["pool"]) - len(chain["roots"])
-                print("%s   chain: %d ops, %d roots, %d intermediates stored"
-                      % (p, len(chain["chain"]), len(chain["roots"]), n_int),
+                print("%s   chain: %d ops, %d roots, %d intermediates stored; %.0f MB of repeated "
+                      "buffers stored once, %.0f MB of allocator garbage not stored"
+                      % (p, len(chain["chain"]), len(chain["roots"]), n_int,
+                         (capsule.get("shared_bytes") or 0) / 1e6, (capsule.get("uninit_bytes") or 0) / 1e6),
                       flush=True)
                 for rec in chain["chain"]:
                     print("%s     [%d] %s%s%s"
@@ -3835,9 +5219,46 @@ class OpNanCapture(TorchDispatchMode):
         if any(_nonfinite(t) and _storage_ptr(t) not in garbage for t in ins):
             self._survive("a non-finite tensor %s" % how, func)
 
+    def _unwritten(self, func, bad, pre, where):
+        """True if the non-finite values found in written operand `where` are the ones
+        it held before the call: the op declares the write but did not store there,
+        so the NaN is not its own.  aiter's MLA stage 1 declares its out-buffer written
+        and, with split-K, leaves it to the Triton reduce; the buffer's allocator
+        garbage (a freed NaN output) made the capture blame stage 1 (2026-11-21, blind
+        run 5).  Storage that was uninitialized stays marked as garbage, so a reader of
+        it is judged as reading garbage, not a NaN this op made."""
+        if not pre or where == "return":
+            return False
+        if where.startswith("kwarg:"):
+            before = pre["kwargs"].get(where[len("kwarg:"):])
+        elif where.startswith("arg"):
+            before = pre["args"].get(int(where[3:]))
+        else:
+            return False
+        if not _unchanged_nonfinite(bad, before):
+            return False
+        p = _storage_ptr(bad)
+        if p is not None and (p in self._raw or p in self._garbage
+                              or (self._ctx is not None and p in (self._ctx.get("uninit") or ()))):
+            self._garbage.add(p)
+            if self._ctx is None:
+                # Judged inside this op's own dispatch: keep the mark through its _note_raw.
+                # A deferred check runs inside a LATER op's dispatch (the flush before it), and
+                # that op's write must clear the mark as usual.
+                self._just_marked = frozenset(self._just_marked) | {p}
+        seen = self.__dict__.setdefault("_unwritten_seen", set())
+        if self.verbose and (str(func), where) not in seen:
+            seen.add((str(func), where))
+            print("[op-nan][rank %d] not captured: %s's %s holds the non-finite values it "
+                  "held before the call (not written by the op; reported once per site)"
+                  % (self.rank, func, where), flush=True)
+        return True
+
     def _settle_hit(self, func, args, kwargs, bad, pre, where):
         """A watched op produced a non-finite output: survival, a new candidate,
         or one more hit on a site already pending or settled."""
+        if self._unwritten(func, bad, pre, where):
+            return
         seen_before, self._nan_step = self._nan_step, True
         w = op_writes(func)
         read_only = ([a for i, a in enumerate(args) if i not in w["idx"]]
@@ -3894,12 +5315,14 @@ class OpNanCapture(TorchDispatchMode):
             return self._survive("read a non-finite tensor that outlives the step",
                                  func, args, kwargs, bad, pre, where)
         if dirty and (self._pending or seen_before):
+            self._spread_taint(dirty, bad)
             return              # downstream of a NaN already pending or counted this step
         site = _call_site(func, where, self._ctx)
         s = self._sites.get(site)
         if s is not None and s["status"] == "pending":
             s["hits"] += 1
             s["last_step"] = self._step
+            self._mark_taint(bad, self._taint_source((args, kwargs)) or site)
             return
         if s is not None and s["status"] == "masked":
             if s["origin"] in _BENIGN_ORIGINS:
@@ -3944,6 +5367,10 @@ class OpNanCapture(TorchDispatchMode):
                  origin=capsule["nan_origin"]["class"] if capsule else "no_reference")
         s["hits"] += 1
         self._pending.append({"site": site, "step": self._step, "capsule": capsule})
+        # Its root: the earliest candidate a tensor it read descends from (every operand, not only
+        # the read-only ones: aiter declares every argument mutable, Tensor(a0!), so a GEMM fed by a
+        # pending RMSNorm's NaN became a candidate of its own, 2026-11-20), else itself.
+        self._mark_taint(bad, self._taint_source((args, kwargs)) or site)
         if self.verbose:
             print("[op-nan][rank %d] pending: %s at step %d, out=%s nan=%s inf=%s; "
                   "origin: %s -- written only if the NaN outlives the step"
@@ -3952,6 +5379,29 @@ class OpNanCapture(TorchDispatchMode):
                      capsule["out_inf"] if capsule else "?",
                      _origin_text(capsule["nan_origin"]) if capsule else "?"), flush=True)
 
+    def _spread_taint(self, dirty, bad):
+        """`bad` was computed from non-finite inputs: it inherits the candidate site the
+        first tainted one descends from."""
+        src = self._taint_source(dirty)
+        if src is not None:
+            self._mark_taint(bad, src)
+
+    def _mark_taint(self, t, site):
+        p = _storage_ptr(t)
+        if p is not None:
+            self._taint.setdefault(p, site)
+
+    def _taint_source(self, obj):
+        """The candidate site the first tainted tensor in `obj` descends from, or None."""
+        if not self._taint:
+            return None
+        for t in _tensors(obj):
+            p = _storage_ptr(t)
+            src = self._taint.get(p) if p is not None else None
+            if src is not None:
+                return src
+        return None
+
     def _survive(self, reason, func, args=None, kwargs=None, bad=None, pre=None,
                  where=None):
         """The NaN outlived its step: write the pending candidate it most likely
@@ -3959,6 +5409,19 @@ class OpNanCapture(TorchDispatchMode):
         cands = [p for p in self._pending if p["capsule"] is not None]
         pick = next((p for p in cands
                      if p["capsule"]["nan_origin"]["class"] not in _SOFT_ORIGINS), None)
+        if bad is not None:
+            # The surviving NaN's root (taint: every op downstream of a pending candidate inherits
+            # the earliest candidate's site) is where it was born -- write that one, whatever its
+            # origin but allocator garbage: a `math` root (0 * rsqrt(0) in an eps-0 norm, a model /
+            # numerics NaN, 2026-11-20) is the NaN that survived, not the downstream GEMM that only
+            # carried it.  No taint: the first non-soft candidate, as before.
+            src = self._taint_source((args, kwargs, bad))
+            root = next((p for p in cands if p["site"] == src
+                         and p["capsule"]["nan_origin"]["class"] != "uninitialized"), None)
+            if root is not None and root is not pick:
+                reason += "; descends from the pending %s candidate %s" % (
+                    root["capsule"]["nan_origin"]["class"], _site_text(src))
+                pick = root
         if pick is None and cands and bad is None:
             if self.world > 1 and all(p["capsule"]["nan_origin"]["class"] == "uninitialized"
                                       for p in cands):
@@ -4030,6 +5493,8 @@ class OpNanCapture(TorchDispatchMode):
                 else:
                     keep.append(p)
             self._pending = keep
+            if not keep:
+                self._taint = {}
             self._born = set()
             self._nan_step = False
 
@@ -4151,6 +5616,28 @@ class OpNanCapture(TorchDispatchMode):
             for k, s in sorted(self._vsites.items(), key=lambda kv: -kv[1]["calls"]):
                 print("%s   %s %s N=%s: %d calls, %d checked, max %.3g"
                       % ((p,) + k + (s["calls"], s["checked"], s["max_err"])), flush=True)
+        if self.verbose and self._twin_skips:
+            # calls the twin check sampled but could not judge -- a clean run is evidence only where it judged
+            p = "[op-nan][rank %d]" % self.rank
+            print("%s twin check: calls not judged (op: reason x count):" % p, flush=True)
+            for op, d in sorted(self._twin_skips.items()):
+                print("%s   %s: %s" % (p, op, "; ".join("%s x%d" % kv for kv in sorted(d.items()))), flush=True)
+        live = dict((k, s) for k, s in self._rsites.items() if s)
+        if self.verbose and live:
+            # Evidence the rerun check ran, and which ops differ below the floor (atomics:
+            # rounding order) -- the numbers to look at before trusting a clean run.
+            p = "[op-nan][rank %d]" % self.rank
+            print("%s rerun check census: %d op(s), %d call(s) re-run, %d skipped (no pre-call "
+                  "values or > rerun_max_bytes)" % (p, len(live), sum(s["checked"] for s in live.values()),
+                                                    sum(s["skipped"] for s in live.values())), flush=True)
+            for k, s in sorted(live.items(), key=lambda kv: -kv[1]["noise"])[:12]:
+                if s["noise"] or s["ints"] or s["bitwise"]:
+                    print("%s   %s: %d re-run%s%s%s"
+                          % (p, k, s["checked"],
+                             ", float outputs differ below the floor, up to %.3g" % s["noise"] if s["noise"] else "",
+                             ", integer outputs differed in %d (not judged: seeds, offsets, counters)"
+                             % s["ints"] if s["ints"] else "",
+                             " (tagged nondeterministic_bitwise)" if s["bitwise"] else ""), flush=True)
         if not (self.verbose and self._sites):
             return
         p = "[op-nan][rank %d]" % self.rank
@@ -4161,12 +5648,12 @@ class OpNanCapture(TorchDispatchMode):
                      e["site"], "  -> %s" % e["file"] if e["file"] else ""), flush=True)
 
 
-# Backwards-compatible alias for the check-only mode in docs/hipblaslt-nan-check.md.
+# Backwards-compatible alias for the check-only mode.
 OpNanCheck = OpNanCapture
 
 
 # ---------------------------------------------------------------------------
-# capture_from_env: the mad-debug-nan skill's defaults in one call, for ANY workload.
+# capture_from_env: the mad-debug-numeric skill's defaults in one call, for ANY workload.
 #
 #   from nan_doctor_rt.op_nan_capture import capture_from_env
 #   cap = capture_from_env()        # after model/optimizer construction
@@ -4205,8 +5692,34 @@ OpNanCheck = OpNanCapture
 #                                 checks are deferred, and it relies on no write
 #                                 bypassing the dispatcher -- see _late_norms)
 #   NAN_CAPTURE_VERIFY_EVERY      N > 0 = recompute every N-th call of each GEMM-family
-#                                 site in higher precision and capture a WRONG finite
-#                                 value (origin wrong_value); 0 (default) = off
+#                                 site in higher precision -- and of each fused op with a
+#                                 value check (math_refs.VALUE_CHECKS: aiter MLA decode) --
+#                                 and capture a WRONG finite value (origin wrong_value);
+#                                 0 (default) = off
+#   NAN_CAPTURE_RERUN_EVERY       N > 0 = re-run every N-th call of each op on copies of
+#                                 its pre-call operands and capture it (origin wrong_value,
+#                                 verify kind rerun) when the outputs differ beyond rounding
+#                                 noise: a race in any library, no reference needed;
+#                                 0 (default) = off
+#   NAN_CAPTURE_TWIN_EVERY        N > 0 = every N-th call of each fused op with a second implementation
+#                                 (twins.py: vLLM / SGLang native, aiter Triton beside asm, the fp64
+#                                 twin of an Inductor kernel) runs it on the op's pre-call inputs and
+#                                 captures a WRONG finite value (origin wrong_value, verify kind twin);
+#                                 a math_refs value check wins for its op; 0 (default) = off
+#   NAN_CAPTURE_TWIN_OPS          the ops the twin check covers (as NAN_CAPTURE_RERUN_OPS); default all
+#   NAN_CAPTURE_TWIN_MAX_BYTES    skip a twin call whose operands exceed this (default 1 GiB)
+#   NAN_CAPTURE_TWIN_MEDIAN_X     a twin hit exceeds max(floor, this x the site's median error) (default 5)
+#   NAN_CAPTURE_RERUN_MAX_BYTES   skip a rerun whose operands exceed this (default 4 GiB)
+#   NAN_CAPTURE_RERUN_OPS         the ops the rerun check covers (classes, namespaces, names, as
+#                                 for NAN_CAPTURE_OP_CLASSES); default every op -- independent of
+#                                 NAN_CAPTURE_OP_CLASSES, which narrows only the NaN scan
+#   NAN_CAPTURE_TRITON            1 (default) = watch Triton kernels launched from Python
+#                                 as triton.<kernel>.<variant> ops ("Triton launches"); 0 = off
+#   NAN_CAPTURE_INDUCTOR          1 (default) = watch torch.compile's generated kernels as
+#                                 inductor.<kernel>.s<hash> ops ("Inductor launches"), in
+#                                 suspended regions too; 0 = off
+#   NAN_CAPTURE_TRITON_WRITE_MAX_BYTES  a Triton tensor argument above this is taken as
+#                                 read-only: not snapshotted, not scanned (default 512 MiB)
 #   NAN_CAPTURE_BOUNDS            1 = check every GEMM-family output against the
 #                                 Cauchy-Schwarz bound (mm/addmm/bmm/baddbmm); default 0
 #   NAN_CAPTURE_RECORD_COLLECTIVE "group:seq[:step],..." (R3): every member rank saves that
@@ -4251,8 +5764,14 @@ class _ArmedCapture:
                   "containers_per_gpu=%s" % (i, self.capture.out, _gpu_procs(),
                                              _declared_containers_per_gpu()), flush=True)
         if self.progress_every and i % self.progress_every == 0:
-            print("[op-nan] Progress step %d watched_ops=%d armed=%s"
-                  % (i, getattr(self.capture, "n", 0), self.armed), flush=True)
+            gs = getattr(self.capture, "graph_skipped", 0)
+            # twin checks so far: a framework that kills the process at exit (SGLang's scheduler) never prints the
+            # close() census, and a clean run must still show the twins judged something
+            tw = sum(v["checked"] for k, v in getattr(self.capture, "_vsites", {}).items() if k[1] == "twin")
+            print("[op-nan] Progress step %d watched_ops=%d armed=%s%s%s"
+                  % (i, getattr(self.capture, "n", 0), self.armed,
+                     " graph_capture_skipped=%d" % gs if gs else "",
+                     " twin_checked=%d" % tw if getattr(self.capture, "twin_every", 0) else ""), flush=True)
 
     def close(self):
         if self.capture is not None and self.armed:
@@ -4277,7 +5796,7 @@ class _ArmedCapture:
 _SUSPENDED = {}     # "module:Qual.name" -> original attribute (patched once per process)
 
 
-def suspend_capture_in(paths):
+def suspend_capture_in(paths, quiet=False):
     """Run each callable in `paths` ("pkg.module:Class.attr" or "pkg.module:func",
     comma-separated or a list) with every user dispatch mode switched off.
 
@@ -4289,6 +5808,9 @@ def suspend_capture_in(paths):
     lets it run; its body is then invisible to the capture, exactly like any other
     compiled region.  Patch the attribute the model looks up at call time (a class
     attribute or module global read at each call), after the model is imported.
+    quiet=True hides the region's Triton / Inductor launches too: for a framework's
+    warm-up / dummy forwards and graph capture, whose values are no model output
+    (2026-11-24, vLLM TP: a graph-size warm-up's padded rows read as the bug).
     Returns the list of paths patched."""
     import importlib
     import inspect
@@ -4300,7 +5822,18 @@ def suspend_capture_in(paths):
             done.append(path)
             continue
         mod_name, _, qual = path.partition(":")
-        owner = importlib.import_module(mod_name)
+        if not mod_name or not qual:
+            # "Class.attr" without its module dies in import_module as a bare
+            # ModuleNotFoundError on every rank -- say what the value must look like
+            raise ValueError("NAN_CAPTURE_SUSPEND entry %r: expected \"pkg.module:Qual.name\" "
+                             "(module, a colon, then the attribute), e.g. "
+                             "torchtitan.models.common.attention:FlexAttention.compiled_flex_attn"
+                             % path)
+        try:
+            owner = importlib.import_module(mod_name)
+        except ImportError as e:
+            raise ImportError("NAN_CAPTURE_SUSPEND entry %r: cannot import module %r (%s) -- "
+                              "is the model's source on PYTHONPATH?" % (path, mod_name, e)) from e
         parts = qual.split(".")
         for p in parts[:-1]:
             owner = getattr(owner, p)
@@ -4308,8 +5841,29 @@ def suspend_capture_in(paths):
         fn = raw.__func__ if isinstance(raw, (staticmethod, classmethod)) else raw
 
         def wrapper(*a, _fn=fn, **k):
-            with _disable_current_modes():
-                return _fn(*a, **k)
+            # The capture popped here still watches the region's Triton / Inductor
+            # launches (_active_capture) unless quiet; its dispatcher ops stay unseen.
+            if quiet:
+                _QUIET[0] += 1
+                try:
+                    with _disable_current_modes():
+                        return _fn(*a, **k)
+                finally:
+                    _QUIET[0] -= 1
+            try:
+                from torch.utils._python_dispatch import _get_current_dispatch_mode_stack
+                cap = next((m for m in reversed(_get_current_dispatch_mode_stack())
+                            if isinstance(m, OpNanCapture)), None)
+            except Exception:                           # noqa: BLE001
+                cap = None
+            if cap is not None:
+                _SUSPENDED_CAPS.append(cap)
+            try:
+                with _disable_current_modes():
+                    return _fn(*a, **k)
+            finally:
+                if cap is not None:
+                    _SUSPENDED_CAPS.pop()
         wrapper.__wrapped__ = fn
         wrapper.__name__ = getattr(fn, "__name__", parts[-1])
         if isinstance(raw, staticmethod):
@@ -4347,7 +5901,15 @@ def capture_from_env(**overrides):
               late_norms=env("NAN_CAPTURE_LATE_NORMS", "0") == "1",
               verify_every=int(env("NAN_CAPTURE_VERIFY_EVERY", "0")),
               bounds=env("NAN_CAPTURE_BOUNDS", "0") == "1",
-              record_collectives=env("NAN_CAPTURE_RECORD_COLLECTIVE"))
+              record_collectives=env("NAN_CAPTURE_RECORD_COLLECTIVE"),
+              rerun_every=int(env("NAN_CAPTURE_RERUN_EVERY", "0")),
+              rerun_max_bytes=int(float(env("NAN_CAPTURE_RERUN_MAX_BYTES", str(4 << 30)))),
+              rerun_ops=env("NAN_CAPTURE_RERUN_OPS") or None,
+              triton=env("NAN_CAPTURE_TRITON", "1") == "1",
+              inductor=env("NAN_CAPTURE_INDUCTOR", "1") == "1",
+              twin_every=int(env("NAN_CAPTURE_TWIN_EVERY", "0")),
+              twin_ops=env("NAN_CAPTURE_TWIN_OPS") or None,
+              twin_max_bytes=int(float(env("NAN_CAPTURE_TWIN_MAX_BYTES", str(1 << 30)))))
     if env("NAN_CAPTURE_OP_CLASSES"):
         kw["include_only_op_classes"] = env("NAN_CAPTURE_OP_CLASSES")
     if env("NAN_CAPTURE_SUSPEND"):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""mad-debug-nan step 8: build a PERSISTENT hipBLASLt library overlay carrying a binary fix
+"""mad-debug-numeric step 8: build a PERSISTENT hipBLASLt library overlay carrying a binary fix
 to one Tensile kernel, and read it back.
 
 The mutation sweep (step 7) builds its overlays in temp dirs and throws them away;
@@ -17,7 +17,9 @@ the capture did not have; see step8-fix.md).
     python3 -m nan_doctor_rt.fix_overlay --out <ARTIFACT_DIR>/fix-overlay-build \\
         --kernel-file <ARTIFACT_DIR>/replay/G1/kernel.<job>.<host>.txt \\
         [--selector lgkm_wait] [--payload lgkmcnt0] [--addr 0x... ...] [--expect-sites 6]
-    -> READBACK=OK|FAIL, OVERLAY=<path>, <out>/overlay.json
+    -> READBACK=OK|FAIL, OVERLAY=<path>, <out>/overlay.json, and the two files step 8 ships
+       in fix/patch/: <out>/kernel.diff (the disassembly before -> after, read back from the
+       overlay) and <out>/kernel_name.txt
 """
 if not __package__:  # run by path: make the package importable so relative imports work
     import os as _os
@@ -25,6 +27,7 @@ if not __package__:  # run by path: make the package importable so relative impo
     _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
     __package__ = "nan_doctor_rt"
 import argparse
+import difflib
 import json
 import os
 import sys
@@ -84,11 +87,22 @@ def main():
            "readback_ok": ok}
     with open(os.path.join(args.out, "overlay.json"), "w") as f:
         json.dump(rec, f, indent=1)
+    # The .diff step8-fix.md ships in fix/patch/ -- made from the read-back, so it shows what
+    # the overlay holds, not what was asked (2026-11-20: none was written; made by hand)
+    fmt = lambda d: ["0x%X  %s\n" % (a, d[a]) for a in sorted(d)]
+    with open(os.path.join(args.out, "kernel.diff"), "w") as f:
+        f.writelines(difflib.unified_diff(fmt(before), fmt(after), "%s (stock)" % kernel,
+                                          "%s (%s:%s)" % (kernel, args.selector, args.payload), n=3))
+    with open(os.path.join(args.out, "kernel_name.txt"), "w") as f:
+        f.write(kernel + "\n")
     for line in rec["changed"]:
         print("  " + line)
     print("READBACK=%s (%d instruction(s) differ, %d selected)"
           % ("OK" if ok else "FAIL", len(changed), len(want)))
     print("OVERLAY=%s" % overlay)
+    print("LIBPATH=%s   (HIPBLASLT_TENSILE_LIBPATH / TENSILE_LIBPATH: the arch dir for a per-arch library)"
+          % kp.tensile_libpath(overlay, t.arch))
+    print("DIFF=%s" % os.path.join(args.out, "kernel.diff"))
     return 0 if ok else 1
 
 

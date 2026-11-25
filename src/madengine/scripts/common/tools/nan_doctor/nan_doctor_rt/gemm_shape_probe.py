@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic wrong/NaN GEMM: what does it depend on? (mad-debug-nan step 7, GEMM recipe)
+"""Deterministic wrong/NaN GEMM: what does it depend on? (mad-debug-numeric step 7, GEMM recipe)
 
     python3 -m nan_doctor_rt.gemm_shape_probe capsule <capsule.pt> [--call N] [--repeat 20] [--synthesize]
     python3 -m nan_doctor_rt.gemm_shape_probe sweep --k K --n N [--dtype bf16] [--m-to 20000] [--tile 128x112]
@@ -11,7 +11,8 @@ capsule   replays the capsule's chain up to the GEMM-family call --call (default
           groups are wrong, with their row counts), repeatability, and one change at a
           time -- contiguous copies, fresh storage, random data at the recorded scale
           (real A / random B and the reverse), the bad group alone, the bad group as a
-          plain torch.mm.  Saves the operands as <capsule dir>/gemm<call>_operands.pt.
+          plain torch.mm.  Saves the operands as <--out-dir, default the cwd>/gemm<call>_operands.pt
+          (never beside the capsule: that may be a package dir, which would ship ~100 MB more).
           Fails on random data too = shape-dependent: go to `sweep`.
 sweep     x(M,K) @ w(K,N) for every M in 1..--m-to on fresh random data vs fp32: the bad M
           as ranges, and per range the output tile count for --tile (hipBLASLt's MT<m>x<n>
@@ -82,7 +83,9 @@ def capsule_mode(a):
     offs = args_[2] if len(args_) > 2 and isinstance(args_[2], torch.Tensor) else kw.get("offs")
     print("op %s  A %s %s %s  B %s %s %s  offs %s" % (op, tuple(A.shape), A.stride(), A.dtype, tuple(B.shape),
                                                     B.stride(), B.dtype, None if offs is None else offs.tolist()))
-    out_pt = os.path.join(os.path.dirname(os.path.abspath(a.capsule)), "gemm%s_operands.pt" % (a.call or "op"))
+    out_dir = a.out_dir or os.getcwd()
+    os.makedirs(out_dir, exist_ok=True)
+    out_pt = os.path.join(out_dir, "gemm%s_operands.pt" % (a.call or "op"))
     torch.save({"op": op, "args": [x.cpu() if isinstance(x, torch.Tensor) else x for x in args_], "kwargs": kw},
                out_pt)
     print("operands saved: %s" % out_pt)
@@ -188,6 +191,7 @@ def main():
     c.add_argument("--call", type=int, default=None)
     c.add_argument("--repeat", type=int, default=20)
     c.add_argument("--synthesize", action="store_true", help="shapes-only capsule")
+    c.add_argument("--out-dir", default=None, help="where the operands .pt goes (default: the cwd)")
     for p in (sub.add_parser("sweep"), sub.add_parser("sentinel")):
         p.add_argument("--k", type=int, required=True)
         p.add_argument("--n", type=int, required=True)
