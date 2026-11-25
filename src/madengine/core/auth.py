@@ -206,18 +206,64 @@ _PLACEHOLDER_CREDENTIAL_PATTERN = (
 _PLACEHOLDER_CREDENTIAL_RE = re.compile(_PLACEHOLDER_CREDENTIAL_PATTERN)
 
 
+# Templates committed in MAD credential.json. These are not GitHub logins.
+_MAD_PLACEHOLDER_CREDENTIALS = frozenset(
+    {
+        "add-your-github-id",
+        "add-your-github-pat-here",
+        "add-your-github.amd.com-username-here",
+        "add-your-gerrit-username-here",
+        "add your credential",
+        "generated-by-jenkins-github-app-token",
+    }
+)
+
+
 def is_placeholder_credential(value: Optional[str]) -> bool:
     """Return True when a username or password is a shipped template value.
 
     Matches the examples in ``credential.json`` and the login error text,
-    such as ``your-docker-username`` and ``your-dockerhub-password-or-token``.
+    such as ``your-docker-username``, ``add-your-github-id``, and
+    ``add-your-github-pat-here``.
     """
     if value is None:
         return False
     text = str(value).strip().lower()
     if not text:
         return False
+    if text in _MAD_PLACEHOLDER_CREDENTIALS or text.startswith("add-your-"):
+        return True
     return _PLACEHOLDER_CREDENTIAL_RE.fullmatch(text) is not None
+
+
+def github_clone_identity(entry: object) -> Optional[Tuple[str, str]]:
+    """Return a username and token for cloning a GitHub repo over HTTPS.
+
+    A usable ``credential.json`` entry wins. Template values are ignored.
+    When nothing usable is configured, use ``gh auth token`` from the host
+    if the CLI is already logged in. The token is not logged.
+    """
+    if _usable_credentials(entry):
+        assert isinstance(entry, dict)
+        return str(entry["username"]).strip(), str(entry["password"]).strip()
+    token = _host_gh_token()
+    if token:
+        return "x-access-token", token
+    return None
+
+
+def _host_gh_token() -> str:
+    """Return the current ``gh`` token, or an empty string when unavailable."""
+    try:
+        out = subprocess.check_output(
+            ["gh", "auth", "token"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.strip()
 
 
 def docker_cli_username() -> Optional[str]:
