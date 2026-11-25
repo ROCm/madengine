@@ -404,10 +404,10 @@ def vllm_check(files, rs, root):
         return
     if serve and not uses:
         print(
-            "VLLM     the run script starts a vLLM server (`vllm serve` / api_server): the model "
-            "runs in the\n           server's engine processes, not in a loop of yours -- not "
-            "wireable as is; drive the same\n           model through offline vllm.LLM in one "
-            "process (step1-ask.md *vLLM*)"
+            "VLLM     the run script starts a vLLM server (`vllm serve` / api_server): run it "
+            "as is through\n           nan_doctor_rt/bin/serve_run.sh --server '<the serve "
+            "command, --port {port}>' --requests <the user's\n           requests.jsonl> -- "
+            "the capture shims act in the server's workers (step1-ask.md *vLLM*)"
         )
         return
     both = files + [rs]
@@ -447,8 +447,8 @@ def vllm_check(files, rs, root):
             "VLLM     parallel size set at %s: > 1 puts the model in one worker process per "
             "rank -- capture lines\n           get nan_doctor_rt/vllm_capture on PYTHONPATH "
             "(the capture is built inside every TP worker);\n           pipeline parallel > 1 "
-            "or several nodes: not covered -- capture at size 1 if the NaN survives it,\n"
-            "           else step 5N (CAPTURE_UNREACHABLE) (step1-ask.md *vLLM*)"
+            "and several nodes (vLLM's nnodes / node_rank, not Ray) too -- the\n"
+            "           manifest tags each rank's stage (step1-ask.md *vLLM*)"
             % short(tp, 2, root=root)
         )
     forced = _dedup(grep(r"enforce_eager\s*=\s*True", both, include=("*.py", "*.sh")))
@@ -488,9 +488,10 @@ def sglang_check(files, rs, root):
         return
     if server and not uses:
         print(
-            "SGLANG   the run script starts an SGLang server (sglang.launch_server): drive the "
-            "same model through\n           offline sglang.Engine in one script and debug that "
-            "(step1-ask.md *SGLang*)"
+            "SGLANG   the run script starts an SGLang server (sglang.launch_server): run it as "
+            "is through\n           nan_doctor_rt/bin/serve_run.sh --api sglang --server '<the "
+            "command, --port {port}>' --requests <the\n           user's requests.jsonl>; "
+            "capture lines as below (step1-ask.md *SGLang*)"
         )
         return
     print(
@@ -512,8 +513,10 @@ def sglang_check(files, rs, root):
     ]
     if tp:
         print(
-            "SGLANG   parallel size set at %s: > 1 is not supported by the capture -- capture "
-            "at size 1 if the\n           NaN survives it" % short(tp, 2, root=root)
+            "SGLANG   parallel size set at %s: > 1 -- one capture per scheduler rank (a "
+            "replica's ranks stop\n           together), one capsule dir per data-parallel "
+            "replica; a GPU-list field per trial\n           (step1-ask.md *SGLang*)"
+            % short(tp, 2, root=root)
         )
 
 

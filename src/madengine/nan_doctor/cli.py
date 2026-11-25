@@ -22,6 +22,11 @@ COMMANDS = {
     "summary": ("summary", "argv", "summarise one replay attempt directory"),
     "package": ("package", "argv", "6: build a standalone reproducer directory"),
     "readme": ("repro_readme", "argv", "6: write the reproducer README, pack, re-pack"),
+    "verify-nodes": (
+        "verify_nodes",
+        "argv",
+        "6: run the package on K other SLURM nodes; score each node",
+    ),
     "report": (
         "report",
         "sys",
@@ -31,7 +36,7 @@ COMMANDS = {
     "ledger": (
         "ledger",
         "sys",
-        "append-only investigation ledger: start|note|job|wait|end|table",
+        "append-only investigation ledger: start|note|job|wait|end|skip|table|status",
     ),
     "verdict": ("verdict", "sys", "replay verdict rules: attempt <dir> | kernel <log>"),
     "waves": ("waves", "sys", "summarise a wave of model trials"),

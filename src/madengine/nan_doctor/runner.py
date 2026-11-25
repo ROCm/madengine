@@ -165,6 +165,10 @@ def build_command(
     if name:
         argv += ["--name", name]
     argv += DOCKER_FLAGS
+    if gpus == "all" or "," in gpus:
+        # ranks of two multi-GPU trials share the host's IPC namespace but each container
+        # numbers its processes from 1: RCCL's intra-node setup collides on equal PIDs
+        argv += ["--pid=host"]
     envs = {
         "PYTHONPATH": RUNTIME_MOUNT + ":" + HOST_MOUNT,
         "NAN_DOCTOR_RT": RUNTIME_MOUNT + "/nan_doctor_rt",

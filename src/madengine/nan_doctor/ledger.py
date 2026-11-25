@@ -10,6 +10,7 @@
     madengine nan ledger $L end   step4          # prints the one-liner for the user
     madengine nan ledger $L skip  step2 the user chose to skip it   # a step never run: no visit
     madengine nan ledger $L table                # step-9 per-step table
+    madengine nan ledger $L status               # rewrite <ARTIFACT_DIR>/status.json, print it
 
 Every line is `YYYY-MM-DD HH:MM:SS  <step>  <text>` (`date '+%F %T'`).  `end`
 finds the step's latest `start`, sums the `waiting-user` pairs in between, and
@@ -69,6 +70,191 @@ def append(path, step, text):
     with open(path, "a") as f:
         f.write(ln + "\n")
     print("ledgered: " + ln)  # a confirmation, not a second copy of the ledger line
+    try:
+        write_status(path)
+    except (
+        Exception
+    ) as exc:  # the status file is a view: it must never cost a ledger line
+        print("ledger: status.json not written: %s" % exc, file=sys.stderr)
+
+
+# status.json -- the investigation's state as data, beside the ledger, rewritten on every ledger
+# line (any writer goes through append()).  Read by the numeric-doctor panel / status line mod;
+# its schema is owned here, so a reader never parses ledger wording.  The milestone lines it keys
+# on are the ones the skill already requires: TARBALL, LADDER_RESULT=, HANDOVER announced,
+# ROOT_CAUSE= / NO_ROOT_CAUSE, FIX=.
+STATUS_SCHEMA = 1
+SESSIONS_TMP = "/tmp/numeric-doctor-sessions"
+
+
+def _first(rx, entries, steps=None):
+    for t, s, x in entries:
+        m = re.search(rx, x)
+        if m and (steps is None or re.match(steps, s)):
+            return t, s, m
+    return None
+
+
+def status(path):
+    entries = lines(path)
+    art = os.path.dirname(os.path.abspath(path))
+    rev = list(reversed(entries))
+    st = {
+        "schema": STATUS_SCHEMA,
+        "run": os.path.basename(art),
+        "artifact_dir": art,
+        "ledger": os.path.abspath(path),
+        "updated": entries[-1][0].strftime(FMT) if entries else None,
+        "run_script": None,
+        "state": "running",
+        "current": None,
+        "steps": [],
+        "reproducer": None,
+        "root_cause": None,
+        "fix": None,
+    }
+    hit = _first(r"RUN_SCRIPT=(\S+)", entries)
+    if hit:
+        st["run_script"] = hit[2].group(1)
+    # steps: open = a start with no end/skip after it; done = their `end total=` / `skipped`
+    open_ = collections.OrderedDict()
+    for t, s, x in entries:
+        if x.startswith("start"):
+            open_[s] = t
+        elif x.startswith("end ") or x.startswith("end\t") or x.startswith("skipped"):
+            open_.pop(s, None)
+            m = re.search(r"total=(\S+)", x)
+            st["steps"] = [r for r in st["steps"] if r["step"] != s]
+            st["steps"].append(
+                {"step": s, "total": m.group(1)}
+                if m and not x.startswith("skipped")
+                else {"step": s, "skipped": x.split(None, 1)[1] if " " in x else ""}
+            )
+    if open_:
+        s, t0 = list(open_.items())[-1]
+        job = _first(r"^job=(\S+)\s+(.*)", [e for e in rev if e[1] == s and e[0] >= t0])
+        st["current"] = {
+            "step": s,
+            "since": t0.strftime(FMT),
+            "job": (
+                ("%s %s" % (job[2].group(1), job[2].group(2))).strip() if job else None
+            ),
+        }
+    s9 = [x for t, s, x in entries if s == "step9"]
+    if any(x.startswith("end") for x in s9):
+        st["state"] = "done"
+    elif any(x.startswith("skipped") for x in s9):
+        st["state"] = "stopped"
+    # reproducer: the latest repro tarball (step6 / step6[G] / step6[native|kernel])
+    tb = _first(r"TARBALL\s+([0-9a-f]{64})\s+(\S+)\s+size=(\d+)\s*(.*)", rev, r"step6")
+    if tb:
+        t, s, m = tb
+        p = m.group(2)
+        p = p if os.path.isabs(p) else os.path.join(os.path.dirname(art), p)
+        rp = {
+            "tarball": p,
+            "sha256": m.group(1),
+            "size": int(m.group(3)),
+            "at": t.strftime(FMT),
+            "group": (re.search(r"\[(.*)\]", s) or [None, None])[1],
+            "verdict": None,
+            "rate": None,
+            "host": None,
+            "handover_at": None,
+        }
+        pv = _first(
+            r"TARBALL\s.*proposed=(\S+)", rev, r"step6"
+        )  # a repack's line drops it
+        rp["verdict"] = pv[2].group(1) if pv else None
+        lr = _first(
+            r"LADDER_RESULT=(\S+.*?)(?:\s{2,}|$)",
+            [e for e in rev if "host=" in e[2]],
+            r"step5b|step6",
+        ) or _first(r"LADDER_RESULT=(\S+.*?)(?:\s{2,}|$)", rev, r"step5b|step6")
+        if lr:
+            rp["rate"] = lr[2].group(1).strip()
+            h = re.search(r"host=(\S+)", lr[2].string)
+            rp["host"] = h.group(1) if h else None
+        ho = _first(r"HANDOVER announced", rev, r"step6")
+        if ho:
+            rp["handover_at"] = ho[0].strftime(FMT)
+        st["reproducer"] = rp
+    rc = _first(r"(NO_ROOT_CAUSE|ROOT_CAUSE=(\S+?)[:;]?\s)(.*)", rev, r"step7")
+    if rc:
+        t, s, m = rc
+        st["root_cause"] = {
+            "status": "NO_ROOT_CAUSE" if m.group(1) == "NO_ROOT_CAUSE" else "FOUND",
+            "text": m.group(3).strip(),
+            "at": t.strftime(FMT),
+        }
+    fx = _first(r"FIX=(.*)", rev, r"step8")
+    if fx:
+        t, s, m = fx
+        ftb = _first(r"TARBALL\s+([0-9a-f]{64})\s+(\S+)", rev, r"step8")
+        st["fix"] = {
+            "text": m.group(1).strip(),
+            "at": t.strftime(FMT),
+            "kind": (
+                "NO_FIX"
+                if m.group(1).startswith("NO_FIX")
+                else "WORKAROUND" if m.group(1).startswith("WORKAROUND") else "FIX"
+            ),
+            "tarball": ftb[2].group(2) if ftb else None,
+        }
+    st["line"] = status_line(st)
+    return st
+
+
+def status_line(st):
+    """One line for a status bar: the milestones so far and what runs now."""
+    parts = []
+    rp = st["reproducer"]
+    if rp:
+        n = re.search(r"\d+/\d+", rp["rate"] or "")
+        parts.append(
+            "repro %s%s"
+            % (os.path.basename(rp["tarball"]), " %s" % n.group(0) if n else "")
+        )
+    if st["root_cause"]:
+        parts.append(
+            "root cause "
+            + ("found" if st["root_cause"]["status"] == "FOUND" else "none")
+        )
+    if st["fix"]:
+        parts.append("fix: " + st["fix"]["text"].split(";")[0][:60])
+    if st["state"] != "running":
+        parts.append(st["state"])
+    elif st["current"]:
+        cur = st["current"]
+        parts.append("%s%s" % (cur["step"], " job " + cur["job"] if cur["job"] else ""))
+    return "%s: %s" % (st["run"], " | ".join(parts) or "starting")
+
+
+def write_status(path):
+    import json
+
+    st = status(path)
+    out = os.path.join(st["artifact_dir"], "status.json")
+    tmp = out + ".tmp.%d" % os.getpid()
+    with open(tmp, "w") as f:
+        json.dump(st, f, indent=1)
+    os.replace(tmp, out)
+    # which investigation this Claude Code session runs: the panel looks it up by session id
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if sid and re.fullmatch(r"[\w-]{8,64}", sid):
+        for d in (
+            os.path.join(os.path.dirname(st["artifact_dir"]), ".sessions"),
+            SESSIONS_TMP,
+        ):
+            try:
+                os.makedirs(d, exist_ok=True)
+                if d == SESSIONS_TMP:
+                    os.chmod(d, 0o1777)
+                with open(os.path.join(d, sid), "w") as f:
+                    f.write(st["artifact_dir"] + "\n")
+            except OSError:
+                pass
+    return out
 
 
 def sacct(jobs):
@@ -428,6 +614,9 @@ def main():
     path, cmd, rest = a[0], a[1], a[2:]
     if cmd == "table":
         return table(path)
+    if cmd == "status":
+        print(write_status(path))
+        return print(status(path)["line"])
     if not rest:
         sys.exit(__doc__)
     # one spelling per step: SKILL.md says "5N", step5n-native.md logs `step5n`; an agent wrote
