@@ -13,9 +13,11 @@
 # thread-local dispatch mode sees every eager op: the prefill, and aiter / sgl_kernel custom ops as one op each.
 # Decode steps replayed from HIP graphs are not seen.
 #
-# Nothing happens without NAN_CAPTURE_DIR. Prints `[sglang-capture] ...` lines. Tensor parallel > 1 (one scheduler
-# per rank, each its own capture with no shared stop) is not supported: capture at tp_size 1. Validated with
-# SGLang 0.5.23 (lmsysorg/sglang:v0.5.23-rocm10-mi35x, 2026-11-20); re-check the patch point after an upgrade.
+# Nothing happens without NAN_CAPTURE_DIR. Prints `[sglang-capture] ...` lines. Tensor / pipeline parallel > 1: one
+# scheduler per rank, one capture each; their coordinated stop runs over the replica's default group (every rank
+# runs every batch). Data parallel > 1 (replicas, not DP attention): one capture dir per replica, <dir>/dp<i>.
+# Validated with SGLang 0.5.23 (lmsysorg/sglang:v0.5.23-rocm10-mi35x, 2026-11-20); re-check the patch point after an
+# upgrade.
 # A sitecustomize later on sys.path (the image's own) is still run.
 import importlib.abc
 import importlib.util
@@ -37,15 +39,33 @@ def _patch(mod):
     def run_batch(self, *a, **kw):
         cap = state.get("cap")
         if cap is None:
-            tp = getattr(self, "tp_size", 1)
-            if tp > 1:
-                _say("tp_size=%d: not supported (one capture per rank, no shared stop) -- capture at tp_size 1" % tp)
+            sa = getattr(self, "server_args", None)
+            tp = int(getattr(sa, "tp_size", None) or getattr(self, "tp_size", 1) or 1)
+            pp = int(getattr(sa, "pp_size", 1) or 1)
+            dp = int(getattr(sa, "dp_size", 1) or 1)
+            dpa = bool(getattr(sa, "enable_dp_attention", False))
+            tp_rank = int(getattr(self, "tp_rank", 0) or 0)
+            # the stop all-reduce runs over the default group: in a scheduler process that is this replica's
+            # tp x pp ranks, which all run every batch (they share each forward) -- lockstep by construction.
+            # Their siblings sit on other GPUs: not contention (op_nan_capture._sibling_ranks_on_other_gpus)
+            os.environ.setdefault("LOCAL_WORLD_SIZE", str(tp * pp))
+            os.environ.setdefault("LOCAL_RANK", str(tp_rank))
+            if dp > 1 and not dpa and os.environ.get("NAN_CAPTURE_DIR"):
+                # data-parallel replicas run independent forwards, each its own torch.distributed world: one
+                # capture dir per replica, or the replicas' rank-0 manifests overwrite each other
+                gpu = int(getattr(self, "gpu_id", 0) or 0)
+                rep = (gpu - int(getattr(sa, "base_gpu_id", 0) or 0)) // max(1, tp * pp)
+                os.environ["NAN_CAPTURE_DIR"] = os.path.join(os.environ["NAN_CAPTURE_DIR"], "dp%d" % rep)
+                os.makedirs(os.environ["NAN_CAPTURE_DIR"], exist_ok=True)   # the capture asserts its dir exists
+                os.chmod(os.environ["NAN_CAPTURE_DIR"], 0o777)
             parent = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             if parent not in sys.path:      # <parent>/nan_doctor_rt/sglang_capture/sitecustomize.py
                 sys.path.append(parent)
             from nan_doctor_rt.op_nan_capture import capture_from_env
             cap = state["cap"] = capture_from_env()
-            _say("capture built in the scheduler, pid %d" % os.getpid())
+            _say("capture built in the scheduler, pid %d, tp %d (rank %d) pp %d dp %d%s -> %s"
+                 % (os.getpid(), tp, tp_rank, pp, dp, " (dp attention: one world)" if dpa else "",
+                    os.environ.get("NAN_CAPTURE_DIR", "-")))
         cap.step()
         return orig(self, *a, **kw)
 

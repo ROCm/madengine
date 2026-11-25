@@ -53,7 +53,7 @@ FLOORS = {
         "float32": 1e-4,
     },  # log-ratio gap of a step's loss
     # the grad norm swings by up to ~3.4x between two runs of ONE configuration after a few steps
-    # (torchcompile_nan_forward): only the three-way rule uses it, and only a > 4x spike counts
+    # (softmoe_train_nan): only the three-way rule uses it, and only a > 4x spike counts
     "gnorm_rel": {"bfloat16": 1.39, "float16": 1.39, "float32": 1.39},
     "fwd_rel": {
         "bfloat16": 0.03,

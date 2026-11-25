@@ -19,8 +19,8 @@ capture format answers the question directly instead:
              its kernel source hash and operand shapes instead of the stack: the
              stack runs through the generated module, whose path is a per-process
              cache directory, so every trial's capsule had its own digest and one
-             kernel came out as one group per trial (2026-11-23, qwen_vllm_rmsnorm_nan
-             G1..G3 and torchcompile_nan_forward G1..G4, all one
+             kernel came out as one group per trial (2026-11-23, qwen_vllm_serve_nan
+             G1..G3 and softmoe_train_nan G1..G4, all one
              inductor.<kernel>.s<hash>).  The source hash already names the site.
 
   call index the capsule's `identity` also carries the op call number, but that

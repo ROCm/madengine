@@ -161,6 +161,11 @@ Which candidate survives: every non-finite output downstream of a pending candid
 inherits that candidate's site as its root (a taint by storage, through every operand --
 aiter declares all of its arguments mutable), and a surviving NaN writes its root, whatever
 its origin but `uninitialized` -- a `math` root (0 * rsqrt(0)) is a model's NaN, not a mask.
+An escape (.item(), .cpu(), a collective) has no op in hand: the escaping tensors' root is
+written.  An op that writes into a buffer already holding a tainted NaN (a Triton or aiter
+kernel, whose every pointer counts as written) is downstream, not a candidate of its own.  A
+"view" op that copied this call (aten.to.dtype changing the dtype under inference_mode) computes
+a tensor like any other: born this step, scanned, tainted.
 No taint: the earliest candidate not of a soft origin.
 
 What it cannot do otherwise: tell WHICH pending candidate a surviving NaN came from.  When
@@ -1017,6 +1022,18 @@ def is_view(func):
     return v
 
 
+def is_call_view(func, args, kwargs, out):
+    """is_view, judged on this call: every output really shares an input's storage.  A schema
+    that MAY alias (aten.to.dtype, contiguous, reshape: Tensor(a)) returns fresh storage when it
+    has to copy -- a dtype change, a non-contiguous input -- and that call computes a tensor
+    like any other.  Taken as a view, vLLM's .to(bf16) of a NaN looked like a tensor older
+    than the step, and the cat reading it was written instead of the sqrt (2026-11-24)."""
+    if not is_view(func):
+        return False
+    ins = set(_storage_ptr(t) for t in _tensors((args, kwargs)))
+    return all(_storage_ptr(t) in ins for t in _tensors(out))
+
+
 def _tag_names(func):
     """{'core', 'pointwise', ...} -- the op's torch.Tag names, memoised."""
     n = _TAGS_CACHE.get(func)
@@ -1763,7 +1780,9 @@ def _set_rng_states(st):
         torch.cuda.set_rng_state(st["cuda"])
 
 
-_HOST_READ_OPS = frozenset(("aten._local_scalar_dense.default",))
+# aten.item reaches the mode undecomposed under inference_mode (vLLM, SGLang): no autograd
+# key runs its composite kernel first, so a NaN .item()-ed there never escaped (2026-11-25).
+_HOST_READ_OPS = frozenset(("aten._local_scalar_dense.default", "aten.item.default"))
 
 
 def _is_host_read(func, args, kwargs, out):
@@ -3705,7 +3724,7 @@ class OpNanCapture(TorchDispatchMode):
             # written.  Skipping it saves a check kernel per view op, which is
             # what the check costs under co-tenancy.  check_views=True restores
             # it (e.g. for a tensor that was already NaN before arming).
-            if (self.check_views or not is_view(func)) and not vcheck:
+            if (self.check_views or not is_call_view(func, args, kwargs, out)) and not vcheck:
                 self._scan_outputs(func, args, kwargs, out, pre, tracking)
         if vcheck:
             self._guarded(self._verify_value, func, args, kwargs, out, pre, tracking)
@@ -3934,11 +3953,12 @@ class OpNanCapture(TorchDispatchMode):
                     err, floor, name, source, tkind = r
                     got, src = (err, floor, name), (source, tkind)
         if got is None:             # not sampled, or a variant the check does not model
-            if self.check_views or not is_view(func):
+            if self.check_views or not is_call_view(func, args, kwargs, out):
                 self._scan_outputs(func, args, kwargs, out, pre, tracking)
             return
         err, floor, name = got
-        if src is not None and not _twins.owns_outputs(str(func)) and (self.check_views or not is_view(func)):
+        if src is not None and not _twins.owns_outputs(str(func)) and (self.check_views
+                                                                    or not is_call_view(func, args, kwargs, out)):
             # a twin compares finite positions only: the NaN path still scans what the op wrote
             self._scan_outputs(func, args, kwargs, out, pre, tracking)
             if self.captured:
@@ -4012,7 +4032,7 @@ class OpNanCapture(TorchDispatchMode):
         written (`Tensor(a!)`, returns ()) and on gfx950 never writes the
         valid_split_count its Triton reduce then reads from a torch.empty; taking
         the declaration at its word lost the uninit mark, and the capsule named the
-        dummy Final_lse instead (2026-11-23, deepseek_sparse_mla_aiter_uninit_nan).
+        dummy Final_lse instead (2026-11-23, deepseek_sparse_mla_decode_nan).
         Small only (_UNINIT_KEEP_BYTES): the comparison is a host read per buffer.
         """
         raw, garbage = self._raw, self._garbage
@@ -4023,7 +4043,7 @@ class OpNanCapture(TorchDispatchMode):
                     raw.add(p)
                     garbage.discard(p)
             return
-        if not (raw or garbage) or is_view(func):
+        if not (raw or garbage) or is_call_view(func, args, kwargs, out):
             return
         w = op_writes(func)
         written, unchanged = [], set()
@@ -4565,7 +4585,9 @@ class OpNanCapture(TorchDispatchMode):
                 "first_arrival": self._first_arrival,
                 "replica_divergence": getattr(self, "_replica_divergence", None),
                 "coll_seq": dict(self._coll_seq), "groups": dict(self._groups),
-                "job": os.environ.get("SLURM_JOB_ID") or os.environ.get("TORCHELASTIC_RUN_ID")}
+                "job": os.environ.get("SLURM_JOB_ID") or os.environ.get("TORCHELASTIC_RUN_ID"),
+                # a framework's own rank role (vllm_capture: pp<i>/tp<j>): which pipeline stage made the NaN
+                "tag": os.environ.get("NAN_CAPTURE_RANK_TAG") or None}
 
     @staticmethod
     def job_verdict(ranks):
@@ -4584,6 +4606,15 @@ class OpNanCapture(TorchDispatchMode):
             # nothing and made nothing.
             made = [r["rank"] for r in ranks if (r.get("capsule") or r.get("nan_seen"))
                     and not r.get("first_arrival")]
+            # Pipeline stages (vllm_capture tags pp<i>/tp<j>): a stage's activations come from the stage before it
+            # through send / recv, outside the dispatcher, so a later stage's NaN shows no tracked arrival. Of the
+            # candidates, only the EARLIEST stage holding the NaN can have made it (2026-11-24: PP 2, NaN made in
+            # stage 0, both stages were named)
+            stage = {r["rank"]: int(re.match(r"pp(\d+)", r.get("tag") or "").group(1))
+                     for r in ranks if re.match(r"pp\d+", r.get("tag") or "")}
+            if len(made) > 1 and all(m in stage for m in made):
+                first = min(stage[m] for m in made)
+                made = [m for m in made if stage[m] == first]
         arrived = sorted(((r["first_arrival"]["step"], r["first_arrival"]["group"],
                            r["first_arrival"]["seq"], r["rank"])
                           for r in ranks if r.get("first_arrival")))
@@ -5178,7 +5209,7 @@ class OpNanCapture(TorchDispatchMode):
         """Add the storages `func` allocated to the born-this-step set.  A view
         allocates nothing, and a mutating op's returns alias its written
         arguments, which existed before it -- neither is born here."""
-        if is_view(func):
+        if is_call_view(func, args, kwargs, out):
             return
         w = op_writes(func)
         old = set()
@@ -5192,6 +5223,9 @@ class OpNanCapture(TorchDispatchMode):
             ptr = _storage_ptr(t)
             if ptr and ptr not in old:
                 self._born.add(ptr)
+                # Fresh storage holds nothing of a pending NaN, whatever the address held before:
+                # the allocator hands a freed, tainted block straight back (an empty_like out-buffer).
+                self._taint.pop(ptr, None)
 
     def _is_born(self, t):
         """True if `t` lives in a storage allocated this step.  Unknown -> True:
@@ -5205,7 +5239,7 @@ class OpNanCapture(TorchDispatchMode):
         (kind='host': .item(), or any op that turns device tensors into CPU ones)."""
         ins = _tensors((args, kwargs))
         if kind == "host":
-            if str(func) != "aten._local_scalar_dense.default":
+            if str(func) not in _HOST_READ_OPS:
                 outs = _tensors(out)
                 if not outs or any(t.device.type != "cpu" for t in outs):
                     return
@@ -5216,8 +5250,9 @@ class OpNanCapture(TorchDispatchMode):
         # Garbage storage (uninitialized memory, see __init__) is not a NaN anyone
         # computed: handing it to a collective is not an escape.
         garbage = self._garbage
-        if any(_nonfinite(t) and _storage_ptr(t) not in garbage for t in ins):
-            self._survive("a non-finite tensor %s" % how, func)
+        esc = [t for t in ins if _nonfinite(t) and _storage_ptr(t) not in garbage]
+        if esc:
+            self._survive("a non-finite tensor %s" % how, func, escaped=esc)
 
     def _unwritten(self, func, bad, pre, where):
         """True if the non-finite values found in written operand `where` are the ones
@@ -5290,9 +5325,12 @@ class OpNanCapture(TorchDispatchMode):
         # padding into the padded unsharded parameter) is that
         # rank's to judge.  Record the arrival, let the destination inherit it, go on;
         # if it then enters arithmetic here, that op is captured, marked arrived.
+        # Not when the collective's output carries this rank's own taint: the NaN went in from a
+        # pending candidate here (vLLM TP's logits all-gather after a sqrt in layer 20, 2026-11-25).
         if self._coll_out is not None and _is_data_movement(func) \
                 and not any(q["capsule"] is not None and q["capsule"]["nan_origin"]["class"]
-                            not in _SOFT_ORIGINS for q in self._pending):
+                            not in _SOFT_ORIGINS for q in self._pending) \
+                and self._taint_source(dirty) is None:
             arr = self._arrived_via(list(_tensors(read_only)))
             if arr is not None:
                 if self._first_arrival is None:
@@ -5317,6 +5355,15 @@ class OpNanCapture(TorchDispatchMode):
         if dirty and (self._pending or seen_before):
             self._spread_taint(dirty, bad)
             return              # downstream of a NaN already pending or counted this step
+        src = self._written_taint(func, args, kwargs, pre) if self._pending else None
+        if src is not None:
+            # It wrote into a buffer that already held a NaN descending from a pending candidate:
+            # downstream too.  Triton launches and aiter declare every pointer written, so their
+            # inputs never count as `dirty`; vLLM's logit-bias kernel, run in place on NaN logits,
+            # became a candidate of its own and was written instead of the sqrt that made the NaN
+            # (2026-11-24).
+            self._mark_taint(bad, src)
+            return
         site = _call_site(func, where, self._ctx)
         s = self._sites.get(site)
         if s is not None and s["status"] == "pending":
@@ -5366,7 +5413,9 @@ class OpNanCapture(TorchDispatchMode):
         s.update(status="pending", last_step=self._step,
                  origin=capsule["nan_origin"]["class"] if capsule else "no_reference")
         s["hits"] += 1
-        self._pending.append({"site": site, "step": self._step, "capsule": capsule})
+        self._pending.append({"site": site, "step": self._step, "capsule": capsule,
+                              # an operand in raw / garbage storage: its NaN may be allocator garbage
+                              "garbage_in": any(self._uninit(t) for t in _tensors((args, kwargs)))})
         # Its root: the earliest candidate a tensor it read descends from (every operand, not only
         # the read-only ones: aiter declares every argument mutable, Tensor(a0!), so a GEMM fed by a
         # pending RMSNorm's NaN became a candidate of its own, 2026-11-20), else itself.
@@ -5378,6 +5427,26 @@ class OpNanCapture(TorchDispatchMode):
                      capsule["out_nan"] if capsule else "?",
                      capsule["out_inf"] if capsule else "?",
                      _origin_text(capsule["nan_origin"]) if capsule else "?"), flush=True)
+
+    def _written_taint(self, func, args, kwargs, pre):
+        """The candidate site a written operand of `func` descends from, if that operand held
+        non-finite values before the call (pre-call snapshot; without one, its taint alone)."""
+        if not self._taint:
+            return None
+        w = op_writes(func)
+        named = [(i, args[i]) for i in w["idx"] if i < len(args)]
+        named += [("kwarg:" + n, kwargs.get(n)) for n in w["names"]]
+        for key, a in named:
+            src = self._taint_source(a)
+            if src is None:
+                continue
+            if pre:
+                before = (pre["args"].get(key) if isinstance(key, int)
+                          else pre["kwargs"].get(key[len("kwarg:"):]))
+                if before is not None and not any(_nonfinite(t) for t in _tensors(before)):
+                    continue
+            return src
+        return None
 
     def _spread_taint(self, dirty, bad):
         """`bad` was computed from non-finite inputs: it inherits the candidate site the
@@ -5403,25 +5472,57 @@ class OpNanCapture(TorchDispatchMode):
         return None
 
     def _survive(self, reason, func, args=None, kwargs=None, bad=None, pre=None,
-                 where=None):
+                 where=None, escaped=None):
         """The NaN outlived its step: write the pending candidate it most likely
-        came from (the earliest not of a benign origin), else capture `func`."""
+        came from (its taint root, else the earliest not of a benign origin), else
+        capture `func`.  `escaped`: the non-finite tensors of an escape (no op in hand)."""
         cands = [p for p in self._pending if p["capsule"] is not None]
         pick = next((p for p in cands
                      if p["capsule"]["nan_origin"]["class"] not in _SOFT_ORIGINS), None)
-        if bad is not None:
+        if bad is not None or escaped:
             # The surviving NaN's root (taint: every op downstream of a pending candidate inherits
             # the earliest candidate's site) is where it was born -- write that one, whatever its
             # origin but allocator garbage: a `math` root (0 * rsqrt(0) in an eps-0 norm, a model /
             # numerics NaN, 2026-11-20) is the NaN that survived, not the downstream GEMM that only
             # carried it.  No taint: the first non-soft candidate, as before.
-            src = self._taint_source((args, kwargs, bad))
+            # An escape (.item(), a collective) has no op in hand: the escaping tensors carry the
+            # root.  Without it a vLLM host read of the logits wrote the Triton logit-bias kernel
+            # that had only written into them, not the aten.sqrt that made the NaN (2026-11-24).
+            src = self._taint_source((args, kwargs, bad) if bad is not None else escaped)
             root = next((p for p in cands if p["site"] == src
                          and p["capsule"]["nan_origin"]["class"] != "uninitialized"), None)
             if root is not None and root is not pick:
                 reason += "; descends from the pending %s candidate %s" % (
                     root["capsule"]["nan_origin"]["class"], _site_text(src))
                 pick = root
+        else:
+            root = None
+        if pick is not None:
+            # Taint is lost through ops the capture cannot see into (a collective's far side, a
+            # suspended region), and a candidate handed such an untainted NaN roots it at itself.
+            # So a candidate that made a NaN from finite inputs, of any origin but garbage, beats a
+            # pick -- by taint or not -- that is the weaker source of a NaN: one that made
+            # none (only Inf -- a -inf mask, an earlier step's hit of a re-hit site), or one handed
+            # NaN operands not in allocator garbage (vLLM TP's logit kernels on the all-gathered
+            # logits after a sqrt in layer 20, 2026-11-25).  An out-param kernel whose buffers held
+            # garbage keeps the pick: its NaN may well be its own.
+            pc = pick["capsule"]
+            handed = (pc.get("inputs_finite") is not True and not pick.get("garbage_in")
+                      and any((o.get("nan") or 0) > 0
+                              for v in (pc.get("nonfinite_operands") or {}).values() for o in v))
+            made = next((p for p in cands if p is not pick
+                         and p["capsule"].get("inputs_finite") is True
+                         and (p["capsule"].get("out_nan") or 0) > 0
+                         and p["capsule"]["nan_origin"]["class"] != "uninitialized"), None)
+            surv = [bad] if bad is not None else list(escaped or ())
+            surv_nan = any(isinstance(t, torch.Tensor) and t.is_floating_point()
+                           and _count_where(torch.isnan, t) for t in surv)
+            if made is not None and surv_nan and (handed or not (pc.get("out_nan") or 0)):
+                reason += ("; %s %s, the pending %s candidate %s made a NaN from finite inputs"
+                           % (_site_text(pick["site"]),
+                              "was handed NaN operands" if handed else "made no NaN",
+                              made["capsule"]["nan_origin"]["class"], _site_text(made["site"])))
+                pick = made
         if pick is None and cands and bad is None:
             if self.world > 1 and all(p["capsule"]["nan_origin"]["class"] == "uninitialized"
                                       for p in cands):
@@ -5733,6 +5834,7 @@ OpNanCheck = OpNanCapture
 #                                 dispatch mode, e.g. torchtitan's
 #                                 torchtitan.models.common.attention:FlexAttention.compiled_flex_attn
 #   NAN_PROGRESS_EVERY            print a progress line every N step() calls (0 = off)
+#   NAN_CAPTURE_RANK_TAG          a label for this rank in the job manifest (set by scripts/vllm_capture: pp<i>/tp<j>)
 #
 # step() also calls sync_stop() when torch.distributed runs with world size > 1:
 # once per step, on every rank, at the top of the iteration -- outside any other

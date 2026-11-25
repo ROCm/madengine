@@ -19,8 +19,11 @@
 # collectives). Not seen: Triton kernels inside compiled pieces, and HIP-graph replays (decode at <= 512 tokens).
 #
 # The engine core must be in-process (VLLM_ENABLE_V1_MULTIPROCESSING=0) only for TP 1; at TP > 1 the workers are
-# the model's processes either way. Pipeline parallel > 1 and multi-node runs are not covered (the default group
-# spans more than one TP group). Nothing happens without NAN_CAPTURE_DIR. Prints `[vllm-capture] ...` lines.
+# the model's processes either way. Pipeline parallel > 1 and multi-node (vLLM's own --nnodes / --node-rank, no Ray):
+# every worker still gets every execute_model, so the stop all-reduce on the default group stays in lockstep; each
+# rank's manifest entry carries its stage (NAN_CAPTURE_RANK_TAG=pp<i>/tp<j>). Validated on one node (PP 2, TP 2 x PP 2,
+# 2026-11-24) and over two nodes (TP 2 x PP 2, 2026-11-25; each node must see only its tp*pp/nnodes GPUs).
+# Nothing happens without NAN_CAPTURE_DIR. Prints `[vllm-capture] ...` lines.
 # Validated with vLLM 0.33.0 (vllm/vllm-openai-rocm:v0.33.0-rocm72, 2026-11-21); re-check the patch point after
 # an upgrade. A sitecustomize later on sys.path (the image's own) is still run.
 import importlib.abc
@@ -55,20 +58,30 @@ def _patch(mod):
             try:
                 from vllm.distributed import (get_pp_group, get_tensor_model_parallel_rank,
                                               get_tensor_model_parallel_world_size)
+                import torch.distributed as dist
                 tp, pp = get_tensor_model_parallel_world_size(), get_pp_group().world_size
+                world = dist.get_world_size() if dist.is_initialized() else tp * pp
+                rank = dist.get_rank() if dist.is_initialized() else get_tensor_model_parallel_rank()
+                nnodes = max(1, int(getattr(getattr(self, "parallel_config", None), "nnodes", 1) or 1))
+                local = max(1, world // nnodes)
                 # torchrun's variables, which the capture reads: the sibling workers sit on OTHER GPUs, so
                 # they are not contention (op_nan_capture._sibling_ranks_on_other_gpus)
-                os.environ.setdefault("LOCAL_WORLD_SIZE", str(tp))
-                os.environ.setdefault("LOCAL_RANK", str(get_tensor_model_parallel_rank()))
-                if pp > 1:
-                    _say("pipeline parallel %d: not supported (the stop all-reduce spans the PP stages) -- "
-                         "capture at pp 1" % pp)
+                os.environ.setdefault("LOCAL_WORLD_SIZE", str(local))
+                os.environ.setdefault("LOCAL_RANK", str(rank % local))
+                # the manifest names each rank's stage: a NaN made in stage 0 reaches stage 1 through the pipeline's
+                # send / recv, not through a collective the capture tracks -- the stage tells the origin apart
+                os.environ["NAN_CAPTURE_RANK_TAG"] = "pp%d/tp%d" % (get_pp_group().rank_in_group,
+                                                                  get_tensor_model_parallel_rank())
+                # PP > 1: every worker of every stage gets every execute_model (the executor broadcasts it), so the
+                # stop all-reduce on the default group stays in lockstep; a later stage waits for the earlier
+                # one's stop check before its forward -- slower, no deadlock
             except Exception as e:                      # noqa: BLE001 - older/newer vLLM: carry on
-                tp = None
-                _say("TP size unknown (%s)" % e)
+                tp = pp = None
+                _say("TP / PP size unknown (%s)" % e)
             from nan_doctor_rt.op_nan_capture import capture_from_env
             cap = state["cap"] = capture_from_env()
-            _say("capture built in the worker, pid %d, tp %s" % (os.getpid(), tp))
+            _say("capture built in the worker, pid %d, tp %s pp %s %s" % (os.getpid(), tp, pp,
+                                                                         os.environ.get("NAN_CAPTURE_RANK_TAG", "")))
         cap.step()
         return orig(self, *a, **kw)
 

@@ -374,6 +374,20 @@ def _import_torch():
     _ALLOC_OPS = frozenset(_alloc.split(","))
 
 
+_TRY_RESOLVED = {}
+
+
+def try_resolve_op(name):
+    """resolve_op without exiting: None when the op cannot be resolved in this process. Memoised: the [C2] chain loop
+    runs it per op per run, and that loop is a timing measurement."""
+    if name not in _TRY_RESOLVED:
+        try:
+            _TRY_RESOLVED[name] = resolve_op(name)
+        except SystemExit:
+            _TRY_RESOLVED[name] = None
+    return _TRY_RESOLVED[name]
+
+
 def resolve_op(name):
     """'aten.addmm.default' -> torch.ops.aten.addmm.default
 
@@ -407,7 +421,46 @@ def resolve_op(name):
     try:
         return getattr(getattr(getattr(torch.ops, ns), opname), overload)
     except (AttributeError, RuntimeError) as e:
-        sys.exit("op %r did not resolve after importing %r: %s" % (name, ns, e))
+        err = e
+    # the package does not register its custom ops on import; the module that does (SGLang 0.5.23's
+    # sglang.outplace_all_reduce: sglang.srt.distributed.parallel_state, 2026-11-24)
+    for mod in _NS_MODULES.get(ns, ()):
+        try:
+            __import__(mod)
+            return getattr(getattr(getattr(torch.ops, ns), opname), overload)
+        except (ImportError, AttributeError, RuntimeError) as e:
+            err = e
+    sys.exit("op %r did not resolve after importing %r: %s" % (name, ns, err))
+
+
+_NS_MODULES = {"sglang": ("sglang.srt.distributed.parallel_state",),
+               "vllm": ("vllm.distributed.parallel_state", "vllm.distributed.communication_op")}
+# A collective in a capsule's chain cannot run in a one-process replay (no peers), nor can a framework's custom op
+# that this process cannot resolve (vLLM's rocm_unquantized_gemm, its attention ops: they need the framework's
+# forward context) -- upstream of the terminal op, their recorded outputs stand in
+_COLLECTIVE_OP = ("all_reduce", "all_gather", "reduce_scatter", "broadcast", "all_to_all", "_c10d_functional.")
+
+
+def is_collective_op(name):
+    return any(k in name for k in _COLLECTIVE_OP)
+
+
+def _recorded_collective(cap, rec, env, dev):
+    """Bind a chain collective's RECORDED outputs (the capture stores chain intermediates) instead of running it.
+    -> the tensors, or exit with what to do when the capture did not store them."""
+    keys = [k for k in rec["produces"] if k]
+    missing = [k for k in keys if k not in cap["pool"]]
+    if not keys or missing:
+        sys.exit("chain op %s cannot run here (%s) and the capsule did not store its output -- replay the terminal "
+                 "op alone (--no-chain)%s" % (rec["op"], "a collective: it needs its peer ranks"
+                                              if is_collective_op(rec["op"]) else "not resolvable in this process",
+                                              ", or the ranks' capsules together (replay_nan_op_dist.py)"
+                                              if is_collective_op(rec["op"]) else ""))
+    out = []
+    for k in keys:
+        env[k] = unpack(cap["pool"][k], dev)
+        out.append(env[k])
+    return out
 
 
 def bench_cmd(g, dtype_tag="f32_r", compute="xf32_r", solution=None):
@@ -3462,6 +3515,13 @@ def _run_chain_once(cap, dev, compare=True, record_geom=False, repeat=None, chec
     last = len(cap["chain"]) - 1
     for n, rec in enumerate(cap["chain"]):
         _restore_rng(rec.get("rng"))
+        if n != last and (is_collective_op(rec["op"]) or try_resolve_op(rec["op"]) is None):
+            outs = _recorded_collective(cap, rec, env, dev)
+            rows.append({"op": rec["op"], "call_index": rec["call_index"], "is_view": rec["is_view"],
+                         "finite": all(bool(torch.isfinite(t).all()) for t in outs if t.is_floating_point()),
+                         "diverged": None, "maxerr": None, "slots": [], "uninitialised": False,
+                         "recorded": True, "version_ok": rec.get("version_ok"), "needs_rng": rec.get("needs_rng")})
+            continue
         func = resolve_op(rec["op"])
         bound = _bind(rec["args"], env, pool, dev)
         kwb = _bind(rec["kwargs"], env, pool, dev)
@@ -4321,6 +4381,12 @@ def _chain_reference(cap, dev):
     for k in cap["roots"]:
         env[k] = _cpu64(unpack(cap["pool"][k], "cpu"))
     for n, rec in enumerate(cap["chain"]):
+        if n < len(cap["chain"]) - 1 and (is_collective_op(rec["op"]) or try_resolve_op(rec["op"]) is None):
+            _recorded_collective(cap, rec, env, "cpu")
+            for k in [k for k in rec["produces"] if k]:
+                env[k] = _cpu64(env[k])
+            outcome.append(("-", "recorded (cannot run here)"))
+            continue
         func = resolve_op(rec["op"])
         if n == len(cap["chain"]) - 1 and (_has_value_check_op(func)
                                            or (cap.get("verify") or {}).get("kind") == "rerun"):
