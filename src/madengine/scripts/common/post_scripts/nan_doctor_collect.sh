@@ -31,6 +31,6 @@ ls "$CAPS"/manifest*.json >/dev/null 2>&1 && manifest=yes
     echo "capsule_dir=$CAPS"
     echo "host=$(hostname)"
 } > "$OUT/summary.txt"
-chmod -R a+rwX "$OUT" 2>/dev/null
+chmod -R a+rwX "$CAPS" "$OUT/summary.txt" 2>/dev/null
 echo "nan_doctor: $n capsule(s) in $CAPS (manifest=$manifest); summary in $OUT/summary.txt"
 exit 0

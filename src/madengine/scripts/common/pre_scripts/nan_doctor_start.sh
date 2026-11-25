@@ -34,9 +34,16 @@ done
 [ "${NAN_CAPTURE_AUTO:-}" = "optimizer" ] || fail "NAN_CAPTURE_AUTO must be 'optimizer' (got '${NAN_CAPTURE_AUTO:-}')"
 python3 -c 'import torch' >/dev/null 2>&1 || fail "torch is not importable with python3 in this image; nan_doctor captures PyTorch workloads only"
 
+# Capsules an earlier run left in the same workspace would be read as this run's.
+if [ -n "$(ls -A "$NAN_CAPTURE_DIR" 2>/dev/null)" ]; then
+    prev="${NAN_CAPTURE_DIR%/}.prev-$(date +%Y%m%d-%H%M%S)"
+    mv "$NAN_CAPTURE_DIR" "$prev" || fail "cannot move an earlier run's capsules aside to ${prev}"
+    echo "nan_doctor: moved an earlier run's capsules to ${prev}"
+fi
+
 # The capture asserts the directory exists and is writable by whatever uid the ranks run as.
 mkdir -p "$NAN_CAPTURE_DIR"
-chmod -R 777 "$(dirname "$NAN_CAPTURE_DIR")" 2>/dev/null || true
+chmod 777 "$NAN_CAPTURE_DIR" 2>/dev/null || true
 
 site=$(python3 "$RUNTIME/nan_doctor_rt/install.py") || fail "nan_doctor_rt/install.py failed"
 echo "$site" > /tmp/nan_doctor_autocapture.site
