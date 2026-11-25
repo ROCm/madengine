@@ -17,14 +17,12 @@ import pytest
 
 CPU = Path(__file__).resolve().parent / "cpu"
 SRC = Path(__file__).resolve().parents[3] / "src"
-NO_TORCH = {"cpu_host_tools.py", "cpu_intake.py"}
+NO_TORCH = {"cpu_host_tools.py", "cpu_intake.py", "cpu_diff_unit.py"}
 SCRIPTS = sorted(p.name for p in CPU.glob("cpu_*.py"))
 
 # Checks that fail identically before the code moved into madengine, on torch 2.15 CPU builds.
 # Listed so the suite is green and the failure stays visible; remove an entry when fixed.
-KNOWN_FAILURES = {
-    "cpu_collective_r3.py": ["check: COLLECTIVE_FAULT on rank 2 only"],
-}
+KNOWN_FAILURES = {}
 
 
 @pytest.mark.parametrize("script", SCRIPTS)

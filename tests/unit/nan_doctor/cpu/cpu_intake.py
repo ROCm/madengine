@@ -54,6 +54,8 @@ bad('bad regex', lambda d: d.update(nan_signal={'regex': '('}), 'does not compil
 bad('fix without rootcause', lambda d: d['preferences'].update(fix=True), 'needs preferences.rootcause')
 bad('unknown preference', lambda d: d['preferences'].update(speed='max'), 'unknown preference')
 bad('bad groups value', lambda d: d['preferences'].update(groups='some'), 'must be one of')
+bad('bad priors value', lambda d: d['preferences'].update(priors='some'), 'must be one of')
+check('defaults filled: priors', n and n['preferences']['priors'] == 'use')
 
 d = copy.deepcopy(good)
 d.update(env='docker', run='bash run.sh')
@@ -65,7 +67,7 @@ cli = [sys.executable, '-m', 'madengine.nan_doctor', 'intake']
 r = subprocess.run(cli + [FIX], capture_output=True, text=True,
                    env=dict(os.environ, PYTHONPATH=os.path.abspath(os.path.join(HERE, '..', '..', '..', '..', 'src'))))
 check('CLI valid: exit 0 and KEY=VALUE', r.returncode == 0 and 'MODEL_TAG=dummy/dummy_nan' in r.stdout
-      and 'PREF_ROOTCAUSE=false' in r.stdout, r.stdout + r.stderr)
+      and 'PREF_ROOTCAUSE=false' in r.stdout and 'PREF_PRIORS=use' in r.stdout, r.stdout + r.stderr)
 r = subprocess.run(cli + [os.devnull], capture_output=True, text=True)
 check('CLI invalid: exit 2 and INTAKE_ERROR', r.returncode == 2 and 'INTAKE_ERROR' in r.stdout, r.stdout)
 r = subprocess.run(cli + ['--schema'], capture_output=True, text=True)

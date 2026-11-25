@@ -71,6 +71,25 @@ def test_futility_is_not_set_up(tmp_path):
     assert res == "NOT_SET_UP" and "futility stop" in text and "not a negative" in text
 
 
+def test_futility_with_hits_in_the_totals_is_reproduced_not_not_set_up(tmp_path):
+    d = attempt(
+        tmp_path, {"g0_k0.h.log": NAN}, stop="futility runs=9 expect=9", futile=True
+    )
+    text, res = summary.summarize(d)
+    assert res == "REPRODUCED"
+    assert "fired before the first hits reached the progress files" in text
+    assert "NOT_SET_UP" not in text
+
+
+def test_a_wrong_value_capsule_reads_wrong_not_nan(tmp_path):
+    log = "[wrong-value capsule: aiter.mla_decode]\n" + NAN
+    text, res = summary.summarize(attempt(tmp_path, {"g0_k0.h.log": log}))
+    assert res == "REPRODUCED"
+    assert " WRONG " in text and "wrong output on 2/1000 chain runs" in text
+    assert "=== totals: copies WRONG 1 /" in text
+    assert "the outputs are finite, the values wrong" in text
+
+
 def test_runtime_noise_in_the_walk_is_dropped_and_counted(tmp_path):
     log = (
         "[C1] chain walk\n[aiter] WARNING x\nUserWarning: y\nreal row\n[verdict] done\n"

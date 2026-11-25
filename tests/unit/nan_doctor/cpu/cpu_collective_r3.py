@@ -41,6 +41,11 @@ class CorruptAllReduce(TorchDispatchMode):
         if str(func) == "c10d.allreduce_.default":
             self.n += 1
             if self.rank == 2 and self.n == 6:           # the test's all_reduce at step 2
+                # gloo returns before the reduction is done: corrupt only the FINISHED output, or the
+                # NaN can still enter the sum and reach every rank (flaky: ranks [0, 1, 2, 3])
+                work = out[1] if isinstance(out, (tuple, list)) and len(out) > 1 else None
+                if hasattr(work, "wait"):
+                    work.wait()
                 args[0][0][3] = float("nan")
         return out
 

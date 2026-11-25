@@ -57,6 +57,60 @@ with tempfile.TemporaryDirectory() as d:
     C.OpNanCapture._emit(stub, dict(BASE))
     check('clean capsule has no unpicklable key', "unpicklable" not in torch.load(out, weights_only=False))
 
+    # A module hanging off a tensor (attribute) or used as a dict key: the value-only check
+    # replaced 0 leaves and the capsule was lost.
+    t = torch.arange(4.0)
+    t.owner = torch
+    p = torch.nn.Parameter(torch.ones(3))
+    p.owner = os
+    cap = dict(BASE, args=[t, p], refs={os: 1, "ok": 2})
+    C.OpNanCapture._emit(stub, cap)
+    c = torch.load(out, weights_only=False)
+    bad = c.get("unpicklable", [])
+    check('tensor with a module attribute: capsule written', os.path.exists(out) and not os.path.exists(out + ".tmp"))
+    check('tensor with a module attribute: values kept as a plain tensor',
+          type(c["args"][0]) is torch.Tensor and torch.equal(c["args"][0], torch.arange(4.0))
+          and torch.equal(c["args"][1], torch.ones(3)), repr(c["args"]))
+    check('tensor and key culprits named', len(bad) == 3 and sum('plain tensor' in b for b in bad) == 2
+          and any(' key ' in b for b in bad), repr(bad))
+    check('unpicklable key kept as its repr', c["refs"].get("ok") == 2 and len(c["refs"]) == 2, repr(c["refs"]))
+
+    # Last resort: something the leaf-wise pass lets through (simulated by disabling it) is
+    # replaced at the deepest level torch.save refuses; the rest of the chain is kept.
+    saved_p = C._picklable
+    C._picklable = lambda obj, path, bad: obj
+    try:
+        cap = dict(BASE, chain=[{"op": "aten.mm.default", "args": [torch.ones(2), torch]},
+                                {"op": "aten.add.Tensor", "args": [1, 2]}])
+        C.OpNanCapture._emit(stub, cap)
+    finally:
+        C._picklable = saved_p
+    c = torch.load(out, weights_only=False)
+    ch = c.get("chain", [])
+    check('last resort: capsule written, chain kept', len(ch) == 2 and ch[1]["args"] == [1, 2]
+          and torch.equal(ch[0]["args"][0], torch.ones(2)), repr(ch)[:300])
+    check('last resort: only the culprit replaced, path named',
+          ch[0]["args"][1].get("unpicklable") == "module"
+          and any("capsule['chain'][0]['args'][1]" in b for b in c.get("unpicklable", [])), repr(c.get("unpicklable")))
+
+# ---- torch.memory_format: torch.save refuses it, so it is recorded as a tag ----------
+# (the culprit of the lost qwen-tf32 capsules: a clone(memory_format=...) in the chain)
+kw = {"memory_format": torch.channels_last, "n": [torch.contiguous_format, 3]}
+packed = C._pack(kw, 1 << 20)
+_ct = types.SimpleNamespace()
+_ct._refs = lambda o, keys=None: C._ChainTracker._refs(_ct, o, keys)
+refs = _ct._refs(kw)
+for name, enc in (("_pack", packed), ("_refs", refs)):
+    err = None
+    try:
+        torch.save(enc, C._NullSink())
+    except Exception as e:                      # noqa: BLE001
+        err = e
+    check('memory_format via %s: torch.save accepts it' % name, err is None, repr(err))
+    dec = C.unpack(enc, "cpu")
+    check('memory_format via %s: decodes back' % name, dec["memory_format"] is torch.channels_last
+          and dec["n"][0] is torch.contiguous_format and dec["n"][1] == 3, repr(dec))
+
 # ---- kernel_mutations(only=...) ------------------------------------------------
 saved = dict(KM.MUTATORS)
 try:

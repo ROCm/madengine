@@ -47,8 +47,8 @@ def test_dispatcher_without_arguments_prints_usage(capsys):
 
 @pytest.mark.parametrize("name", sorted(cli.COMMANDS))
 def test_every_command_module_imports_without_torch(name):
-    import importlib
+    import subprocess
     import sys
 
-    importlib.import_module("madengine.nan_doctor." + cli.COMMANDS[name][0])
-    assert "torch" not in sys.modules
+    code = "import sys, madengine.nan_doctor.%s; assert 'torch' not in sys.modules"
+    subprocess.run([sys.executable, "-c", code % cli.COMMANDS[name][0]], check=True)

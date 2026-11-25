@@ -152,14 +152,15 @@ class TestNanDoctorScripts:
         assert r.returncode != 0 and "NAN_CAPTURE_DIR" in r.stderr
 
     def test_start_refuses_without_torch(self, sandbox, tmp_path):
-        r = _run(
-            START,
-            sandbox,
-            NAN_CAPTURE_DIR=str(tmp_path / "c"),
-            NAN_CAPTURE_AUTO="optimizer",
-            PATH="/usr/bin:/bin",
-        )
+        env = {
+            "NAN_CAPTURE_DIR": str(tmp_path / "c" / "capsules"),
+            "NAN_CAPTURE_AUTO": "optimizer",
+            "PATH": "/usr/bin:/bin",
+            "PYTHONUSERBASE": str(tmp_path / "userbase"),
+        }
+        r = _run(START, sandbox, **env)
         if "torch is not importable" not in r.stderr:
+            _run(COLLECT, sandbox, **env)
             pytest.skip("system python3 has torch")
         assert r.returncode != 0
 
@@ -189,3 +190,16 @@ class TestNanDoctorScripts:
         )
         assert r.returncode == 0
         assert "capsules=0" in (tmp_path / "missing" / "summary.txt").read_text()
+
+    def test_start_moves_an_earlier_runs_capsules_aside(self, sandbox, tmp_path):
+        caps = tmp_path / "out" / "capsules"
+        caps.mkdir(parents=True)
+        (caps / "rank0_old.pt").write_bytes(b"")
+        env = {"NAN_CAPTURE_DIR": str(caps), "NAN_CAPTURE_AUTO": "optimizer"}
+        r = _run(START, sandbox, **env)
+        _run(COLLECT, sandbox, **env)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert caps.is_dir() and not any(caps.iterdir())
+        (prev,) = (tmp_path / "out").glob("capsules.prev-*")
+        assert (prev / "rank0_old.pt").exists()
+        assert "capsules=0" in (tmp_path / "out" / "summary.txt").read_text()

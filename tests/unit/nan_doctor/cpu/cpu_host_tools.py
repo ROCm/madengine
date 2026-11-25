@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""No-GPU regression tests for the debug-nan helper scripts.
+"""No-GPU regression tests for the mad-debug-numeric helper scripts.
 
     python3 tests/debug_nan/test_tools.py
 
@@ -56,6 +56,14 @@ cases = [  # file, expected top loop line (None = framework-owned), must-contain
     ('hf_trainer.py', None, ['HOOK', 'SWALLOW', 'host threads']),
     ('lightning_module.py', None, ['HOOK', 'LAZY', 'NANCHECK']),
 ]
+with tempfile.TemporaryDirectory() as d:
+    # nn.Module's mode switch is not a framework loop; trainer.train() / .fit() still are
+    src = os.path.join(d, 't.py')
+    open(src, 'w').write('def main(model, trainer):\n    model.train()\n    model.train(False)\n'
+                         '    trainer.train()\n    lightning.fit(model)\n')
+    out = run('capture-points', src)
+    check('scan: model.train() is not a HOOK', 'model.train()' not in out, out)
+    check('scan: trainer.train() / .fit() still HOOKs', 'trainer.train()' in out and 'fit()' in out, out)
 for f, line, must in cases:
     out, top = scan(os.path.join(FIX, f))
     check('scan %s top loop' % f, top == line, 'got %s' % top)
@@ -101,6 +109,25 @@ with tempfile.TemporaryDirectory() as d:
     open(os.path.join(d, '0_0.cap.1.log'), 'w').write('grad_norm: nan\nTRIAL_RC=1\n')
     out = run('waves', d, '--signal', 'grad_norm: +nan', '--capsules', caps)
     check('wave multi-rank capsules at root count', 'NAN_NO_CAPSULE' not in out and 'capsules=2' in out, out)
+with tempfile.TemporaryDirectory() as d:
+    # capture trials that died: a capsule save error (the capture caught it, nothing written) and a
+    # plain traceback -- both used to be scored NONE, i.e. "ran clean"
+    caps = os.path.join(d, 'caps')
+    for t in ('t0', 't1'):
+        os.makedirs(os.path.join(caps, t))
+    open(os.path.join(d, '0_0.cap.1.log'), 'w').write(
+        'step 1\n[op-nan][rank 0] capsule not picklable (TypeError: x)\nTraceback (most recent call last):\nTRIAL_RC=1\n')
+    open(os.path.join(d, '1_1.cap.1.log'), 'w').write('step 1\nTraceback (most recent call last):\nTRIAL_RC=1\n')
+    out = run('waves', d, '--signal', 'nan_step=', '--capsules', caps)
+    check('wave save error scored NAN_NO_CAPSULE', re.search(r'trial 0 .*NAN_NO_CAPSULE', out) is not None, out)
+    check('wave capture traceback scored ERROR', re.search(r'trial 1 .*ERROR', out) is not None
+          and ' NONE' not in out, out)
+with tempfile.TemporaryDirectory() as d:
+    # the signal line's own nan_step=N wins over the last `step N` line seen
+    open(os.path.join(d, '6_6.ctl.1.log'), 'w').write(
+        '[trial 0] step 0 loss 12.1\nRESULT trial=2 step_reached=9 nan_step=9 nan_where=loss\nTRIAL_RC=0\n')
+    out = run('waves', d, '--signal', 'nan_step=[0-9]')
+    check('wave nan_step from the signal line', re.search(r'trial 6 .*nan_step=9\b', out) is not None, out)
 
 # ---- verdict proposal ------------------------------------------------------
 mk = load('repro_readme')
@@ -213,6 +240,38 @@ with tempfile.TemporaryDirectory() as d:
     open(os.path.join(rp, 'run.sh'), 'w').write('export HIPBLASLT_TENSILE_LIBPATH=/x\n')
     check('readme held-back var exported -> silent', mr.held_back([lg], rp) == [])
 
+# ---- make_repro_readme: wrong-value capsule, solo probe, FP32 ships ------------
+check('readme rerun check -> KB_RERUN', mr.propose([], 'rerun')[1] == mr.KB_RERUN)
+with tempfile.TemporaryDirectory() as d:
+    rp = os.path.join(d, 'repro-G1')
+    os.makedirs(os.path.join(rp, 'capsule'))
+    open(os.path.join(rp, 'capsule', 'a.pt'), 'wb').write(b'x')
+    rd = os.path.join(d, 'replay', 'G1')
+    for name, tot in (('c1det.1.h', 'non-finite 100/100'), ('c3.1.h', 'non-finite 9/300')):
+        os.makedirs(os.path.join(rd, name))
+        open(os.path.join(rd, name, 'summary.txt'), 'w').write(
+            '=== totals: copies WRONG 1/1; %s ===\n   g0_k0.h.log  WRONG\n'
+            '(wrong-value capsule: WRONG / non-finite above ...)\n'
+            '  terminal fp64 ref on replay operands: finite\n' % tot)
+        open(os.path.join(rd, name, 'g0_k0.h.log'), 'w').write('op: [verdict] ok\n')
+    out = subprocess.run([sys.executable, '-m', PKG, 'readme', '--repro', rp, '--attempt',
+                          os.path.join(rd, 'c3.1.h'), '--image', 'img:1'],
+                         capture_output=True, text=True, env=ENV).stdout
+    txt = open(os.path.join(rp, 'README.md')).read()
+    check('readme wrong-value capsule title', txt.startswith('# Wrong-value reproducer') and
+          'with a wrong finite output' in txt, txt[:400])
+    check('readme solo probe sentence', '100/100 runs in the ladder\'s solo probe' in txt
+          and 'node `h`' in txt, txt)
+    open(os.path.join(rd, 'c3.1.h', 'summary.txt'), 'w').write(
+        '=== totals: copies NAN 1/1; non-finite 9/300 ===\n   g0_k0.h.log  NAN\n')
+    open(os.path.join(rd, 'c3.1.h', 'g0_k0.h.log'), 'w').write(
+        '  -> the true result (fp64 max 1e40) exceeds torch.bfloat16\n')
+    out = subprocess.run([sys.executable, '-m', PKG, 'readme', '--repro', rp, '--attempt',
+                          os.path.join(rd, 'c3.1.h'), '--image', 'img:1'],
+                         capture_output=True, text=True, env=ENV).stdout
+    check('readme FP32 overflow is MODEL_NUMERICS, not DO_NOT_SHIP', 'MODEL_NUMERICS' in out
+          and 'DO_NOT_SHIP' not in out, out)
+
 # ---- capture_digest: a log that names its run dir ----------------------------
 with tempfile.TemporaryDirectory() as d:
     rd = os.path.join(d, 'run')
@@ -234,17 +293,44 @@ with tempfile.TemporaryDirectory() as d:
     open(os.path.join(d, 'src', 'trainer.py'), 'w').write(
         'raise RuntimeError(\n    f"Loss is not finite (global_avg_loss={x})")\n')
     out = run('preflight', rs, '--root', d)
+    # grep -o extracts a field: not a signal, so the source's own raise is the candidate
     check('preflight: no NaN grep -> no false NOT RAISED', 'NOT RAISED' not in out
-          and 'greps no NaN line' in out and 'trainer.py:2' in out, out)
+          and 'no quoted grep pattern' in out and 'trainer.py:2' in out, out)
 
 # ---- capture_preflight: pgrep patterns are not NaN signals --------------------
 with tempfile.TemporaryDirectory() as d:
     rs = os.path.join(d, 'run.sh')
     open(rs, 'w').write("pgrep -af 'harness\\.suite\\.worker|torchrun|run_auto\\.sh'\n"
                         "zgrep -qE 'NonFiniteDetected|max_seqlens_q must be provided' x.gz\n")
-    alts = load('preflight').signal_alternatives(rs, None)
+    alts = [x[0] for x in load('preflight').signal_alternatives(rs, None)[0]]
     check('preflight skips pgrep pattern', 'NonFiniteDetected' in alts
           and not any('torchrun' in x or 'worker' in x for x in alts), str(alts))
+
+# ---- capture_preflight: arms, grep -o fields, verdict fields -----------------
+with tempfile.TemporaryDirectory() as d:
+    open(os.path.join(d, 'model.py'), 'w').write(
+        'raise RuntimeError("Logits are not finite")\nprint(f"RESULT wrong={w}")\n')
+    rs = os.path.join(d, 'run.sh')
+    open(rs, 'w').write(
+        'ARMS="\nserve  model\nop_issue  repro\n"\n'
+        'case "${1:-default}" in\n  default) want="serve" ;;\nesac\n'
+        'for name in $want; do\n'
+        '  if [ "$name" = op_issue ]; then\n'
+        "    grep -q 'nan_count=0/' $OUT_DIR/op_issue.log\n"
+        '  else\n    python3 model.py > log\n'
+        "    grep -q 'Logits are not finite' log\n  fi\ndone\n")
+    alts, notes = load('preflight').signal_alternatives(rs, None, [os.path.join(d, 'model.py')])
+    check('preflight: another arm\'s grep is skipped', [a[0] for a in alts] ==
+          ['Logits are not finite'] and 'op_issue' in notes[0], str((alts, notes)))
+    open(rs, 'w').write(
+        "python3 model.py > log\nres=$(grep '^RESULT' log)\n"
+        "wrong=$(grep -o 'wrong=[^ ]*' <<< \"$res\")\n[ \"$wrong\" = yes ] && echo bad\n")
+    out = run('preflight', rs, '--root', d)
+    check('preflight: verdict field is a wrong-value signal', "'RESULT .*wrong=yes'" in out
+          and 'found as a field' in out and 'also raises/logs' in out, out)
+    open(rs, 'w').write("grep -E 'nan_request=[^ ]*' log\n")
+    out = run('preflight', rs, '--root', d)
+    check('preflight: pattern matching the clean value', 'MATCHES CLEAN OUTPUT' in out, out)
 
 # ---- make_report: no control arm, ledger vs iter files -----------
 with tempfile.TemporaryDirectory() as A2:
@@ -259,6 +345,42 @@ with tempfile.TemporaryDirectory() as A2:
     check('report: no control arm is not called a control arm', 'had no control arm' in rep
           and 'control arm (no control arm)' not in rep, rep[:600])
     check('report: ledger iterations vs files flagged', 'the ledger has 2' in rep)
+with tempfile.TemporaryDirectory() as A3:
+    # the same tarball ledgered with and without its directory: listed once, the latest line wins
+    open(os.path.join(A3, 'ledger.md'), 'w').write(
+        '2025-01-09 16:11:17  step6[native]  TARBALL aaa  x-art/repro-native.tar.gz  size=10 first\n'
+        '2025-01-09 16:23:00  step6[native]  TARBALL bbb repro-native.tar.gz size=11 latest\n')
+    run('report', A3, '--out', os.path.join(A3, 'r.md'))
+    rep = open(os.path.join(A3, 'r.md')).read()
+    sec = rep.split('## Reproducer tarballs', 1)[-1].split('##', 1)[0]
+    check('report: one tarball listed once, latest line', sec.count('repro-native.tar.gz') == 1
+          and 'bbb' in sec, sec[:300])
+
+# ---- ledger table order + overlap; report GPU line -----------------------------
+with tempfile.TemporaryDirectory() as d:
+    L = os.path.join(d, 'ledger.md')
+    open(L, 'w').write(
+        '2025-01-09 18:00:00  step6[G1]  start\n2025-01-09 18:01:00  step6[G1]  end  total=1m00s\n'
+        '2025-01-09 18:00:30  step5  start\n2025-01-09 18:02:00  step5  end  total=1m30s\n'
+        '2025-01-09 17:00:00  step1  ENV check: GPU=AMD_Instinct_MI355X ARCH=gfx950 VERDICT=SUPPORTED\n')
+    t = run('ledger', L, 'table')
+    check('ledger table in step order', t.find('| step5 |') < t.find('| step6[G1] |'), t)
+    check('ledger table warns on overlapping visits', 'overlapping visits' in t and 'step6[G1] / step5' in t, t)
+    run('report', d, '--out', os.path.join(d, 'r.md'))
+    rep = open(os.path.join(d, 'r.md')).read()
+    check('report has the GPU line from the ledger', '## GPU' in rep and 'ARCH=gfx950' in rep, rep[:400])
+
+# ---- report Groups paths relative to the artifact dir --------------------------
+with tempfile.TemporaryDirectory() as d:
+    A4 = os.path.join(d, 'inv-x')
+    os.makedirs(A4)
+    open(os.path.join(A4, 'ledger.md'), 'w').write('')
+    open(os.path.join(A4, 'groups_priority.txt'), 'w').write(
+        'G1 6 /data/nan/artifacts/inv-x/capsules/t4/rank0_a.pt aten.mm.default\n')
+    run('report', A4, '--out', os.path.join(A4, 'r.md'))
+    rep = open(os.path.join(A4, 'r.md')).read()
+    check('report groups: path relative to the artifact dir', '* G1 6 capsules/t4/rank0_a.pt' in rep
+          and '<ARTIFACT_DIR>/' not in rep.split('## Groups', 1)[-1].split('##', 1)[0], rep[-600:])
 
 
 print('\n%d failure(s)' % len(FAILS) + (': ' + ', '.join(FAILS) if FAILS else ''))

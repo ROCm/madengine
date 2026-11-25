@@ -27,6 +27,8 @@ while runs < iters and not os.path.exists(stop):
     runs += 10
     if scenario in ("repro", "oom_above_1"):
         hits += 1
+    elif scenario == "deterministic":
+        hits += 10
     open(progress, "w").write("%d %d\n" % (runs, hits))
     time.sleep(0.005)
 print("[C1] chain walk")
@@ -64,6 +66,7 @@ def make(tmp_path, scenario, **kw):
         iters=200,
         stop_hits=3,
         futility=2,
+        det_runs=0,
         poll=0.02,
         popen=popen,
         probe=lambda: PROBE,
@@ -116,6 +119,50 @@ def test_futility_ends_a_hitless_attempt_as_not_set_up(tmp_path):
     lad.run()
     assert "NOT_SET_UP at concurrency 3" in result(lines)
     assert "escalate" in result(lines)
+
+
+def test_futility_does_not_count_runs_inside_the_grace(tmp_path):
+    lad, lines, _ = make(
+        tmp_path, "clean", iters=300, futility=2, futility_grace=60
+    )  # 10 runs would be futile; the grace outlasts the copies
+    lad.run()
+    assert result(lines) == "LADDER_RESULT=NOT_REPRODUCED at concurrency 3"
+    assert "counted after a 60s grace" in "\n".join(lines)
+
+
+def test_a_cotenant_gets_a_futility_grace_by_default(tmp_path):
+    lad, _, _ = make(tmp_path, "clean", cotenant="python3 -m x")
+    assert lad.grace == 180
+    lad, _, _ = make(tmp_path, "clean")
+    assert lad.grace == 0
+
+
+def test_a_deterministic_probe_ends_the_ladder_without_a_fan_out(tmp_path):
+    lad, lines, launched = make(tmp_path, "deterministic", det_runs=50)
+    assert lad.run() == 0
+    assert result(lines) == (
+        "LADDER_RESULT=REPRODUCED at concurrency 1 -- deterministic: 50/50 solo runs "
+        "on GPU 0 non-finite, no fan-out"
+    )
+    assert len(launched) == 1 and launched[0][0] == 0
+    assert "--chain-iters 50 " in launched[0][1]
+    assert any(p.name.startswith("c1det.") for p in (tmp_path / "out").iterdir())
+
+
+def test_a_probe_that_does_not_hit_every_run_goes_on_to_the_ladder(tmp_path):
+    lad, lines, launched = make(tmp_path, "repro", det_runs=50)
+    lad.run()
+    assert result(lines) == "LADDER_RESULT=REPRODUCED at concurrency 3"
+    assert len(launched) == 1 + 2 * 3
+    assert "attempts: c1det:REPRODUCED:5/50 c3:REPRODUCED" in "\n".join(lines)
+
+
+def test_no_deterministic_probe_beside_a_cotenant(tmp_path):
+    lad, _, launched = make(
+        tmp_path, "deterministic", det_runs=50, cotenant="python3 -m x"
+    )
+    lad.run()
+    assert all("--chain-iters 50 " not in cmd for _, cmd, _ in launched)
 
 
 def test_out_of_memory_steps_down_one_copy_at_a_time(tmp_path):

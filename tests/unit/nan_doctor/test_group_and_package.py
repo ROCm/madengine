@@ -77,6 +77,25 @@ def test_the_origin_rank_group_goes_first_with_its_own_capsule(tmp_path):
     assert lines[1].startswith("G2 9")
 
 
+def test_a_collective_is_one_group_per_op_across_ranks(tmp_path):
+    j = groups_json(
+        tmp_path,
+        [
+            g("/c/r0.pt", "vllm.all_reduce.default", 3),
+            g("/c/mm.pt", "aten.mm.default", 2),
+            g("/c/r1.pt", "vllm.all_reduce.default", 2),
+        ],
+    )
+    lines = group.priority(j, str(tmp_path))
+    assert lines == [
+        "G1 5 /c/r0.pt vllm.all_reduce.default COLLECTIVE",
+        "G2 2 /c/mm.pt aten.mm.default",
+    ]
+    assert "ONE group in groups_priority.txt: G1, 5 capsule(s)" in "".join(
+        group.collective_notes(lines)
+    )
+
+
 def test_group_from_json_writes_the_priority_file(tmp_path, capsys):
     j = groups_json(tmp_path, [g("/c/b.pt", "aten.mm.default", 2)])
     out = tmp_path / "art"
@@ -133,7 +152,7 @@ def test_package_builds_a_standalone_directory(tmp_path):
     assert "CAPSULE_ITER_COUNT:-5000" in run and "CAPSULE_CONCURRENCY:-3" in run
     assert "--cotenant 'python3 -m nan_doctor_rt.transformer_hog'" in run
     assert (
-        "--extra-args --synthesize" in run and "--env LD_LIBRARY_PATH=/opt/lib" in run
+        "--extra-args=--synthesize" in run and "--env LD_LIBRARY_PATH=/opt/lib" in run
     )
     assert subprocess.run(["bash", "-n", str(repro / "run.sh")]).returncode == 0
     assert os.access(repro / "run.sh", os.X_OK)
@@ -162,6 +181,33 @@ def test_the_vendored_host_package_runs_without_madengine(tmp_path):
     )
     assert out.returncode == 0, out.stderr
     assert "replay" in out.stdout and "madengine" not in out.stderr
+
+
+def test_package_ships_synthesize_when_the_attempt_used_it(tmp_path):
+    d = make_attempt(tmp_path)
+    (d / "summary.txt").write_text(
+        (d / "summary.txt").read_text()
+        + "operands:       SYNTHETIC (--synthesize, seed 0)\n"
+    )
+    cap = tmp_path / "rank0_abc.pt"
+    cap.write_bytes(b"capsule")
+    rc = package.main(
+        [
+            "--group",
+            "G1",
+            "--artifact-dir",
+            str(tmp_path / "art"),
+            "--image",
+            "ci-model",
+            "--capsule",
+            str(cap),
+            "--attempt",
+            str(d),
+        ]
+    )
+    assert rc == 0
+    run = (tmp_path / "art" / "repro-G1" / "run.sh").read_text()
+    assert "--extra-args=--synthesize" in run
 
 
 def test_package_main_writes_the_readme_and_packs(tmp_path):
