@@ -44,6 +44,7 @@ from madengine.execution.container_runner_helpers import (
     resolve_run_status,
     resolve_run_timeout,
 )
+from madengine.nan_doctor.runner import MODEL_RUN_AMD_FLAGS
 from madengine.reporting.update_perf_csv import (
     PERF_CSV_HEADER,
     flatten_tags,
@@ -1625,11 +1626,7 @@ class ContainerRunner:
         docker_options = ""
 
         if gpu_vendor.find("AMD") != -1:
-            docker_options = (
-                "--network host -u root --group-add video "
-                "--cap-add=SYS_PTRACE "
-                "--security-opt seccomp=unconfined --security-opt apparmor=unconfined --ipc=host "
-            )
+            docker_options = "-u root " + " ".join(MODEL_RUN_AMD_FLAGS) + " "
         elif gpu_vendor.find("NVIDIA") != -1:
             docker_options = (
                 "-u root --cap-add=SYS_PTRACE --cap-add SYS_NICE "
