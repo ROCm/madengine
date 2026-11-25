@@ -1,4 +1,7 @@
-# nan-doctor: find where a NaN starts, and hand over a reproducer
+# Numeric Doctor: find where a NaN starts, and hand over a reproducer
+
+Numeric Doctor (formerly nan-doctor) is integrated into madengine as the `madengine nan` commands
+and the `nan_doctor` tool; the command, tool and `NAN_*` variable names are unchanged.
 
 `madengine nan` finds the first operation that produced a NaN in a PyTorch workload on AMD Instinct
 GPUs, replays it without the model, and packages a standalone reproducer. It is the deterministic
@@ -41,7 +44,8 @@ model's image through `madengine nan exec`.
 | `readme` | 6 | Write or re-pack the reproducer README |
 | `report` | 9 | Draft the investigation report from the artifact directory; `--fill <answers.md>` replaces its numbered `TODO(agent)` lines |
 | `intake` | 1 | Validate an intake file (the answers to "how does this workload run") |
-| `ledger` | -- | Append-only investigation journal: `start`, `note`, `job`, `wait`, `end`, `skip`, `table` |
+| `ledger` | -- | Append-only investigation journal: `start`, `note`, `job`, `wait`, `end`, `skip`, `table`, `status`. Every line rewrites `status.json` beside the ledger (the reproducer, root cause, fix, current step and job, one summary line) |
+| `verify-nodes` | 6 | Run the extracted reproducer on K other SLURM nodes, each from its own copy in an empty environment: `script` writes the sbatch job, `score` prints `NODES_REPRODUCED=k/K` (`NODE_DEPENDENT` when only some nodes reproduce) |
 | `arms` | 2 | Differential mode, for a model that prints nothing when it is wrong: `detect` the framework, list the `arms` (A, A2, the conservative reference REF, one `flip_<switch>` per switch; `--format context --out-dir DIR` prints one `--additional-context` per arm), `list` the switch catalogue |
 | `diff` | 2 | Compare the arms' tap outputs: `ND_DIFF verdict=` `AGREE`, `DIVERGE`, `NONDETERMINISTIC`, `INPUTS_DIFFER` or `NO_OUTPUTS`, and `ND_DIFF_SWITCH=` names the switch that removes a divergence; `--modules` names the first module that disagrees (`ND_DIFF_LOCATE`) |
 | `power` | 7-8 | How many runs an experiment needs from the reproducer's rate (`RUNS=`); `--clean K/N` judges a clean result (`POWER=`) |
@@ -59,9 +63,11 @@ is what `madengine nan arms ... --format context` prints):
 
 | Mode | Path under `nan_doctor_rt` |
 |---|---|
-| vLLM tensor-parallel workers | `vllm_capture/` |
+| vLLM workers: tensor and pipeline parallel, multi-node (each rank tagged `pp<i>/tp<j>`); TP 1 with the engine in-process (`VLLM_ENABLE_V1_MULTIPROCESSING=0`) | `vllm_capture/` |
 | vLLM CUDA graphs | `vllm_graphs/` |
-| SGLang | `sglang_capture/` |
+| SGLang schedulers: tensor, pipeline and data parallel (one capsule dir per replica) | `sglang_capture/` |
+| SGLang CUDA graphs: off without an edit, and a graph-replay check | `sglang_graphs/` |
+| A server (`vllm serve`, `sglang.launch_server`) as one trial | `bin/serve_run.sh`, with `serve_client.py` |
 | Inductor / `torch.compile` kernels | `inductor_capsule/`, replay with `python3 -m nan_doctor_rt.replay_inductor_kernel` |
 | One saved graph piece | `python3 -m nan_doctor_rt.replay_graph_piece` |
 | Uninitialized-memory check | `python3 -m nan_doctor_rt.alloc_poison` |
@@ -98,7 +104,8 @@ a fault that hits every run there is deterministic and ends the ladder `REPRODUC
 Runs in the first `--futility-grace` seconds of an attempt (180 with a co-tenant, which loads the
 device before it computes) do not count toward the futility stop.
 The docker flags (`--ipc=host`, `--shm-size`, memlock, seccomp) shape the timing being replayed and
-are not tunable.
+are not tunable. A run over several GPUs also gets `--pid=host`, so the ranks of two concurrent
+multi-GPU trials never share PIDs during RCCL setup.
 
 ## Differential mode
 
@@ -119,6 +126,14 @@ iteration count, its co-tenant. `run.sh` needs docker, python3 and the image -- 
 reproducing run (`n/N > 0` near the original rate) from an extracted copy is the verification; a
 `0/N` is a failed build. The README's operand-validation sentence is proposed from the replay and
 marked `<!-- CHECK -->` for a person to confirm.
+
+On SLURM, check that the reproducer is not tied to the node it was built on:
+
+```bash
+madengine nan verify-nodes script --package <extracted dir> --out art/verify_nodes --nodes 2 \
+    --exclude <host> --submit                    # or sbatch art/verify_nodes/verify_nodes.slurm
+madengine nan verify-nodes score art/verify_nodes   # after the job: NODES_REPRODUCED=k/K ...
+```
 
 ## Limits
 
