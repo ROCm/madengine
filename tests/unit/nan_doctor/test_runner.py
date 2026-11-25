@@ -36,6 +36,12 @@ def test_one_gpu_pins_the_device_and_a_distinct_master_port():
     assert not any(a.startswith("HIP_VISIBLE_DEVICES") for a in cmd(gpus="all"))
 
 
+def test_multi_gpu_trials_share_the_host_pid_namespace():
+    assert "--pid=host" not in cmd(gpus="0")
+    assert "--pid=host" in cmd(gpus="0,1")
+    assert "--pid=host" in cmd(gpus="all")
+
+
 @pytest.mark.parametrize("bad", ["0;rm", "x", "-1", "0,", ""])
 def test_gpus_must_be_all_or_a_list(bad):
     with pytest.raises(ValueError):
