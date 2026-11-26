@@ -30,7 +30,11 @@ import json
 import os
 import shlex
 import typing
+import zipfile
 from dataclasses import asdict, dataclass, field
+
+# plan digest -> dependency completion list (see _resolve_composed)
+_COMPLETION_CACHE: typing.Dict[str, typing.List[str]] = {}
 
 SPEC_KEY = "image_spec"
 SPEC_FILE = "image_spec.yaml"
@@ -119,8 +123,6 @@ def matrix_node(root: typing.Optional[str] = None):
     the matrix backslash-escapes shell ${VAR} references, which a second
     resolution would read as interpolations.
     """
-    from omegaconf import OmegaConf
-
     root = mad_root(root)
     path = os.path.join(root, MATRIX_FILE)
     if not os.path.exists(path):
@@ -128,14 +130,41 @@ def matrix_node(root: typing.Optional[str] = None):
             f"{MATRIX_FILE} not found in {os.path.abspath(root)}; image_spec needs "
             f"the MAD compatibility matrix (run from the MAD root or set MODEL_DIR)"
         )
-    return OmegaConf.load(path)
+    return _load_yaml(path)
+
+
+def _load_yaml(path: str):
+    """OmegaConf.load, with a YAML or OmegaConf error reported as ImageSpecError."""
+    import yaml
+    from omegaconf import OmegaConf
+    from omegaconf.errors import OmegaConfBaseException
+
+    try:
+        return OmegaConf.load(path)
+    except (OmegaConfBaseException, yaml.YAMLError) as e:
+        raise ImageSpecError(f"{os.path.abspath(path)}: {e}") from None
 
 
 def load_matrix(root: typing.Optional[str] = None) -> typing.Dict:
-    """The compatibility matrix (``compat/rocm.yaml``) of the MAD checkout."""
-    from omegaconf import OmegaConf
+    """The compatibility matrix (``compat/rocm.yaml``) of the MAD checkout.
 
-    return OmegaConf.to_container(matrix_node(root), resolve=True)
+    A matrix that cannot be read, resolved, or has the wrong shape is an
+    ImageSpecError, never a raw KeyError or parser error.
+    """
+    from omegaconf import OmegaConf
+    from omegaconf.errors import OmegaConfBaseException
+
+    from madengine.stack import compose
+
+    node = matrix_node(root)
+    try:
+        matrix = OmegaConf.to_container(node, resolve=True)
+        compose.validate_matrix(matrix)
+    except OmegaConfBaseException as e:
+        raise ImageSpecError(f"{MATRIX_FILE}: {e}") from None
+    except compose.ComposeError as e:
+        raise ImageSpecError(f"{MATRIX_FILE}: {e}") from None
+    return matrix
 
 
 def _card_spec(model_info: typing.Dict, root: str) -> typing.Optional[dict]:
@@ -159,12 +188,12 @@ def _card_spec(model_info: typing.Dict, root: str) -> typing.Optional[dict]:
     spec_path = os.path.join(root, "scripts", folder, SPEC_FILE) if folder else None
     nodes: typing.Dict[str, typing.Any] = {"card": value}
     if spec_path and os.path.exists(spec_path):
-        nodes[SPEC_KEY] = OmegaConf.to_container(OmegaConf.load(spec_path))
+        nodes[SPEC_KEY] = OmegaConf.to_container(_load_yaml(spec_path))
     if os.path.exists(os.path.join(root, MATRIX_FILE)):
         nodes["compat"] = matrix_node(root)
     images_dir = os.path.join(root, IMAGES_DIR)
     if os.path.isdir(images_dir):
-        nodes["images"] = {f[:-5]: OmegaConf.to_container(OmegaConf.load(os.path.join(images_dir, f)))
+        nodes["images"] = {f[:-5]: OmegaConf.to_container(_load_yaml(os.path.join(images_dir, f)))
                            for f in sorted(os.listdir(images_dir)) if f.endswith(".yaml")}
     try:
         resolved = OmegaConf.to_container(OmegaConf.create(nodes), resolve=True)["card"]
@@ -264,11 +293,23 @@ def _resolve_composed(
     digest = hashlib.sha256(json.dumps(
         {"plan": [(i["name"], i["key"], i["entry"]) for i in plan["items"]],
          "spec": spec}, sort_keys=True, default=str).encode()).hexdigest()[:12]
-    try:
-        completion = (compose.completion_requirements(plan) if plan["exclude"]
-                      else None)
-    except compose.ComposeError as e:
-        raise ImageSpecError(f"{name}: {e}") from None
+    completion = None
+    if plan["exclude"]:
+        # Reading wheel metadata goes to the network; the digest covers the plan
+        # and the spec, so the result is reused for the rest of the process
+        # (explain, discovery, build and validation all resolve the same model).
+        if digest not in _COMPLETION_CACHE:
+            try:
+                _COMPLETION_CACHE[digest] = compose.completion_requirements(plan)
+            except compose.ComposeError as e:
+                raise ImageSpecError(f"{name}: {e}") from None
+            except (OSError, ValueError, StopIteration, zipfile.BadZipFile) as e:
+                raise ImageSpecError(
+                    f"{name}: could not read the metadata of the plan's wheels, "
+                    f"which its excludes need to list their dependencies "
+                    f"(network or index unavailable?): {e}"
+                ) from None
+        completion = _COMPLETION_CACHE[digest]
     prefix = dockerfile.write(plan, name, digest, "AMD",
                               root if root is not None else ".", completion)
     return BuildPlan("AMD", prefix, {}, spec, resolved)

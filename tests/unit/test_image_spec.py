@@ -26,7 +26,7 @@ MATRIX = {
             "requires": ["rocm>=7.2,<7.3"]}},
     },
 }
-SPEC = {"rocm": "7.2", "components": {"torch": "2.10.0+rocm7.2"}}
+SPEC = {"rocm": "7.2", "python": "3.12", "components": {"torch": "2.10.0+rocm7.2"}}
 
 
 def write_mad(root, folder_spec=None):
@@ -59,7 +59,7 @@ class TestCardSpec:
             self.card({"extends": "${image_spec}", "gpu_arch": "gfx942",
                        "components": {"vllm": "x@y"}, "order": ["vllm", "torch"]}),
             {}, str(root))
-        assert spec == {"rocm": "7.2", "gpu_arch": "gfx942", "order": ["vllm", "torch"],
+        assert spec == {"rocm": "7.2", "python": "3.12", "gpu_arch": "gfx942", "order": ["vllm", "torch"],
                         "components": {"torch": "2.10.0+rocm7.2", "vllm": "x@y"}}
 
     def test_reference_into_compat(self, root):
@@ -106,7 +106,7 @@ class TestResolve:
         assert recorded["digest"] == plan.digest()
 
     def test_spec_without_components(self, root):
-        plan = image_spec.resolve({"rocm": "7.2"}, "AMD", name="m")
+        plan = image_spec.resolve({"rocm": "7.2", "python": "3.12"}, "AMD", name="m")
         assert plan.resolved["order"] == ["rocm"]
         assert plan.resolved["gpu_arch"] == "all"
 
@@ -270,3 +270,192 @@ class TestNamedImages:
             spec = image_spec.effective_image_spec({"name": "w/m", "_fs_rel_path": "w", "image_spec": value}, {},
                                                    str(tmp_path))
             assert spec["env"] == {"A": "1", "B": "2"} and spec["finish"] == ["check"] and spec["base"] == "b"
+
+
+class TestMalformedMatrix:
+    """A broken compat/rocm.yaml is an ImageSpecError, not a KeyError or parser error."""
+
+    @staticmethod
+    def matrix(**changes):
+        m = json.loads(json.dumps(MATRIX))
+        for key, value in changes.items():
+            if value is None:
+                m.pop(key, None)
+            else:
+                m[key] = value
+        return m
+
+    @pytest.fixture(autouse=True)
+    def root(self, tmp_path, monkeypatch):
+        (tmp_path / "compat").mkdir()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("MODEL_DIR", raising=False)
+        return tmp_path
+
+    def write(self, root, matrix):
+        text = matrix if isinstance(matrix, str) else yaml.safe_dump(matrix)
+        (root / "compat" / "rocm.yaml").write_text(text)
+
+    @pytest.mark.parametrize("matrix, message", [
+        (lambda m: m["releases"]["7.2"].pop("index"), "release 7.2: index None"),
+        (lambda m: m["components"]["torch"]["2.10.0+rocm7.2"].update(index="therok"),
+         "index 'therok' is not in compat indexes"),
+        (lambda m: m["components"]["torch"]["2.10.0+rocm7.2"].update(exclude="amd-quark"),
+         "exclude is a list"),
+        (lambda m: m["components"]["torch"]["2.10.0+rocm7.2"].update(requires="rocm"),
+         "requires is a list"),
+        (lambda m: m["components"].update(
+            src={"1@x": {"source": "https://x/y.git"}}), "source is an object"),
+        (lambda m: m.update(indexes=["https://x/"]), "indexes maps"),
+        (lambda m: m["components"].update(torch="2.10.0"), "builds are an object"),
+    ])
+    def test_shape_errors_name_the_problem(self, root, matrix, message):
+        m = self.matrix()
+        matrix(m)
+        self.write(root, m)
+        with pytest.raises(ImageSpecError, match=message):
+            image_spec.load_matrix()
+        with pytest.raises(ImageSpecError, match=message):
+            image_spec.resolve(SPEC, "AMD", name="m")
+
+    def test_yaml_syntax_error_is_reported_with_the_file(self, root):
+        self.write(root, "releases: [unclosed\n")
+        with pytest.raises(ImageSpecError, match="rocm.yaml"):
+            image_spec.load_matrix()
+        card = {"name": "w/m", "image_spec": {"rocm": "7.2"}}
+        with pytest.raises(ImageSpecError, match="rocm.yaml"):
+            image_spec.effective_image_spec(card, {})
+
+    def test_unresolvable_interpolation_is_reported(self, root):
+        self.write(root, "default_release: ${nowhere}\n")
+        with pytest.raises(ImageSpecError, match="compat/rocm.yaml"):
+            image_spec.load_matrix()
+
+    def test_valid_matrix_still_loads(self, root):
+        self.write(root, self.matrix())
+        assert image_spec.load_matrix() == MATRIX
+
+
+class TestDependencyCompletion:
+    """A plan with an exclude reads wheel metadata over the network."""
+
+    WHEEL = "https://fw.example/whl/a/a-1.0-cp312-cp312-linux_x86_64.whl"
+
+    @pytest.fixture(autouse=True)
+    def root(self, tmp_path, monkeypatch):
+        matrix = {"indexes": {}, "components": {"a": {"1.0@x": {
+            "url": self.WHEEL, "exclude": [{"name": "b", "reason": "no build"}]}}}}
+        (tmp_path / "compat").mkdir()
+        (tmp_path / "compat" / "rocm.yaml").write_text(yaml.safe_dump(matrix))
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("MODEL_DIR", raising=False)
+        monkeypatch.setattr(image_spec, "_COMPLETION_CACHE", {})
+        return tmp_path
+
+    SPEC = {"python": "3.12", "components": {"a": "1.0@x"}}
+
+    def test_offline_is_an_image_spec_error(self):
+        import urllib.error
+
+        with patch("madengine.stack.wheels.fetch_metadata",
+                   side_effect=urllib.error.URLError("no route to host")):
+            with pytest.raises(ImageSpecError, match="could not read the metadata.*no route"):
+                image_spec.resolve(self.SPEC, "AMD", name="m")
+
+    def test_bad_wheel_archive_is_an_image_spec_error(self):
+        import zipfile
+
+        with patch("madengine.stack.wheels.fetch_metadata",
+                   side_effect=zipfile.BadZipFile("not a zip")):
+            with pytest.raises(ImageSpecError, match="could not read the metadata"):
+                image_spec.resolve(self.SPEC, "AMD", name="m")
+
+    def test_metadata_is_read_once_per_plan(self):
+        def fetch(wheel):
+            wheel.requires = ["c>=1"]
+            return wheel
+
+        with patch("madengine.stack.wheels.fetch_metadata", side_effect=fetch) as fm:
+            first = image_spec.resolve(self.SPEC, "AMD", name="m")
+            image_spec.dockerfile_prefix(self.SPEC, name="m")
+            image_spec.resolve(self.SPEC, "AMD", name="m")
+        assert fm.call_count == 1
+        with open(f"{first.dockerfile_prefix}.ubuntu.amd.Dockerfile") as f:
+            assert "c>=1" in f.read()
+
+    def test_a_different_plan_reads_again(self):
+        def fetch(wheel):
+            wheel.requires = []
+            return wheel
+
+        with patch("madengine.stack.wheels.fetch_metadata", side_effect=fetch) as fm:
+            image_spec.resolve(self.SPEC, "AMD", name="m")
+            image_spec.resolve({**self.SPEC, "python": "3.11"}, "AMD", name="m")
+        assert fm.call_count == 2
+
+
+class TestBuildOnCompute:
+    """--build-on-compute builds an image_spec card from the generated Dockerfile."""
+
+    CARD = {
+        "name": "w/spec_card",
+        "image_spec": SPEC,
+        "scripts": "run.sh",
+        "n_gpus": "-1",
+        "tags": ["t"],
+        "slurm": {"partition": "gpu", "time": "01:00:00"},
+        "distributed": {"launcher": "slurm_multi"},
+        "env_vars": {},
+        "docker_build_arg": {"MAD_SYSTEM_GPU_ARCHITECTURE": "gfx942"},
+    }
+
+    def run(self, tmp_path, monkeypatch, card, ctx=None):
+        from madengine.orchestration.build_orchestrator import BuildOrchestrator
+
+        write_mad(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("MODEL_DIR", raising=False)
+        orch = BuildOrchestrator.__new__(BuildOrchestrator)
+        orch.args = MagicMock()
+        orch.console = MagicMock()
+        orch.rich_console = MagicMock()
+        orch.context = MagicMock()
+        orch.context.ctx = ctx or {}
+        orch.additional_context = {"slurm": {"partition": "gpu", "time": "01:00:00"}}
+        orch._original_user_slurm_keys = set()
+        orch.credentials = {}
+        manifest_path = tmp_path / "build_manifest.json"
+        with patch("madengine.orchestration.build_orchestrator.DiscoverModels") as dm:
+            dm.return_value.run.return_value = [card]
+            with patch("subprocess.run") as run:
+                run.return_value = MagicMock(returncode=0)
+                orch._execute_build_on_compute(
+                    registry="localhost:5000/repo", manifest_output=str(manifest_path))
+        return json.loads(manifest_path.read_text()), (tmp_path / "madengine_build_job.sh").read_text()
+
+    def test_spec_card_uses_generated_dockerfile_and_plan(self, tmp_path, monkeypatch):
+        manifest, script = self.run(tmp_path, monkeypatch, dict(self.CARD))
+        image = manifest["built_images"]["w/spec_card"]
+        assert image["dockerfile"].startswith(".madengine/build/spec-w_spec_card-")
+        assert (tmp_path / image["dockerfile"]).exists()
+        assert image["build_plan"]["resolved"]["order"] == ["rocm", "torch"]
+        assert image["build_plan"]["resolved"]["gpu_arch"] == "gfx942"
+        assert "--build-arg MAD_BUILD_PLAN=" in script
+        assert f"-f {image['dockerfile']} ./docker" in script
+
+    def test_context_build_arg_still_wins(self, tmp_path, monkeypatch):
+        ctx = {"docker_build_arg": {"MAD_BUILD_PLAN": "mine"}}
+        _, script = self.run(tmp_path, monkeypatch, dict(self.CARD), ctx)
+        assert "--build-arg MAD_BUILD_PLAN=mine" in script
+
+    def test_card_without_spec_is_unchanged(self, tmp_path, monkeypatch):
+        card = {**self.CARD, "name": "w/plain", "dockerfile": "docker/plain"}
+        card.pop("image_spec")
+        df = tmp_path / "docker" / "plain.ubuntu.amd.Dockerfile"
+        df.parent.mkdir(parents=True)
+        df.write_text("FROM scratch\n")
+        manifest, script = self.run(tmp_path, monkeypatch, card)
+        assert "build_plan" not in manifest["built_images"]["w/plain"]
+        assert "MAD_BUILD_PLAN" not in script
+        assert manifest["built_images"]["w/plain"]["dockerfile"] == (
+            "docker/plain.ubuntu.amd.Dockerfile")

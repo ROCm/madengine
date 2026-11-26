@@ -109,17 +109,17 @@ class TestCompose:
     def test_requirement_matching_several_builds_is_rejected(self):
         with pytest.raises(compose.ComposeError,
                            match=r"several authorized builds.*2\.13\.0\+rocm10\.1\.0"):
-            compose.compose({"components": {"a": "1@x"}}, self.AMBIGUOUS)
+            compose.compose({"base": "img", "components": {"a": "1@x"}}, self.AMBIGUOUS)
 
     def test_ambiguity_resolves_to_the_requesters_origin(self):
-        plan = compose.compose({"components": {"b": "1@fw"}}, self.AMBIGUOUS)
+        plan = compose.compose({"base": "img", "components": {"b": "1@fw"}}, self.AMBIGUOUS)
         assert compose.components(plan)["torch"] == "2.13.0@fw"
 
     def test_ambiguity_resolved_by_spec_selection_or_exact_pin(self):
-        spec = {"components": {"a": "1@x", "torch": "2.13.0+rocm10.0.0"}}
+        spec = {"base": "img", "components": {"a": "1@x", "torch": "2.13.0+rocm10.0.0"}}
         assert compose.components(compose.compose(spec, self.AMBIGUOUS))["torch"] == (
             "2.13.0+rocm10.0.0")
-        plan = compose.compose({"components": {"c": "1@x"}}, self.AMBIGUOUS)
+        plan = compose.compose({"base": "img", "components": {"c": "1@x"}}, self.AMBIGUOUS)
         assert compose.components(plan)["torch"] == "2.13.0+rocm10.0.0"
 
     def test_cycle_is_rejected(self):
@@ -150,6 +150,16 @@ class TestCompose:
             compose.compose({"python": "3.14", "components": {"a": "1@x"}}, matrix)
         with pytest.raises(compose.ComposeError, match="spec python must be a string"):
             compose.compose({"python": 3.14}, MATRIX)
+
+    def test_bare_os_base_needs_a_python(self):
+        spec = {"components": {"ucx": "da3fac2a@rocm"}}
+        with pytest.raises(compose.ComposeError, match="bare OS image ubuntu:24.04.*set python"):
+            compose.compose(spec, MATRIX)
+        assert compose.compose({**spec, "python": "3.12"}, MATRIX)["python"] == "3.12"
+        assert compose.compose({**spec, "base": "img"}, MATRIX)["base"] == "img"
+        # an explicit base that happens to be the bare OS still has no python
+        with pytest.raises(compose.ComposeError, match="bare OS image"):
+            compose.compose({**spec, "base": "ubuntu:24.04"}, MATRIX)
 
     def test_rocm_release_must_be_authorized_and_therock(self):
         with pytest.raises(compose.ComposeError, match="known: 10.1, 7.2"):

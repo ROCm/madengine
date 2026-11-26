@@ -587,10 +587,10 @@ relative order, list components in `order` (for example
 | Spec key | Meaning |
 |-----|---------|
 | `rocm` | ROCm release from the matrix (installed as TheRock wheels), or omit when the base image provides ROCm |
-| `python` | Python for a venv at `/opt/mad/venv`; omit to use the base image's python |
+| `python` | Python for a venv at `/opt/mad/venv`; omit to use the base image's python. Required when the spec has no `base` (the bare OS image has no python or pip): resolution fails with a message saying so |
 | `components` | Mapping of component name to authorized build key; a full entry instead of a key is allowed and marked not authorized (its wheel metadata is checked before building) |
 | `order` | Component names that must install in this relative order, on top of the dependency order |
-| `base` | Base image (default: the matrix's `bare_os_base`) |
+| `base` | Base image (default: the matrix's `bare_os_base`, which needs `python` set) |
 | `gpu_arch` | Target, default `MAD_SYSTEM_GPU_ARCHITECTURE`; selects TheRock `device-<gfx>` extras (`device-all` when unset) |
 | `env`, `setup`, `system_packages` | Workload environment, shell run before apt, extra apt packages |
 | `copy` | Files from the build context (`docker/`) put into the image before the components: `[{from: di/check.py, to: /opt/mad/check.py}]` |
@@ -637,6 +637,10 @@ them, MAD's recipe check does.
 workloads; a named spec may itself `extends: ${images.<other>}` (what several
 stacks share, once); a card reaches one with `${images.<name>}`, for example
 `"image_spec": {"extends": "${images.vllm-kimi-k3}", "gpu_arch": "gfx950"}`.
+
+**Build on compute.** `madengine build --build-on-compute` builds a spec card from the same generated Dockerfile and records its `build_plan` in the manifest. madengine writes the Dockerfile under `.madengine/build/` of the directory it runs in, so the compute node must share that directory (as it does for the build script).
+
+**Offline and the compat matrix.** A plan with an `exclude` reads the wheels' METADATA over HTTP to list their dependencies; the result is reused for the rest of the process, and an unreachable index fails resolution with an `ImageSpecError` naming the cause. A `compat/rocm.yaml` that cannot be parsed or has the wrong shape (a release without a known `index`, a build naming an unknown index, `exclude`, `requires` or `source` of the wrong type) fails the same way, naming the file and the entry.
 
 **Precedence.** Generated or backend build args are the lowest layer: the
 card's `docker_build_arg`, then `--additional-context` `docker_build_arg`,

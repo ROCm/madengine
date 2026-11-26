@@ -1155,6 +1155,25 @@ class BuildOrchestrator:
         for model in models:
             model_name = model.get("name", "unknown")
             dockerfile = model.get("dockerfile", "")
+            # An image_spec card builds the Dockerfile madengine generates for it
+            # (under .madengine/build/ of this directory, which the compute node
+            # shares with the submit node), with the same MAD_BUILD_PLAN arg as a
+            # local build.
+            card_spec = image_spec.effective_image_spec(model, self.context.ctx)
+            spec_plan = None
+            if card_spec:
+                spec_plan = image_spec.resolve(
+                    card_spec,
+                    "AMD",
+                    (self.context.ctx.get("docker_build_arg") or {}).get(
+                        "MAD_SYSTEM_GPU_ARCHITECTURE"
+                    )
+                    or (model.get("docker_build_arg") or {}).get(
+                        "MAD_SYSTEM_GPU_ARCHITECTURE"
+                    ),
+                    name=model_name,
+                )
+                dockerfile = spec_plan.dockerfile_prefix
             dockerfile_path = ""
             for pattern in [
                 f"{dockerfile}.ubuntu.amd.Dockerfile",
@@ -1199,6 +1218,10 @@ class BuildOrchestrator:
             build_arg = dict(self.context.ctx.get("docker_build_arg", {}) or {})
             for card_arg, card_value in (model.get("docker_build_arg") or {}).items():
                 build_arg.setdefault(card_arg, card_value)
+            if spec_plan:
+                # Lowest layer, as in DockerBuilder.build_image: context and card win.
+                for plan_arg, plan_value in spec_plan.build_args.items():
+                    build_arg.setdefault(plan_arg, plan_value)
             build_arg_flags = " ".join(
                 f"--build-arg {shlex.quote(str(k))}={shlex.quote(str(v))}"
                 for k, v in build_arg.items()
@@ -1216,6 +1239,7 @@ class BuildOrchestrator:
                     "local_image_name": local_image_name,
                     "registry_image_name": registry_image_name,
                     "build_arg_flags": build_arg_flags,
+                    "build_plan": spec_plan.to_dict() if spec_plan else None,
                 }
             )
         self.rich_console.print("")
@@ -1389,6 +1413,8 @@ exit 0
                     "built_on_compute": True,
                     "registry": registry,
                 }
+                if pmd["build_plan"]:
+                    built_images[mn]["build_plan"] = pmd["build_plan"]
                 built_models[mn] = {
                     "name": mn,
                     "image": rim,

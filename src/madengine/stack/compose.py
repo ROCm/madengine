@@ -88,8 +88,14 @@ def _python_list(value, where: str) -> typing.List[str]:
     )
 
 
+def _strings(value) -> bool:
+    return isinstance(value, list) and all(isinstance(s, str) for s in value)
+
+
 def _check_entry(name: str, key: str, entry: dict) -> None:
     where = f"{name} {key}"
+    if not isinstance(entry, dict):
+        raise ComposeError(f"{where}: a build is an object, got {type(entry).__name__}")
     unknown = set(entry) - _ENTRY_KEYS
     if unknown:
         raise ComposeError(f"{where}: unknown key(s) {', '.join(sorted(unknown))}")
@@ -99,6 +105,19 @@ def _check_entry(name: str, key: str, entry: dict) -> None:
     if entry.get("run") is not None and not (isinstance(entry["run"], list)
                                              and all(isinstance(s, str) for s in entry["run"])):
         raise ComposeError(f"{where}: run is a list of shell steps")
+    requires = entry.get("requires")
+    if requires is not None and not _strings(requires):
+        raise ComposeError(f"{where}: requires is a list of requirement strings")
+    excludes = entry.get("exclude")
+    if excludes is not None and not (
+        isinstance(excludes, list) and all(isinstance(x, dict) for x in excludes)
+    ):
+        raise ComposeError(f"{where}: exclude is a list of {{name, reason}} entries")
+    for key in ("url", "requirement", "index"):
+        if entry.get(key) is not None and not isinstance(entry[key], str):
+            raise ComposeError(f"{where}: {key} must be a string")
+    if entry.get("source") is not None and not isinstance(entry["source"], dict):
+        raise ComposeError(f"{where}: source is an object with repo and commit")
     if entry.get("source"):
         source = entry["source"]
         if not (source.get("repo") and source.get("commit")):
@@ -119,6 +138,52 @@ def _check_entry(name: str, key: str, entry: dict) -> None:
             raise ComposeError(f"{where}: exclude needs a name and the reason")
 
 
+def validate_matrix(matrix) -> None:
+    """Check the shape of the compatibility matrix once, as ComposeError.
+
+    Checks what the matrix contains, so a partial matrix is fine: ``indexes``
+    maps names to URLs, a ROCm release that installs from TheRock has a known
+    ``index``, and every build is a valid entry that names a known index.
+    """
+    if not isinstance(matrix, dict):
+        raise ComposeError(f"compat must be an object, got {type(matrix).__name__}")
+    indexes = matrix.get("indexes")
+    if indexes is not None and not (
+        isinstance(indexes, dict) and all(isinstance(u, str) for u in indexes.values())
+    ):
+        raise ComposeError("compat indexes maps an index name to its URL")
+    known = indexes or {}
+    releases = matrix.get("releases")
+    if releases is not None and not isinstance(releases, dict):
+        raise ComposeError("compat releases maps a ROCm version to its release")
+    for version, release in (releases or {}).items():
+        if not isinstance(release, dict):
+            raise ComposeError(f"compat release {version}: must be an object")
+        if release.get("default_install") == "therock" and release.get("index") not in known:
+            raise ComposeError(
+                f"compat release {version}: index {release.get('index')!r} is not in "
+                f"indexes ({', '.join(known) or 'none'})"
+            )
+    components = matrix.get("components")
+    if components is not None and not isinstance(components, dict):
+        raise ComposeError("compat components maps a component name to its builds")
+    for name, builds in (components or {}).items():
+        if not isinstance(builds, dict):
+            raise ComposeError(f"compat component {name}: builds are an object keyed by build")
+        for key, entry in builds.items():
+            _check_entry(name, str(key), entry)
+            _check_index(f"{name} {key}", entry, known)
+
+
+def _check_index(where: str, entry: dict, indexes: dict) -> None:
+    index = entry.get("index")
+    if index is not None and index not in indexes:
+        raise ComposeError(
+            f"{where}: index {index!r} is not in compat indexes "
+            f"({', '.join(indexes) or 'none'})"
+        )
+
+
 def _rocm_entry(matrix: dict, spec_rocm, gpu_arch: str) -> typing.Tuple[str, dict]:
     """The implicit 'rocm' component for the spec's ROCm release."""
     rocm = spec_rocm if isinstance(spec_rocm, dict) else {"version": spec_rocm}
@@ -136,6 +201,8 @@ def _rocm_entry(matrix: dict, spec_rocm, gpu_arch: str) -> typing.Tuple[str, dic
             f"use a base image for legacy ROCm"
         )
     pin = release.get("pip_spec", "")
+    if not release.get("index"):
+        raise ComposeError(f"ROCm {release_key}: the compat release has no index")
     return release_key, {
         "requirement": f"rocm[libraries,devel,device-{gpu_arch}]{pin}",
         "index": release["index"],
@@ -152,6 +219,7 @@ def compose(
     ``key``, ``version``, ``entry``, ``authorized`` and ``why`` (``selected``,
     ``rocm`` or ``required by <name>``).
     """
+    validate_matrix(matrix)
     arch = spec.get("gpu_arch") or gpu_arch or "all"
     spec = _for_arch(spec, arch)
     catalog = matrix.get("components") or {}
@@ -167,6 +235,7 @@ def compose(
     def add(name: str, key: str, entry: dict, authorized: bool, why: str) -> None:
         name = wheels.normalize(name)
         _check_entry(name, key, entry)
+        _check_index(f"{name} {key}", entry, matrix.get("indexes") or {})
         chosen[name] = {"name": name, "key": key, "version": build_version(key, entry),
                         "entry": entry, "authorized": authorized, "why": why}
         order_hint.append(name)
@@ -261,8 +330,14 @@ def compose(
     for i in items:
         env.update(i["entry"].get("env") or {})
     env.update(spec.get("env") or {})
+    base = _base(spec, matrix, arch)
+    if not python and base == matrix.get("bare_os_base", "ubuntu:24.04"):
+        raise ComposeError(
+            f"the spec builds on the bare OS image {base}, which has no python or "
+            f"pip: set python (a venv is created) or a base image that has one"
+        )
     return {
-        "base": _base(spec, matrix, arch),
+        "base": base,
         "copy": _copies(spec),
         "finish": list(spec.get("finish") or []),
         "python": python,

@@ -42,6 +42,7 @@ SpecArg = Annotated[str, typer.Argument(help="Workload folder or image_spec.yaml
 
 
 def _compose(ref: str, gpu_arch: Optional[str]) -> dict:
+    import yaml
     from omegaconf import OmegaConf
     from omegaconf.errors import OmegaConfBaseException
 
@@ -53,8 +54,8 @@ def _compose(ref: str, gpu_arch: Optional[str]) -> dict:
             resolve=True,
         )
         plan = compose.compose(both["spec"], both["compat"], gpu_arch)
-    except (OSError, OmegaConfBaseException, image_spec.ImageSpecError,
-            compose.ComposeError) as e:
+    except (OSError, OmegaConfBaseException, yaml.YAMLError,
+            image_spec.ImageSpecError, compose.ComposeError) as e:
         console.print(f"[red]{escape(str(e))}[/red]")
         raise typer.Exit(ExitCode.INVALID_ARGS)
     plan["name"] = os.path.basename(os.path.dirname(os.path.abspath(path)))
